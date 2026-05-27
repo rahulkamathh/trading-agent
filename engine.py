@@ -274,11 +274,17 @@ PORTFOLIO_FILE = DATA_DIR / "portfolio.json"
 TRADE_LOG_FILE = DATA_DIR / "trade_log.json"
 SIGNALS_FILE   = DATA_DIR / "signals.json"
 
-INITIAL_CAPITAL = 1_000_000   # ₹10 lakhs
+INITIAL_CAPITAL  = 1_000_000   # ₹10 lakhs
 MAX_POSITION_PCT = 0.08        # max 8% per position
 STOP_LOSS_PCT    = 0.07        # 7% stop loss
 TAKE_PROFIT_PCT  = 0.20        # 20% take profit
 MAX_POSITIONS    = 25          # max concurrent positions
+
+# ── Execution guard-rails ──────────────────────────────────────────────────
+MIN_BUY_STRENGTH     = 65      # signal strength threshold to open a position (0–100)
+MIN_SELL_STRENGTH    = 60      # signal strength threshold to close on a SELL signal
+COOLDOWN_DAYS        = 3       # days to wait before re-buying a recently exited ticker
+MIN_HOLD_DAYS        = 1       # don't exit a position the same day it was entered
 
 # ---------------------------------------------------------------------------
 # Data Layer
@@ -986,6 +992,7 @@ class Portfolio:
             "initial":      INITIAL_CAPITAL,
             "positions":    {},          # ticker → {qty, avg_price, strategy, entry_date}
             "realised_pnl": 0.0,
+            "exit_log":     {},          # ticker → ISO timestamp of last exit (cooldown tracking)
             "created_at":   datetime.now().isoformat(),
             "last_updated": datetime.now().isoformat(),
         }
@@ -1030,10 +1037,25 @@ class Portfolio:
 
     # ------------------------------------------------------------------ #
 
+    def in_cooldown(self, ticker: str) -> bool:
+        """Return True if ticker was exited recently and should not be re-entered yet."""
+        exit_log = self.state.get("exit_log", {})
+        last_exit = exit_log.get(ticker)
+        if not last_exit:
+            return False
+        try:
+            elapsed_days = (datetime.now() - datetime.fromisoformat(last_exit)).days
+            return elapsed_days < COOLDOWN_DAYS
+        except Exception:
+            return False
+
     def can_buy(self, ticker: str, price: float) -> bool:
         if len(self.state["positions"]) >= MAX_POSITIONS:
             return False
         if ticker in self.state["positions"]:
+            return False
+        if self.in_cooldown(ticker):
+            logger.debug(f"SKIP {ticker} — in cooldown after recent exit")
             return False
         total_val = self.get_total_value()
         max_spend = total_val * MAX_POSITION_PCT
@@ -1066,6 +1088,18 @@ class Portfolio:
         pos = self.state["positions"].get(ticker)
         if not pos:
             return None
+
+        # Enforce minimum hold period — never exit same day as entry (prevents signal flip-flop)
+        if reason not in ("STOP_LOSS", "TAKE_PROFIT"):
+            try:
+                entry_dt  = datetime.fromisoformat(pos["entry_date"])
+                held_days = (datetime.now() - entry_dt).days
+                if held_days < MIN_HOLD_DAYS:
+                    logger.debug(f"SKIP SELL {ticker} — held only {held_days}d (min {MIN_HOLD_DAYS}d)")
+                    return None
+            except Exception:
+                pass
+
         qty      = pos["qty"]
         proceeds = qty * price
         pnl      = (price - pos["avg_price"]) * qty
@@ -1073,6 +1107,12 @@ class Portfolio:
         self.state["realised_pnl"] += pnl
         strategy = pos["strategy"]
         del self.state["positions"][ticker]
+
+        # Record exit time for cooldown — prevents immediate re-entry
+        if "exit_log" not in self.state:
+            self.state["exit_log"] = {}
+        self.state["exit_log"][ticker] = datetime.now().isoformat()
+
         self._save()
         trade = self._log_trade("SELL", ticker, qty, price, strategy, reason, pnl=pnl)
         logger.info(f"SELL {ticker:20s} qty={qty} @ ₹{price:.2f}  pnl=₹{pnl:.2f}  [{reason}]")
@@ -1458,37 +1498,90 @@ class TradingAgent:
         logger.info("=== Agent Cycle Start ===")
         t0 = time.time()
 
-        # 1. Check stops first
+        # 1. Check stop-loss / take-profit on open positions first
         stops = self.portfolio.check_stops()
 
         # 2. Generate fresh signals
         signals = self.aggregator.run()
 
-        # 3. Execute BUY signals (prioritise by strength desc)
-        buy_signals = sorted(
-            [s for s in signals if s["signal"] == "BUY"],
-            key=lambda x: x.get("strength", 0),
-            reverse=True,
-        )
+        # ── Aggregate signals per ticker ───────────────────────────────────
+        # Multiple strategies may fire for the same ticker. We combine them:
+        #   - composite_strength = average of all signals for that ticker
+        #   - strategy_count     = how many strategies agree
+        # This prevents trading on a single weak strategy firing alone.
+
+        buy_agg:  dict[str, dict] = {}   # ticker → aggregated buy info
+        sell_agg: dict[str, dict] = {}   # ticker → aggregated sell info
+
+        for sig in signals:
+            ticker   = sig["ticker"]
+            action   = sig.get("signal", sig.get("action", ""))
+            strength = sig.get("strength", 0)
+            strategy = sig.get("strategy", "")
+            price    = sig.get("price", 0)
+
+            if action == "BUY":
+                if ticker not in buy_agg:
+                    buy_agg[ticker] = {"strengths": [], "strategies": [], "price": price}
+                buy_agg[ticker]["strengths"].append(strength)
+                buy_agg[ticker]["strategies"].append(strategy)
+                if price > 0:
+                    buy_agg[ticker]["price"] = price   # use latest non-zero price
+
+            elif action == "SELL":
+                if ticker not in sell_agg:
+                    sell_agg[ticker] = {"strengths": [], "strategies": [], "price": price}
+                sell_agg[ticker]["strengths"].append(strength)
+                sell_agg[ticker]["strategies"].append(strategy)
+                if price > 0:
+                    sell_agg[ticker]["price"] = price
+
+        # ── Execute BUY signals ────────────────────────────────────────────
+        # Sort by composite strength descending (strongest conviction first)
+        buy_candidates = []
+        for ticker, agg in buy_agg.items():
+            composite = sum(agg["strengths"]) / len(agg["strengths"])
+            strat_cnt = len(set(agg["strategies"]))
+            # Bonus: +5 strength per additional confirming strategy
+            boosted   = min(composite + (strat_cnt - 1) * 5, 100)
+            buy_candidates.append((ticker, boosted, agg["price"], agg["strategies"]))
+
+        buy_candidates.sort(key=lambda x: x[1], reverse=True)
+
         executed = []
-        for sig in buy_signals:
-            ticker = sig["ticker"]
-            price  = sig.get("price", 0)
+        for ticker, composite_strength, price, strategies in buy_candidates:
+            # Guard-rail 1: minimum strength
+            if composite_strength < MIN_BUY_STRENGTH:
+                logger.debug(
+                    f"SKIP BUY {ticker} — strength {composite_strength:.1f} < {MIN_BUY_STRENGTH}"
+                )
+                continue
             if price <= 0:
                 price = DataFetcher.get_current_price(ticker)
-            trade = self.portfolio.execute_buy(ticker, price, sig["strategy"], "SIGNAL")
+            trade = self.portfolio.execute_buy(
+                ticker, price,
+                strategy="+".join(set(strategies)),
+                reason=f"SIGNAL strength={composite_strength:.0f}",
+            )
             if trade:
                 executed.append(trade)
 
-        # 4. Execute SELL signals for held positions
-        sell_signals = [s for s in signals if s["signal"] == "SELL"]
-        for sig in sell_signals:
-            ticker = sig["ticker"]
-            if ticker in self.portfolio.state["positions"]:
-                price = sig.get("price", 0) or DataFetcher.get_current_price(ticker)
-                trade = self.portfolio.execute_sell(ticker, price, "SIGNAL_EXIT")
-                if trade:
-                    executed.append(trade)
+        # ── Execute SELL signals for held positions ────────────────────────
+        # Only sell on signal if conviction is high enough; stop-loss/take-profit
+        # are handled separately above via check_stops() and are always honoured.
+        for ticker, agg in sell_agg.items():
+            if ticker not in self.portfolio.state["positions"]:
+                continue
+            composite = sum(agg["strengths"]) / len(agg["strengths"])
+            if composite < MIN_SELL_STRENGTH:
+                logger.debug(
+                    f"SKIP SELL {ticker} — strength {composite:.1f} < {MIN_SELL_STRENGTH}"
+                )
+                continue
+            price = agg["price"] or DataFetcher.get_current_price(ticker)
+            trade = self.portfolio.execute_sell(ticker, price, "SIGNAL_EXIT")
+            if trade:
+                executed.append(trade)
 
         elapsed = round(time.time() - t0, 1)
         summary = {
