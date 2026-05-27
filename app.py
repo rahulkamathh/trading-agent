@@ -523,6 +523,27 @@ def api_fundamentals_all():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
+@app.route("/api/screener/<path:ticker>")
+def api_screener_ticker(ticker: str):
+    """Return screener.in data for a single ticker (live scrape, cached 24h)."""
+    try:
+        from fundamental_analyzer import get_screener  # pylint: disable=import-outside-toplevel
+        data = get_screener().scrape(ticker)
+        return jsonify({"ok": True, "ticker": ticker, "data": data})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/screener")
+def api_screener_all():
+    """Return all cached screener.in data."""
+    try:
+        from fundamental_analyzer import get_screener  # pylint: disable=import-outside-toplevel
+        return jsonify({"ok": True, "data": get_screener().get_all_cached()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 @app.route("/api/fundamentals/top")
 def api_fundamentals_top():
     """Return top N stocks by fundamental quality from the full universe."""

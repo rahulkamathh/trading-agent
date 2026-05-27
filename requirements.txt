@@ -12,3 +12,5 @@ websocket-client>=1.7.0
 logzero>=1.7.0
 # Telegram Signal Intelligence
 telethon>=1.34.0
+# Screener.in scraper
+beautifulsoup4>=4.12.0
