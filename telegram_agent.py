@@ -19,8 +19,10 @@ Setup (one-time):
 """
 
 import asyncio
+import base64
 import json
 import logging
+import os
 import re
 import uuid
 from datetime import datetime, timedelta
@@ -39,6 +41,23 @@ SIGNALS_FILE = DATA_DIR / "telegram_signals.json"
 SESSION_FILE = str(DATA_DIR / "telegram_session")
 
 DATA_DIR.mkdir(exist_ok=True)
+
+# ---------------------------------------------------------------------------
+# Restore Telegram session from env var (Railway cloud deployment)
+# ---------------------------------------------------------------------------
+
+def _restore_session_from_env() -> None:
+    """If TELEGRAM_SESSION_B64 is set and session file missing, decode and write it."""
+    session_path = Path(SESSION_FILE + ".session")
+    b64 = os.environ.get("TELEGRAM_SESSION_B64", "").strip()
+    if b64 and not session_path.exists():
+        try:
+            session_path.write_bytes(base64.b64decode(b64))
+            logger.info("Telegram session restored from TELEGRAM_SESSION_B64 env var.")
+        except Exception as exc:
+            logger.warning("Failed to restore Telegram session from env: %s", exc)
+
+_restore_session_from_env()
 
 # ---------------------------------------------------------------------------
 # NSE universe (for ticker matching)
