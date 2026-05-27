@@ -301,6 +301,9 @@
     <div class="nav-item" data-view="penny" onclick="showView('penny')">
       <span class="nav-icon">💎</span> Penny Stocks
     </div>
+    <div class="nav-item" data-view="screener" onclick="showView('screener')">
+      <span class="nav-icon">🔍</span> Screener
+    </div>
   </div>
 
   <div class="nav-group">
@@ -726,6 +729,58 @@
   </div>
 
   <!-- ══ Penny Stocks page ══ -->
+  <!-- ══ Screener page ══ -->
+  <div id="page-screener" class="page-section hidden">
+    <div class="page-header">
+      <span class="page-title">🔍 Stock Screener</span>
+    </div>
+
+    <!-- Search bar -->
+    <div style="display:flex;gap:10px;margin-bottom:20px">
+      <input id="screenerInput" type="text" placeholder="Enter NSE symbol (e.g. RELIANCE, INFY, TATAMOTORS)…"
+        style="flex:1;padding:10px 14px;background:var(--card);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px"
+        onkeydown="if(event.key==='Enter') runScreener()"/>
+      <button onclick="runScreener()" style="padding:10px 20px;background:var(--accent);color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600">Analyse</button>
+    </div>
+
+    <div id="screenerResult" style="display:none">
+      <!-- Score banner -->
+      <div style="display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap">
+        <div id="scrScoreCard" style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px 28px;text-align:center;min-width:120px">
+          <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Quality Score</div>
+          <div id="scrScore" style="font-size:36px;font-weight:800;margin:6px 0"></div>
+          <div id="scrGrade" style="font-size:14px;font-weight:700;padding:2px 12px;border-radius:10px;display:inline-block"></div>
+        </div>
+        <div style="flex:1;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 20px">
+          <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">Key Ratios</div>
+          <div id="scrRatios" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px"></div>
+        </div>
+      </div>
+
+      <!-- Two-col: Holding Pattern + India Metrics -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+        <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 20px">
+          <div style="font-size:13px;font-weight:700;margin-bottom:14px">🏦 Shareholding Pattern</div>
+          <div id="scrHolding"></div>
+        </div>
+        <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 20px">
+          <div style="font-size:13px;font-weight:700;margin-bottom:14px">📈 Growth & Quality</div>
+          <div id="scrGrowth"></div>
+        </div>
+      </div>
+
+      <!-- Quarterly snapshot -->
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 20px">
+        <div style="font-size:13px;font-weight:700;margin-bottom:14px">📊 Latest Quarter</div>
+        <div id="scrQuarterly" style="display:flex;gap:16px;flex-wrap:wrap"></div>
+      </div>
+    </div>
+
+    <div id="screenerEmpty" style="text-align:center;color:var(--muted);margin-top:60px;font-size:14px">
+      Enter a stock symbol above to see its full fundamental analysis
+    </div>
+  </div>
+
   <div id="page-penny" class="page-section hidden">
     <div class="page-header">
       <span class="page-title">💎 Penny & Small-Cap Universe</span>
@@ -849,7 +904,7 @@
 // ══════════════════════════════════════════════
 let _currentView = 'overview';
 
-const _ALL_PAGES = ['overview','positions','signals','trades','controls','report','telegram','groupfeed','news','penny'];
+const _ALL_PAGES = ['overview','positions','signals','trades','controls','report','telegram','groupfeed','news','penny','screener'];
 const _lazyLoaded = new Set();
 
 function showView(view) {
@@ -882,6 +937,8 @@ function showView(view) {
         loadNews();
       } else if (view === 'penny') {
         loadPennyUniverse(); loadPennyPositions();
+      } else if (view === 'screener') {
+        // Nothing to preload — user initiates search
       }
     }
   }
@@ -2322,6 +2379,145 @@ async function loadHeadlines() {
       </div>`;
     }).join('');
   } catch(e) { console.warn('Headlines error:', e); }
+}
+
+// ══════════════════════════════════════════════
+// Stock Screener (screener.in + yfinance)
+// ══════════════════════════════════════════════
+async function runScreener() {
+  const raw = (document.getElementById('screenerInput').value || '').trim().toUpperCase();
+  if (!raw) return;
+  // Accept bare symbol OR full ticker (RELIANCE / RELIANCE.NS / RELIANCE.BO)
+  const symbol = raw.replace(/\.(NS|BO)$/i, '');
+  const ticker  = symbol + '.NS';
+
+  document.getElementById('screenerResult').style.display = 'none';
+  document.getElementById('screenerEmpty').textContent = '⏳ Fetching data…';
+  document.getElementById('screenerEmpty').style.display = 'block';
+
+  try {
+    const [fundRes, scrRes] = await Promise.all([
+      fetch(`/api/fundamentals/${ticker}`).then(r => r.json()).catch(() => ({})),
+      fetch(`/api/screener/${symbol}`).then(r => r.json()).catch(() => ({})),
+    ]);
+
+    const f = fundRes.data   || {};
+    const s = scrRes.data    || {};
+
+    document.getElementById('screenerEmpty').style.display = 'none';
+    document.getElementById('screenerResult').style.display = 'block';
+
+    // ── Score banner ──
+    const score = f.score ?? s.score ?? null;
+    const grade = f.grade ?? s.grade ?? '';
+    const scoreEl = document.getElementById('scrScore');
+    const gradeEl = document.getElementById('scrGrade');
+    scoreEl.textContent = score !== null ? score.toFixed(1) : '—';
+
+    const gradeColors = { 'A+':'#3fb950', A:'#3fb950', B:'#d29922', C:'#ffa657', D:'#f85149', F:'#f85149' };
+    const gc = gradeColors[grade] || '#8b949e';
+    scoreEl.style.color  = gc;
+    gradeEl.textContent  = grade || '—';
+    gradeEl.style.background = gc + '22';
+    gradeEl.style.color  = gc;
+    gradeEl.style.border = `1px solid ${gc}55`;
+
+    // ── Key Ratios ──
+    function ratioRow(label, val, fmt) {
+      if (val === undefined || val === null) return '';
+      const display = fmt === 'pct'  ? (typeof val === 'number' ? val.toFixed(1) + '%' : val)
+                    : fmt === 'cr'   ? '₹' + (val/1e7).toFixed(0) + ' Cr'
+                    : fmt === 'x'    ? val.toFixed(2) + 'x'
+                    : typeof val === 'number' ? val.toFixed(2) : val;
+      return `<div style="background:#0d1117;border-radius:8px;padding:10px 12px">
+        <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">${label}</div>
+        <div style="font-size:15px;font-weight:700">${display}</div>
+      </div>`;
+    }
+    const pe   = f.pe_ratio   ?? s.pe;
+    const pb   = f.pb_ratio   ?? s.pb;
+    const roe  = f.roe        ?? s.roe;
+    const roce = s.roce       ?? f.roce;
+    const de   = f.debt_equity ?? s.de;
+    const mcap = s.market_cap ?? f.market_cap;
+    const div  = s.dividend_yield ?? f.dividend_yield;
+    document.getElementById('scrRatios').innerHTML = [
+      ratioRow('P/E',  pe),
+      ratioRow('P/B',  pb),
+      ratioRow('ROE',  roe,  'pct'),
+      ratioRow('ROCE', roce, 'pct'),
+      ratioRow('D/E',  de,   'x'),
+      ratioRow('Div Yield', div, 'pct'),
+    ].join('');
+
+    // ── Shareholding Pattern ──
+    function holdBar(label, val, color) {
+      if (val === undefined || val === null) return '';
+      const pct = typeof val === 'number' ? val : parseFloat(val) || 0;
+      return `<div style="margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+          <span style="color:var(--muted)">${label}</span>
+          <span style="font-weight:600">${pct.toFixed(1)}%</span>
+        </div>
+        <div style="background:#21262d;border-radius:3px;height:6px;overflow:hidden">
+          <div style="width:${Math.min(pct,100)}%;background:${color};height:100%;border-radius:3px"></div>
+        </div>
+      </div>`;
+    }
+    const sh = s.shareholding || {};
+    document.getElementById('scrHolding').innerHTML = sh.promoter !== undefined
+      ? holdBar('Promoter', sh.promoter, '#3fb950') +
+        holdBar('FII / FPI', sh.fii, '#58a6ff') +
+        holdBar('DII', sh.dii, '#d29922') +
+        holdBar('Public', sh.public, '#bc8cff')
+      : '<div style="color:var(--muted);font-size:13px">No shareholding data</div>';
+
+    // ── Growth & Quality ──
+    function gRow(label, val, fmt) {
+      if (val === undefined || val === null) return '';
+      const cls = typeof val === 'number' && val > 0 ? 'pos' : typeof val === 'number' && val < 0 ? 'neg' : '';
+      const display = fmt === 'pct' ? (typeof val==='number'?val.toFixed(1)+'%':val) : val;
+      return `<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #21262d;font-size:13px">
+        <span style="color:var(--muted)">${label}</span>
+        <span class="${cls}" style="font-weight:600">${display}</span>
+      </div>`;
+    }
+    const piot = s.piotroski ?? f.piotroski;
+    const sg3  = s.sales_growth_3yr  ?? f.revenue_growth;
+    const pg3  = s.profit_growth_3yr ?? f.earnings_growth;
+    document.getElementById('scrGrowth').innerHTML = [
+      gRow('Piotroski F-Score', piot !== undefined && piot !== null ? `${piot} / 9` : null),
+      gRow('3yr Sales Growth',  sg3,  'pct'),
+      gRow('3yr Profit Growth', pg3,  'pct'),
+      gRow('OPM (latest qtr)',  s.latest_quarter?.opm, 'pct'),
+      gRow('Book Value / Share', s.book_value),
+      gRow('Debt',  s.debt !== undefined ? '₹' + (s.debt/1e7).toFixed(0) + ' Cr' : null),
+    ].join('') || '<div style="color:var(--muted);font-size:13px">No growth data</div>';
+
+    // ── Latest Quarter ──
+    function qCard(label, val, sub) {
+      if (val === undefined || val === null) return '';
+      return `<div style="background:#0d1117;border-radius:8px;padding:12px 16px;min-width:110px">
+        <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">${label}</div>
+        <div style="font-size:16px;font-weight:700">${val}</div>
+        ${sub ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">${sub}</div>` : ''}
+      </div>`;
+    }
+    const q = s.latest_quarter || {};
+    const qHtml = [
+      qCard('Sales', q.sales   !== undefined ? '₹' + (q.sales/1e7).toFixed(0) + ' Cr'   : null, q.period),
+      qCard('Net Profit', q.profit !== undefined ? '₹' + (q.profit/1e7).toFixed(0) + ' Cr' : null, ''),
+      qCard('OPM %', q.opm !== undefined ? q.opm.toFixed(1) + '%' : null, ''),
+      qCard('Profit QoQ', q.profit_qoq !== undefined ? (q.profit_qoq > 0 ? '+' : '') + q.profit_qoq.toFixed(1) + '%' : null, ''),
+    ].join('');
+    document.getElementById('scrQuarterly').innerHTML = qHtml ||
+      '<div style="color:var(--muted);font-size:13px">No quarterly data available</div>';
+
+  } catch(e) {
+    document.getElementById('screenerEmpty').textContent = '❌ Error fetching data. Check the symbol and try again.';
+    document.getElementById('screenerEmpty').style.display = 'block';
+    document.getElementById('screenerResult').style.display = 'none';
+  }
 }
 
 // ══════════════════════════════════════════════

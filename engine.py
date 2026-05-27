@@ -26,17 +26,141 @@ logger = logging.getLogger(__name__)
 # Universe Definition
 # ---------------------------------------------------------------------------
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Full NSE/BSE Trading Universe — organised by sector
+# ~260 liquid stocks covering every major industry on the Indian market.
+# yfinance batch-fetches these; stocks with no data are silently skipped.
+# ─────────────────────────────────────────────────────────────────────────────
 NIFTY50_TICKERS = [
-    "RELIANCE.NS","TCS.NS","HDFCBANK.NS","INFY.NS","ICICIBANK.NS",
-    "HINDUNILVR.NS","SBIN.NS","BHARTIARTL.NS","BAJFINANCE.NS","KOTAKBANK.NS",
-    "LT.NS","AXISBANK.NS","ASIANPAINT.NS","MARUTI.NS","SUNPHARMA.NS",
-    "TITAN.NS","WIPRO.NS","ULTRACEMCO.NS","NESTLEIND.NS","POWERGRID.NS",
-    "NTPC.NS","M&M.NS","HCLTECH.NS","ONGC.NS","JSWSTEEL.NS",
-    "TATAMOTORS.NS","ADANIENT.NS","COALINDIA.NS","BAJAJFINSV.NS","GRASIM.NS",
-    "TECHM.NS","BPCL.NS","CIPLA.NS","DRREDDY.NS","EICHERMOT.NS",
-    "APOLLOHOSP.NS","DIVISLAB.NS","TATACONSUM.NS","INDUSINDBK.NS","SBILIFE.NS",
-    "HDFCLIFE.NS","ADANIPORTS.NS","UPL.NS","HEROMOTOCO.NS","BRITANNIA.NS",
-    "TATASTEEL.NS","ITC.NS","BAJAJ-AUTO.NS","HINDALCO.NS","VEDL.NS",
+
+    # ══ BANKING — Private ═════════════════════════════════════════════════
+    "HDFCBANK.NS","ICICIBANK.NS","KOTAKBANK.NS","AXISBANK.NS","INDUSINDBK.NS",
+    "BANDHANBNK.NS","FEDERALBNK.NS","RBLBANK.NS","YESBANK.NS","IDFCFIRSTB.NS",
+    "KARURVYSYA.NS","DCBBANK.NS","SOUTHBANK.NS","CSBBANK.NS",
+    "UJJIVANSFB.NS","EQUITASBNK.NS","AUBANK.NS",
+
+    # ══ BANKING — PSU ════════════════════════════════════════════════════
+    "SBIN.NS","CANBK.NS","PNB.NS","BANKBARODA.NS","UNIONBANK.NS",
+    "INDIANB.NS","MAHABANK.NS","IOB.NS","UCOBANK.NS","CENTRALBK.NS","BANKINDIA.NS",
+
+    # ══ NBFC / HOUSING FINANCE ════════════════════════════════════════════
+    "BAJFINANCE.NS","BAJAJFINSV.NS","MUTHOOTFIN.NS","MANAPPURAM.NS",
+    "CHOLAFIN.NS","SHRIRAMFIN.NS","LICHSGFIN.NS","RECLTD.NS","PFC.NS",
+    "AAVAS.NS","HOMEFIRST.NS","APTUS.NS","CANFINHOME.NS","PNBHOUSING.NS",
+    "BAJAJHLDNG.NS","PIRAMAL.NS","IDFC.NS","M&MFIN.NS",
+
+    # ══ INSURANCE ════════════════════════════════════════════════════════
+    "SBILIFE.NS","HDFCLIFE.NS","ICICIPRULI.NS","LICI.NS",
+    "ICICIGI.NS","NIACL.NS","STARHEALTH.NS","POLICYBZR.NS",
+
+    # ══ INFORMATION TECHNOLOGY ════════════════════════════════════════════
+    "TCS.NS","INFY.NS","WIPRO.NS","HCLTECH.NS","TECHM.NS",
+    "LTIM.NS","LTTS.NS","TATAELXSI.NS","MPHASIS.NS","COFORGE.NS",
+    "PERSISTENT.NS","KPIT.NS","NAUKRI.NS","ZOMATO.NS","PAYTM.NS","NYKAA.NS",
+
+    # ══ PHARMACEUTICALS ══════════════════════════════════════════════════
+    "SUNPHARMA.NS","DRREDDY.NS","CIPLA.NS","DIVISLAB.NS","BIOCON.NS",
+    "AUROPHARMA.NS","LUPIN.NS","TORNTPHARM.NS","ALKEM.NS","IPCALAB.NS",
+    "GLENMARK.NS","NATCOPHARM.NS","ZYDUSLIFE.NS","ABBOTINDIA.NS",
+    "PFIZER.NS","SANOFI.NS","LAURUS.NS","GRANULES.NS","SYNGENE.NS",
+    "AJANTPHARM.NS","SOLARA.NS","MARKSANS.NS","SUVEN.NS","NEULANDLAB.NS",
+
+    # ══ HEALTHCARE / DIAGNOSTICS ══════════════════════════════════════════
+    "APOLLOHOSP.NS","MAXHEALTH.NS","FORTIS.NS","NARAYANA.NS","ASTER.NS",
+    "METROPOLIS.NS","LALPATHLAB.NS","THYROCARE.NS","KRSNAA.NS","VIJAYA.NS",
+
+    # ══ FMCG / CONSUMER STAPLES ════════════════════════════════════════════
+    "HINDUNILVR.NS","ITC.NS","NESTLEIND.NS","BRITANNIA.NS","DABUR.NS",
+    "MARICO.NS","GODREJCP.NS","EMAMILTD.NS","COLPAL.NS","TATACONSUM.NS",
+    "VBL.NS","RADICO.NS","UNITDSPR.NS","UBL.NS","PGHH.NS","GILLETTE.NS",
+
+    # ══ CONSUMER DISCRETIONARY / RETAIL ════════════════════════════════════
+    "TITAN.NS","DMART.NS","TRENT.NS","JUBLFOOD.NS","DEVYANI.NS",
+    "WESTLIFE.NS","SAPPHIRE.NS","PAGEIND.NS","MANYAVAR.NS",
+    "RELAXO.NS","BATA.NS","SHOPERSTOP.NS","VMART.NS","VSTIL.NS",
+    "WHIRLPOOL.NS","VOLTAS.NS","HAVELLS.NS","CROMPTON.NS","ORIENT.NS",
+
+    # ══ AUTOMOBILES & AUTO COMPONENTS ═════════════════════════════════════
+    "MARUTI.NS","TATAMOTORS.NS","M&M.NS","EICHERMOT.NS","BAJAJ-AUTO.NS",
+    "HEROMOTOCO.NS","TVSMOTOR.NS","ASHOKLEY.NS","ESCORTS.NS","OLECTRA.NS",
+    "BALKRISIND.NS","APOLLOTYRE.NS","CEATLTD.NS","MOTHERSON.NS",
+    "BOSCHLTD.NS","BHARATFORG.NS","SUNDRMFAST.NS","ENDURANCE.NS",
+    "EXIDEIND.NS","AMARAJABAT.NS","SUBROS.NS","SUPRAJIT.NS",
+
+    # ══ OIL & GAS / ENERGY ════════════════════════════════════════════════
+    "RELIANCE.NS","ONGC.NS","IOC.NS","BPCL.NS","GAIL.NS",
+    "HINDPETRO.NS","PETRONET.NS","MGL.NS","IGL.NS","GSPL.NS","ATGL.NS",
+    "CASTROLIND.NS","MRPL.NS","CHENNPETRO.NS",
+
+    # ══ POWER & RENEWABLES ════════════════════════════════════════════════
+    "NTPC.NS","POWERGRID.NS","ADANIGREEN.NS","TATAPOWER.NS","CESC.NS",
+    "TORNTPOWER.NS","SJVN.NS","NHPC.NS","JPPOWER.NS","JSPL.NS",
+    "SUZLON.NS","GREENKO.NS","RPOWER.NS","INOXWIND.NS",
+
+    # ══ METALS & MINING ════════════════════════════════════════════════════
+    "TATASTEEL.NS","JSWSTEEL.NS","HINDALCO.NS","VEDL.NS","SAIL.NS",
+    "COALINDIA.NS","NMDC.NS","NATIONALUM.NS","MOIL.NS","HINDZINC.NS",
+    "APLAPOLLO.NS","RATNAMANI.NS","JINDALSTEL.NS","WELCORP.NS",
+
+    # ══ CEMENT ════════════════════════════════════════════════════════════
+    "ULTRACEMCO.NS","GRASIM.NS","AMBUJACEM.NS","ACC.NS","SHREECEM.NS",
+    "RAMCOCEM.NS","JKCEMENT.NS","DALMIA.NS","JKLAKSHMI.NS","PRISM.NS",
+    "HEIDELBERG.NS","BIRLACORPN.NS","NUVOCO.NS",
+
+    # ══ CHEMICALS ═════════════════════════════════════════════════════════
+    "PIDILITIND.NS","DEEPAKNTR.NS","ALKYLAMINE.NS","AARTI.NS","VINATI.NS",
+    "SRF.NS","GALAXYSURF.NS","PCBL.NS","FINEORG.NS","NAVINFLUOR.NS",
+    "TATACHEM.NS","GHCL.NS","GUJFLUORO.NS","CLEAN.NS","ATUL.NS",
+    "NOCIL.NS","BALCHEMIND.NS","THIRUMALCHM.NS",
+
+    # ══ PAINTS & COATINGS ═════════════════════════════════════════════════
+    "ASIANPAINT.NS","BERGEPAINT.NS","KANSAINER.NS","AKZONOBEL.NS",
+    "INDIGO.NS","SHALPAINTS.NS",
+
+    # ══ CAPITAL GOODS / INDUSTRIALS ════════════════════════════════════════
+    "LT.NS","SIEMENS.NS","ABB.NS","BHEL.NS","THERMAX.NS",
+    "CUMMINSIND.NS","GRINDWELL.NS","TIMKEN.NS","SKF.NS","SCHAEFFLER.NS",
+    "BEL.NS","BEML.NS","ELGIEQUIP.NS","KENNAMETAL.NS","AZIMUT.NS",
+
+    # ══ ELECTRICAL / WIRES & CABLES ════════════════════════════════════════
+    "POLYCAB.NS","KEIINDS.NS","FINOLEX.NS","HAVELLS.NS","VGUARD.NS",
+
+    # ══ DEFENCE & AEROSPACE ════════════════════════════════════════════════
+    "HAL.NS","COCHINSHIP.NS","MAZAGON.NS","GRSE.NS","MTAR.NS",
+    "DATAPATTNS.NS","PARAS.NS","IDEAFORGE.NS",
+
+    # ══ INFRASTRUCTURE / CONSTRUCTION ══════════════════════════════════════
+    "ADANIPORTS.NS","ADANIENT.NS","GMRINFRA.NS","IRB.NS","SADBHAV.NS",
+    "NCC.NS","KPITL.NS","PNCINFRA.NS","HG-INFRA.NS","RVNL.NS","IRCON.NS",
+
+    # ══ REAL ESTATE ════════════════════════════════════════════════════════
+    "DLF.NS","GODREJPROP.NS","OBEROIRLTY.NS","PRESTIGE.NS","SOBHA.NS",
+    "BRIGADE.NS","PHOENIXLTD.NS","MACROTECH.NS","SUNTECK.NS","KOLTEPATIL.NS",
+
+    # ══ LOGISTICS & AVIATION ════════════════════════════════════════════════
+    "IRCTC.NS","INDIGO.NS","BLUEDART.NS","DELHIVERY.NS","CONCOR.NS",
+    "GATI.NS","TCI.NS","MAHLOG.NS","SPICEJET.NS",
+
+    # ══ TELECOM ════════════════════════════════════════════════════════════
+    "BHARTIARTL.NS","IDEA.NS","TATACOMM.NS","HFCL.NS","TEJAS.NS",
+
+    # ══ MEDIA & ENTERTAINMENT ══════════════════════════════════════════════
+    "ZEEL.NS","SUNTV.NS","PVRINOX.NS","SAREGAMA.NS","TIPS.NS","NAVNETEDUL.NS",
+
+    # ══ HOTELS & HOSPITALITY ════════════════════════════════════════════════
+    "EIHOTEL.NS","INDHOTEL.NS","CHALET.NS","LEMON.NS","MAHINDRAHOLIDAYS.NS",
+
+    # ══ TEXTILES & APPAREL ══════════════════════════════════════════════════
+    "RAYMOND.NS","ARVIND.NS","WELSPUN.NS","TRIDENT.NS","VARDHMAN.NS",
+    "KTEX.NS","NITIN.NS","GRASIM.NS",
+
+    # ══ AGRICULTURE & FOOD PROCESSING ══════════════════════════════════════
+    "KRBL.NS","LTFOODS.NS","AVANTIFEED.NS","WATERBASE.NS","GODREJAGRO.NS",
+    "RUCHI.NS","PATANJALIFOODS.NS","KSEEDS.NS","DHANUKA.NS","PIIND.NS",
+
+    # ══ PSU / DIVERSIFIED ════════════════════════════════════════════════
+    "HUDCO.NS","IRFC.NS","RECLTD.NS","IDBI.NS","IFCI.NS",
+    "MMTC.NS","MSTC.NS","NBCC.NS","RAILTEL.NS","RITES.NS",
 ]
 
 SECTOR_ETFS = {
@@ -85,7 +209,7 @@ INITIAL_CAPITAL = 1_000_000   # ₹10 lakhs
 MAX_POSITION_PCT = 0.08        # max 8% per position
 STOP_LOSS_PCT    = 0.07        # 7% stop loss
 TAKE_PROFIT_PCT  = 0.20        # 20% take profit
-MAX_POSITIONS    = 20          # max concurrent positions
+MAX_POSITIONS    = 25          # max concurrent positions
 
 # ---------------------------------------------------------------------------
 # Data Layer
