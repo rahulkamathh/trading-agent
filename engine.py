@@ -281,10 +281,13 @@ TAKE_PROFIT_PCT  = 0.20        # 20% take profit
 MAX_POSITIONS    = 25          # max concurrent positions
 
 # ── Execution guard-rails ──────────────────────────────────────────────────
-MIN_BUY_STRENGTH     = 65      # signal strength threshold to open a position (0–100)
-MIN_SELL_STRENGTH    = 60      # signal strength threshold to close on a SELL signal
-COOLDOWN_DAYS        = 3       # days to wait before re-buying a recently exited ticker
-MIN_HOLD_DAYS        = 1       # don't exit a position the same day it was entered
+MIN_BUY_STRENGTH = 65   # signal strength threshold to open a position (0–100)
+COOLDOWN_DAYS    = 3    # days before re-buying a ticker that was stopped out / took profit
+MIN_HOLD_DAYS    = 1    # min days before a position can be exited (even by stop-loss signal flip)
+#
+# EXIT POLICY: positions close ONLY via stop-loss (−7%) or take-profit (+20%).
+# Strategy SELL signals are generated and displayed on the dashboard but
+# never trigger an actual exit — they're informational only.
 
 # ---------------------------------------------------------------------------
 # Data Layer
@@ -1566,22 +1569,14 @@ class TradingAgent:
             if trade:
                 executed.append(trade)
 
-        # ── Execute SELL signals for held positions ────────────────────────
-        # Only sell on signal if conviction is high enough; stop-loss/take-profit
-        # are handled separately above via check_stops() and are always honoured.
-        for ticker, agg in sell_agg.items():
-            if ticker not in self.portfolio.state["positions"]:
-                continue
-            composite = sum(agg["strengths"]) / len(agg["strengths"])
-            if composite < MIN_SELL_STRENGTH:
-                logger.debug(
-                    f"SKIP SELL {ticker} — strength {composite:.1f} < {MIN_SELL_STRENGTH}"
-                )
-                continue
-            price = agg["price"] or DataFetcher.get_current_price(ticker)
-            trade = self.portfolio.execute_sell(ticker, price, "SIGNAL_EXIT")
-            if trade:
-                executed.append(trade)
+        # ── Signal-based SELL: intentionally disabled ─────────────────────
+        # Positions are closed ONLY by price-based rules (stop-loss / take-profit)
+        # via check_stops() above.  Strategy SELL signals are logged but never
+        # trigger an exit — an SMA crossover or RSI flip on a stock we own for a
+        # completely different reason is noise, not a decision.
+        # sell_agg is computed but unused here; keeping it available for future
+        # dashboard display ("strategies saying sell on X that we hold").
+        _ = sell_agg  # suppress unused-variable warnings
 
         elapsed = round(time.time() - t0, 1)
         summary = {
