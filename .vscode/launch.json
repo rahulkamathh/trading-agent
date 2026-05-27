@@ -1,0 +1,25 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "▶ Run Trading Agent",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/app.py",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "env": {
+        "FLASK_ENV": "development",
+        "FLASK_DEBUG": "0"
+      }
+    },
+    {
+      "name": "🔬 Debug Engine (no Flask)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "engine",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    }
+  ]
+}

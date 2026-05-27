@@ -1,0 +1,18 @@
+{
+  "recommendations": [
+    "ms-python.python",
+    "ms-python.black-formatter",
+    "ms-python.isort",
+    "ms-python.pylint",
+    "ms-python.debugpy",
+    "ms-toolsai.jupyter",
+    "mechatroner.rainbow-csv",
+    "bradlc.vscode-tailwindcss",
+    "esbenp.prettier-vscode",
+    "formulahendry.auto-rename-tag",
+    "christian-kohler.path-intellisense",
+    "PKief.material-icon-theme",
+    "github.copilot",
+    "anthropic.claude-code"
+  ]
+}
