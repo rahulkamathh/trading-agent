@@ -1,0 +1,42 @@
+{
+  "folders": [
+    {
+      "name": "🇮🇳 Indian Trading Agent",
+      "path": "."
+    }
+  ],
+  "settings": {
+    "workbench.colorTheme": "Dark Modern",
+    "workbench.iconTheme": "material-icon-theme",
+    "python.defaultInterpreterPath": "python3",
+    "editor.fontSize": 14,
+    "editor.tabSize": 4,
+    "editor.formatOnSave": true,
+    "terminal.integrated.fontSize": 13,
+    "explorer.fileNesting.enabled": true,
+    "explorer.fileNesting.patterns": {
+      "app.py": "engine.py",
+      "requirements.txt": "run.sh, .gitignore, CLAUDE.md"
+    }
+  },
+  "extensions": {
+    "recommendations": [
+      "ms-python.python",
+      "ms-python.black-formatter",
+      "ms-python.debugpy",
+      "anthropic.claude-code"
+    ]
+  },
+  "launch": {
+    "configurations": [
+      {
+        "name": "▶ Run Trading Agent",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/app.py",
+        "console": "integratedTerminal",
+        "justMyCode": true
+      }
+    ]
+  }
+}

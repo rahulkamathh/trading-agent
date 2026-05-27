@@ -3,7 +3,6 @@
 #  Indian Institutional Trading Agent — Launcher
 # ─────────────────────────────────────────────
 set -e
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
@@ -13,16 +12,26 @@ echo "  🇮🇳  Indian Institutional Trading Agent"
 echo "================================================"
 echo ""
 
-# Check Python
+# ── 1. Ensure Python 3 is available ──────────────
 if ! command -v python3 &>/dev/null; then
-  echo "❌  python3 not found. Please install Python 3.9+."
+  echo "❌  python3 not found. Install Python 3.9+ and try again."
   exit 1
 fi
 
-# Install dependencies if needed
+# ── 2. Create venv if it doesn't exist ───────────
+if [ ! -f ".venv/bin/activate" ]; then
+  echo "🔧  Creating virtual environment (.venv)…"
+  python3 -m venv .venv
+fi
+
+# ── 3. Activate venv ─────────────────────────────
+# shellcheck disable=SC1091
+source .venv/bin/activate
+
+# ── 4. Install / upgrade dependencies ────────────
 echo "📦  Checking dependencies…"
-pip3 install -r requirements.txt -q --break-system-packages 2>/dev/null || \
-pip3 install -r requirements.txt -q 2>/dev/null || true
+pip install --upgrade pip -q
+pip install -r requirements.txt -q
 
 echo ""
 echo "✅  Dependencies ready"
@@ -32,4 +41,5 @@ echo ""
 echo "Press Ctrl+C to stop."
 echo ""
 
-python3 app.py
+# ── 5. Run ───────────────────────────────────────
+python app.py

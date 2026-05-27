@@ -1,5 +1,5 @@
 {
-  "python.defaultInterpreterPath": "python3",
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
   "python.terminal.activateEnvironment": true,
   "[python]": {
     "editor.formatOnSave": true,
@@ -18,7 +18,8 @@
   "files.exclude": {
     "**/__pycache__": true,
     "**/*.pyc": true,
-    "**/.DS_Store": true
+    "**/.DS_Store": true,
+    ".venv": true
   },
   "terminal.integrated.defaultProfile.osx": "zsh",
   "terminal.integrated.fontSize": 13,
@@ -31,9 +32,10 @@
   },
   "explorer.fileNesting.enabled": true,
   "explorer.fileNesting.patterns": {
-    "app.py": "engine.py, run.sh, CLAUDE.md",
-    "requirements.txt": ".gitignore"
+    "app.py": "engine.py",
+    "requirements.txt": "run.sh, .gitignore, CLAUDE.md, pyrightconfig.json, setup_venv.sh"
   },
   "python.analysis.typeCheckingMode": "basic",
-  "python.analysis.autoImportCompletions": true
+  "python.analysis.autoImportCompletions": true,
+  "python.analysis.extraPaths": ["${workspaceFolder}"]
 }

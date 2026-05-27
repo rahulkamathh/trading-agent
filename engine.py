@@ -47,6 +47,28 @@ SECTOR_ETFS = {
     "Gold":      "GOLDBEES.NS",
 }
 
+# Small/micro cap universe — high upside potential, lower market cap
+PENNY_UNIVERSE = [
+    # Renewables & Power
+    "SUZLON.NS", "NHPC.NS", "SJVN.NS", "TATAPOWER.NS", "JPPOWER.NS",
+    "CESC.NS", "NTPC.NS", "POWERGRID.NS",
+    # PSU / Infrastructure
+    "RVNL.NS", "IRCON.NS", "IRFC.NS", "HUDCO.NS", "RECLTD.NS",
+    "PFC.NS", "BEML.NS", "BEL.NS",
+    # Metals & Mining
+    "SAIL.NS", "NMDC.NS", "NATIONALUM.NS", "MOIL.NS", "HINDZINC.NS",
+    # Defence & Aerospace
+    "HAL.NS", "COCHINSHIP.NS", "MAZAGON.NS", "GRSE.NS",
+    # Banking & Finance (turnaround plays)
+    "YESBANK.NS", "IDFCFIRSTB.NS", "FEDERALBNK.NS", "BANDHANBNK.NS",
+    # Chemicals & Pharma
+    "LAURUS.NS", "GRANULES.NS", "SYNGENE.NS", "PCBL.NS",
+    # Telecom
+    "IDEA.NS",
+    # Others
+    "GMRINFRA.NS", "ADANIGREEN.NS",
+]
+
 INDEX_TICKERS = {
     "Nifty50":   "^NSEI",
     "BankNifty": "^NSEBANK",
@@ -63,7 +85,7 @@ INITIAL_CAPITAL = 1_000_000   # ₹10 lakhs
 MAX_POSITION_PCT = 0.08        # max 8% per position
 STOP_LOSS_PCT    = 0.07        # 7% stop loss
 TAKE_PROFIT_PCT  = 0.20        # 20% take profit
-MAX_POSITIONS    = 15          # max concurrent positions
+MAX_POSITIONS    = 20          # max concurrent positions
 
 # ---------------------------------------------------------------------------
 # Data Layer
@@ -109,6 +131,15 @@ class DataFetcher:
 
     @classmethod
     def get_current_price(cls, ticker: str) -> float:
+        # Prefer live Angel One feed when available
+        try:
+            from angelone_feed import get_feed  # pylint: disable=import-outside-toplevel
+            live_price = get_feed().get_price(ticker)
+            if live_price and live_price > 0:
+                return live_price
+        except ImportError:
+            pass
+        # Fallback: yfinance (delayed / EOD)
         df = cls.fetch(ticker, period="5d")
         if df.empty:
             return 0.0
@@ -333,6 +364,302 @@ class MultiFactorStrategy:
                 r["signal"]   = "SELL"
                 r["strength"] = max(0, int(40 + r["score"] * 100))
         return [r for r in records if r["signal"] != "NEUTRAL"]
+
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Strategy 4b: SMA Crossover (Trend Following)
+# ---------------------------------------------------------------------------
+
+class SMAStrategy:
+    """
+    Simple Moving Average trend system.
+    - Golden cross (50>200) or full alignment (price>20>50>200) → BUY
+    - Death cross (50<200) or full inversion → SELL
+    Strength scales with how cleanly the SMA stack is aligned.
+    """
+    name       = "SMA Crossover"
+    short_name = "SMA"
+
+    def generate_signals(self, data: dict) -> list:
+        signals = []
+        for ticker, df in data.items():
+            if len(df) < 210:
+                continue
+            close = df["Close"].squeeze()
+            sma20  = close.rolling(20).mean()
+            sma50  = close.rolling(50).mean()
+            sma200 = close.rolling(200).mean()
+
+            curr      = float(close.iloc[-1])
+            s20, s50, s200       = float(sma20.iloc[-1]),  float(sma50.iloc[-1]),  float(sma200.iloc[-1])
+            s50p, s200p          = float(sma50.iloc[-2]),  float(sma200.iloc[-2])
+
+            golden_cross = s50p <= s200p and s50 > s200
+            death_cross  = s50p >= s200p and s50 < s200
+
+            if   curr > s20 > s50 > s200: sig, strength, score = "BUY",  90, (curr-s200)/s200
+            elif curr < s20 < s50 < s200: sig, strength, score = "SELL", 90, -(s200-curr)/s200
+            elif golden_cross:             sig, strength, score = "BUY",  85, (s50-s200)/s200
+            elif death_cross:              sig, strength, score = "SELL", 85, -(s200-s50)/s200
+            elif curr > s50 > s200:        sig, strength, score = "BUY",  65, (curr-s50)/s50
+            elif curr < s50 < s200:        sig, strength, score = "SELL", 65, -(s50-curr)/s50
+            else:
+                continue
+
+            signals.append({
+                "ticker":   ticker, "signal": sig, "price": round(curr, 2),
+                "score":    round(score, 4), "rsi": 50.0,
+                "strategy": self.short_name, "strength": strength,
+                "sma20": round(s20,2), "sma50": round(s50,2), "sma200": round(s200,2),
+            })
+        return signals
+
+
+# ---------------------------------------------------------------------------
+# Strategy 4c: Fibonacci Retracement
+# ---------------------------------------------------------------------------
+
+class FibonacciStrategy:
+    """
+    Auto-detects 52-week swing high/low, computes Fib retracement levels
+    (23.6%, 38.2%, 50%, 61.8%, 78.6%).
+    BUY when price bounces off deep support fib (≥50%) in uptrend.
+    SELL when price hits shallow resistance fib (≤38.2%) in downtrend.
+    Only triggers when price is within 2% of a key Fib level.
+    """
+    name       = "Fibonacci Retracement"
+    short_name = "FIBONACCI"
+    FIB_LEVELS = [0.236, 0.382, 0.500, 0.618, 0.786]
+    TOLERANCE  = 0.025   # 2.5% proximity to trigger
+
+    def generate_signals(self, data: dict) -> list:
+        signals = []
+        for ticker, df in data.items():
+            if len(df) < 252:
+                continue
+            year_df    = df.tail(252)
+            swing_high = float(year_df["High"].max())
+            swing_low  = float(year_df["Low"].min())
+            rang       = swing_high - swing_low
+            if rang < 1:
+                continue
+
+            curr     = float(df["Close"].iloc[-1])
+            sma200   = float(df["Close"].rolling(200).mean().iloc[-1])
+            uptrend  = curr > sma200
+
+            # Fib levels from high to low (retracement from high)
+            fib_prices = {lvl: swing_high - lvl * rang for lvl in self.FIB_LEVELS}
+
+            for lvl, fp in fib_prices.items():
+                if abs(curr - fp) / fp > self.TOLERANCE:
+                    continue
+                # BUY: near deep support in uptrend
+                if uptrend and lvl >= 0.382 and curr >= fp * 0.99:
+                    sig      = "BUY"
+                    strength = min(95, int(50 + lvl * 60))
+                    score    = lvl
+                # SELL: near resistance in downtrend
+                elif not uptrend and lvl <= 0.382 and curr <= fp * 1.01:
+                    sig      = "SELL"
+                    strength = min(85, int(50 + (1 - lvl) * 50))
+                    score    = -lvl
+                else:
+                    continue
+
+                signals.append({
+                    "ticker":     ticker, "signal": sig, "price": round(curr, 2),
+                    "score":      round(score, 4), "rsi": 50.0,
+                    "strategy":   self.short_name, "strength": strength,
+                    "fib_level":  lvl, "fib_price": round(fp, 2),
+                    "swing_high": round(swing_high, 2), "swing_low": round(swing_low, 2),
+                })
+                break   # only the closest level
+        return signals
+
+
+# ---------------------------------------------------------------------------
+# Strategy 4d: RSI Divergence
+# ---------------------------------------------------------------------------
+
+class RSIDivergenceStrategy:
+    """
+    Detects RSI divergence over a rolling 20-day window:
+    - Bullish: price makes lower low BUT RSI makes higher low → exhausted sellers → BUY
+    - Bearish: price makes higher high BUT RSI makes lower high → exhausted buyers → SELL
+    Also catches extreme oversold/overbought with trend confirmation.
+    """
+    name       = "RSI Divergence"
+    short_name = "RSI_DIV"
+
+    def generate_signals(self, data: dict) -> list:
+        signals = []
+        for ticker, df in data.items():
+            df = add_indicators(df)
+            if len(df) < 50 or "rsi" not in df.columns:
+                continue
+
+            close    = df["Close"].squeeze()
+            rsi_s    = df["rsi"]
+            window   = 20
+
+            # Recent window for divergence detection
+            price_w = close.iloc[-window:]
+            rsi_w   = rsi_s.iloc[-window:]
+
+            curr_price = float(close.iloc[-1])
+            curr_rsi   = float(rsi_s.iloc[-1])
+
+            # Price extremes in window
+            price_min_idx = price_w.idxmin()
+            price_max_idx = price_w.idxmax()
+
+            # Bullish divergence: price at new low but RSI higher than its value at price low
+            price_low  = float(price_w.min())
+            rsi_at_low = float(rsi_w[price_min_idx])
+
+            if (curr_price <= price_low * 1.01           # near low
+                    and curr_rsi > rsi_at_low + 5        # RSI higher than it was at price low
+                    and curr_rsi < 45):                  # still in bearish RSI zone (room to rally)
+                signals.append({
+                    "ticker":   ticker, "signal": "BUY", "price": round(curr_price, 2),
+                    "score":    (curr_rsi - rsi_at_low) / 100,
+                    "rsi":      round(curr_rsi, 1),
+                    "strategy": self.short_name, "strength": min(90, int(50 + curr_rsi)),
+                })
+                continue
+
+            # Bearish divergence: price at new high but RSI lower
+            price_high  = float(price_w.max())
+            rsi_at_high = float(rsi_w[price_max_idx])
+
+            if (curr_price >= price_high * 0.99
+                    and curr_rsi < rsi_at_high - 5
+                    and curr_rsi > 55):
+                signals.append({
+                    "ticker":   ticker, "signal": "SELL", "price": round(curr_price, 2),
+                    "score":    -(rsi_at_high - curr_rsi) / 100,
+                    "rsi":      round(curr_rsi, 1),
+                    "strategy": self.short_name, "strength": min(90, int(50 + (100-curr_rsi))),
+                })
+        return signals
+
+
+# ---------------------------------------------------------------------------
+# Strategy 4e: Bollinger Squeeze (Volatility Breakout)
+# ---------------------------------------------------------------------------
+
+class BollingerSqueezeStrategy:
+    """
+    Bollinger Band squeeze + breakout:
+    - Squeeze: BB width narrows to 6-month low (volatility contraction)
+    - After squeeze resolves, price breaks above upper band → BUY
+    - After squeeze resolves, price breaks below lower band → SELL
+    High conviction because low-volatility periods are followed by big moves.
+    """
+    name       = "Bollinger Squeeze"
+    short_name = "BB_SQUEEZE"
+
+    def generate_signals(self, data: dict) -> list:
+        signals = []
+        for ticker, df in data.items():
+            df = add_indicators(df)
+            if len(df) < 130 or "bb_upper" not in df.columns:
+                continue
+
+            close    = df["Close"].squeeze()
+            bb_upper = df["bb_upper"]
+            bb_lower = df["bb_lower"]
+            bb_mid   = df["bb_mid"]
+
+            curr        = float(close.iloc[-1])
+            band_width  = (bb_upper - bb_lower) / bb_mid
+            bw_now      = float(band_width.iloc[-1])
+            bw_6m_min   = float(band_width.iloc[-126:].min())
+            bw_6m_max   = float(band_width.iloc[-126:].max())
+
+            # Squeeze: current width near 6m minimum
+            in_squeeze  = bw_now <= bw_6m_min * 1.10
+
+            # Breakout direction
+            broke_up    = curr > float(bb_upper.iloc[-1]) and not in_squeeze
+            broke_down  = curr < float(bb_lower.iloc[-1]) and not in_squeeze
+
+            if not broke_up and not broke_down:
+                continue
+
+            # Squeeze must have existed recently (within last 10 bars)
+            recent_squeeze = (band_width.iloc[-10:] <= bw_6m_min * 1.15).any()
+            if not recent_squeeze:
+                continue
+
+            sig      = "BUY" if broke_up else "SELL"
+            strength = min(95, int(70 + (1 - bw_now / bw_6m_max) * 30))
+            score    = (curr - float(bb_mid.iloc[-1])) / float(bb_mid.iloc[-1])
+
+            signals.append({
+                "ticker":   ticker, "signal": sig, "price": round(curr, 2),
+                "score":    round(score, 4), "rsi": float(df["rsi"].iloc[-1]) if "rsi" in df.columns else 50.0,
+                "strategy": self.short_name, "strength": strength,
+                "bb_width": round(bw_now, 4),
+            })
+        return signals
+
+
+# ---------------------------------------------------------------------------
+# Strategy 4f: Volume Breakout
+# ---------------------------------------------------------------------------
+
+class VolumeBreakoutStrategy:
+    """
+    Volume-confirmed price breakout from consolidation:
+    - Price breaks 20-day high/low on volume ≥ 2× 20-day average
+    - Ensures the move is institutional, not a random spike
+    """
+    name       = "Volume Breakout"
+    short_name = "VOL_BREAK"
+
+    def generate_signals(self, data: dict) -> list:
+        signals = []
+        for ticker, df in data.items():
+            if len(df) < 25 or "Volume" not in df.columns:
+                continue
+
+            close   = df["Close"].squeeze()
+            vol     = df["Volume"].squeeze()
+            curr    = float(close.iloc[-1])
+            curr_v  = float(vol.iloc[-1])
+
+            high_20 = float(close.iloc[-21:-1].max())
+            low_20  = float(close.iloc[-21:-1].min())
+            avg_v20 = float(vol.iloc[-21:-1].mean())
+
+            if avg_v20 <= 0:
+                continue
+            vol_ratio = curr_v / avg_v20
+
+            if vol_ratio < 2.0:   # require 2× avg volume
+                continue
+
+            broke_up   = curr > high_20
+            broke_down = curr < low_20
+
+            if not broke_up and not broke_down:
+                continue
+
+            sig      = "BUY" if broke_up else "SELL"
+            strength = min(95, int(60 + min(vol_ratio, 5) * 7))
+            score    = (curr - high_20) / high_20 if broke_up else (low_20 - curr) / low_20
+
+            signals.append({
+                "ticker":    ticker, "signal": sig, "price": round(curr, 2),
+                "score":     round(score, 4),
+                "rsi":       float(df["rsi"].iloc[-1]) if "rsi" in df.columns else 50.0,
+                "strategy":  self.short_name, "strength": strength,
+                "vol_ratio": round(vol_ratio, 1),
+            })
+        return signals
 
 
 # ---------------------------------------------------------------------------
@@ -575,28 +902,279 @@ class Portfolio:
 
 
 # ---------------------------------------------------------------------------
+# Strategy 4g: Market Structure (HH / HL / LH / LL)
+# ---------------------------------------------------------------------------
+
+class MarketStructureStrategy:
+    """
+    Detects pivot-based market structure from the analyst's Pine Script logic:
+      - Higher High (HH) + Higher Low (HL) → Bullish trend → BUY
+      - Lower Low (LL)  + Lower High (LH)  → Bearish trend → SELL
+      - Mixed / neutral                     → no signal
+
+    Pivot is the local extreme over ±pivot_length bars.
+    Looks at the last 4 confirmed pivots (2 highs + 2 lows) to judge
+    whether price structure is improving or deteriorating.
+
+    Signal strength scales with how many consecutive confirmations exist:
+      1 confirmation  → 0.55
+      2 confirmations → 0.65
+      3+ confirmations → 0.75
+    """
+
+    name       = "Market Structure"
+    short_name = "MKT_STRUCT"
+
+    PIVOT_LENGTH   = 5   # bars left & right (same default as Pine Script)
+    MIN_PIVOTS     = 4   # need at least 2 highs + 2 lows to judge structure
+
+    def _find_pivots(self, series: pd.Series, kind: str) -> list[tuple]:
+        """
+        Return list of (bar_index, price) for confirmed pivot highs or lows.
+        A pivot high: series[i] == max over [i-L .. i+L]
+        A pivot low:  series[i] == min over [i-L .. i+L]
+        Only returns bars where both sides have at least PIVOT_LENGTH bars.
+        """
+        L = self.PIVOT_LENGTH
+        pivots = []
+        vals = series.values
+        for i in range(L, len(vals) - L):
+            window = vals[i - L: i + L + 1]
+            if kind == "high" and vals[i] == max(window):
+                pivots.append((i, float(vals[i])))
+            elif kind == "low" and vals[i] == min(window):
+                pivots.append((i, float(vals[i])))
+        return pivots
+
+    def _structure_label(self, pivots_high: list, pivots_low: list) -> str:
+        """
+        Determine market structure from the last 2 confirmed highs and 2 lows.
+        Returns: "Bullish", "Bearish", "Consolidation", or "Neutral".
+        """
+        if len(pivots_high) < 2 or len(pivots_low) < 2:
+            return "Neutral"
+        last_hh, prev_hh = pivots_high[-1][1], pivots_high[-2][1]
+        last_ll, prev_ll = pivots_low[-1][1],  pivots_low[-2][1]
+        hh_up = last_hh > prev_hh   # Higher High
+        hl_up = last_ll > prev_ll   # Higher Low
+        ll_dn = last_ll < prev_ll   # Lower Low
+        lh_dn = last_hh < prev_hh   # Lower High
+        if hh_up and hl_up:
+            return "Bullish"
+        if ll_dn and lh_dn:
+            return "Bearish"
+        return "Consolidation"
+
+    def _count_consecutive(self, pivots: list, kind: str) -> int:
+        """
+        Count how many consecutive pivot pairs confirm the direction.
+        kind: "up" (each pivot > prev) or "down" (each pivot < prev)
+        """
+        count = 0
+        for i in range(len(pivots) - 1, 0, -1):
+            cur = pivots[i][1]
+            prev = pivots[i - 1][1]
+            if kind == "up"   and cur > prev: count += 1
+            elif kind == "down" and cur < prev: count += 1
+            else: break
+        return count
+
+    def generate_signals(self, stock_data: dict) -> list:
+        signals = []
+        now_str = datetime.now().isoformat()
+
+        for ticker, df in stock_data.items():
+            if df is None or len(df) < self.PIVOT_LENGTH * 2 + 10:
+                continue
+            try:
+                ph = self._find_pivots(df["High"], "high")
+                pl = self._find_pivots(df["Low"],  "low")
+
+                if len(ph) < 2 or len(pl) < 2:
+                    continue
+
+                structure = self._structure_label(ph, pl)
+                if structure not in ("Bullish", "Bearish"):
+                    continue
+
+                # Count consecutive confirmations for strength scaling
+                if structure == "Bullish":
+                    hh_count = self._count_consecutive(ph, "up")
+                    hl_count = self._count_consecutive(pl, "up")
+                    consec   = min(hh_count, hl_count)
+                    action   = "BUY"
+                    reason   = (
+                        f"HH={ph[-1][1]:.2f}>{ph[-2][1]:.2f}, "
+                        f"HL={pl[-1][1]:.2f}>{pl[-2][1]:.2f} "
+                        f"({consec}× confirmed)"
+                    )
+                else:  # Bearish
+                    lh_count = self._count_consecutive(ph, "down")
+                    ll_count = self._count_consecutive(pl, "down")
+                    consec   = min(lh_count, ll_count)
+                    action   = "SELL"
+                    reason   = (
+                        f"LH={ph[-1][1]:.2f}<{ph[-2][1]:.2f}, "
+                        f"LL={pl[-1][1]:.2f}<{pl[-2][1]:.2f} "
+                        f"({consec}× confirmed)"
+                    )
+
+                strength = min(0.55 + consec * 0.10, 0.80)
+
+                current_price = float(df["Close"].iloc[-1])
+                is_penny = ticker in set(PENNY_UNIVERSE)
+
+                signals.append({
+                    "ticker":   ticker,
+                    "action":   action,
+                    "strength": round(strength, 3),
+                    "strategy": self.name,
+                    "reason":   reason,
+                    "price":    round(current_price, 2),
+                    "time":     now_str,
+                    "is_penny": is_penny,
+                })
+
+            except Exception as e:
+                logger.debug(f"MarketStructure error {ticker}: {e}")
+
+        logger.info(f"MarketStructure: {len(signals)} signals")
+        return signals
+
+
+# ---------------------------------------------------------------------------
+# Strategy 5: Telegram Signal Intelligence
+# ---------------------------------------------------------------------------
+
+class TelegramSignalStrategy:
+    """
+    Converts high-scoring Telegram group signals into trading signals.
+    Only uses groups that have:
+      - status == "active"
+      - signals_evaluated >= MIN_EVALUATED_FOR_SCORE (10)
+      - score >= MIN_GROUP_SCORE (0.55)
+    Signal strength is proportional to the group's composite score.
+    """
+    name       = "Telegram Signals"
+    short_name = "TELEGRAM"
+
+    MIN_GROUP_SCORE   = 0.55
+    MIN_EVALUATED     = 10
+    MAX_SIGNAL_AGE_H  = 72   # only use signals received in the last 72 hours
+
+    def generate_signals(self) -> list:
+        try:
+            from telegram_agent import get_telegram_agent  # pylint: disable=import-outside-toplevel
+            agent = get_telegram_agent()
+            if not agent.is_configured():
+                return []
+
+            # Build map of high-quality active groups
+            good_groups = {
+                str(g["id"]): g
+                for g in agent.get_groups()
+                if g.get("status") == "active"
+                and g.get("signals_evaluated", 0) >= self.MIN_EVALUATED
+                and g.get("score", 0) >= self.MIN_GROUP_SCORE
+            }
+            if not good_groups:
+                return []
+
+            # Recent pending signals from good groups only
+            cutoff = (datetime.now() - timedelta(hours=self.MAX_SIGNAL_AGE_H)).isoformat()
+            recent = [
+                s for s in agent.get_signals(limit=1000)
+                if s.get("status") == "pending"
+                and s.get("received_at", "") >= cutoff
+                and str(s.get("group_id", "")) in good_groups
+            ]
+
+            signals   = []
+            seen      = set()
+            for sig in recent:
+                parsed = sig.get("parsed", {})
+                ticker = parsed.get("ticker")
+                if not ticker or ticker in seen:
+                    continue
+                group    = good_groups.get(str(sig["group_id"]), {})
+                score    = group.get("score", 0.5)
+                strength = min(100, int(score * 110))   # scale 0-1 → ~0-100
+
+                signals.append({
+                    "ticker":      ticker,
+                    "signal":      parsed["direction"],
+                    "price":       DataFetcher.get_current_price(ticker),
+                    "score":       round(score, 4),
+                    "rsi":         50.0,
+                    "strategy":    self.short_name,
+                    "strength":    strength,
+                    "source":      sig.get("group_title", ""),
+                    "specificity": parsed.get("specificity", 0.3),
+                })
+                seen.add(ticker)
+
+            logger.info(f"TelegramSignalStrategy: {len(signals)} signals from {len(good_groups)} groups")
+            return signals
+
+        except Exception as e:
+            logger.warning(f"TelegramSignalStrategy error: {e}")
+            return []
+
+
+# ---------------------------------------------------------------------------
 # Signal Aggregator
 # ---------------------------------------------------------------------------
 
 class SignalAggregator:
 
     def __init__(self):
-        self.momentum   = MomentumStrategy()
-        self.mean_rev   = MeanReversionStrategy()
-        self.multifactor= MultiFactorStrategy()
-        self.sector_rot = SectorRotationStrategy()
+        self.momentum    = MomentumStrategy()
+        self.mean_rev    = MeanReversionStrategy()
+        self.multifactor = MultiFactorStrategy()
+        self.sector_rot  = SectorRotationStrategy()
+        self.sma         = SMAStrategy()
+        self.fibonacci   = FibonacciStrategy()
+        self.rsi_div     = RSIDivergenceStrategy()
+        self.bb_squeeze  = BollingerSqueezeStrategy()
+        self.vol_break   = VolumeBreakoutStrategy()
+        self.mkt_struct  = MarketStructureStrategy()
+        self.telegram    = TelegramSignalStrategy()
 
     def run(self) -> list:
         logger.info("Fetching market data…")
-        stock_data = DataFetcher.fetch_multi(NIFTY50_TICKERS, period="2y")
-        etf_data   = DataFetcher.fetch_multi(list(SECTOR_ETFS.values()), period="2y")
-        index_df   = DataFetcher.fetch("^NSEI", period="2y")
+        stock_data  = DataFetcher.fetch_multi(NIFTY50_TICKERS, period="2y")
+        penny_data  = DataFetcher.fetch_multi(PENNY_UNIVERSE,  period="2y")
+        etf_data    = DataFetcher.fetch_multi(list(SECTOR_ETFS.values()), period="2y")
+        index_df    = DataFetcher.fetch("^NSEI", period="2y")
+        all_data    = {**stock_data, **penny_data}   # combined universe
 
         all_signals = []
+        # ── Existing strategies (Nifty 50 universe) ──
         all_signals += self.momentum.generate_signals(stock_data)
         all_signals += self.mean_rev.generate_signals(stock_data)
         all_signals += self.multifactor.generate_signals(stock_data)
         all_signals += self.sector_rot.generate_signals(etf_data, index_df)
+        # ── New technical strategies (full universe incl. penny) ──
+        all_signals += self.sma.generate_signals(all_data)
+        all_signals += self.fibonacci.generate_signals(all_data)
+        all_signals += self.rsi_div.generate_signals(all_data)
+        all_signals += self.bb_squeeze.generate_signals(all_data)
+        all_signals += self.vol_break.generate_signals(all_data)
+        all_signals += self.mkt_struct.generate_signals(all_data)
+        # ── Intelligence layers ──
+        all_signals += self.telegram.generate_signals()
+        # ── News + commodity signals (imported lazily to avoid circular deps) ──
+        try:
+            from news_agent import get_news_agent  # pylint: disable=import-outside-toplevel
+            all_signals += get_news_agent().get_all_signals()
+        except Exception as e:
+            logger.warning(f"News agent signals skipped: {e}")
+        # ── Fundamental filter: re-score all signals ──
+        try:
+            from fundamental_analyzer import get_analyzer  # pylint: disable=import-outside-toplevel
+            all_signals = get_analyzer().rescore_signals(all_signals)
+        except Exception as e:
+            logger.warning(f"Fundamental rescoring skipped: {e}")
 
         # Save to file
         with open(SIGNALS_FILE, "w") as f:
@@ -698,11 +1276,15 @@ class TradingAgent:
         total_pnl   = unreal_pnl + real_pnl
         total_pnl_pct = (total_pnl / INITIAL_CAPITAL) * 100
 
-        # Equity history from trade log (reconstruct)
-        equity_curve = _build_equity_curve(trades)
+        # Equity curve: reconstruct from trades + append live value
+        equity_curve = _build_equity_curve(
+            trades,
+            current_value=total_val,
+            created_at=port.state.get("created_at"),
+        )
 
-        # Strategy performance
-        strat_perf = _calc_strategy_perf(trades)
+        # Strategy performance: closed P&L + unrealised from open positions
+        strat_perf = _calc_strategy_perf(trades, port.get_positions_display())
 
         return {
             "portfolio": {
@@ -729,9 +1311,14 @@ class TradingAgent:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _build_equity_curve(trades: list) -> list:
-    """Approximate equity curve from trade log."""
-    curve = [{"date": datetime.now().strftime("%Y-%m-%d"), "value": INITIAL_CAPITAL}]
+def _build_equity_curve(trades: list, current_value: float = None, created_at: str = None) -> list:
+    """
+    Equity curve from trade log + current live portfolio value.
+    Starts at the portfolio creation date. Always appends today's actual
+    total value (cash + unrealised positions) as the latest data point.
+    """
+    start_date = (created_at or datetime.now().isoformat())[:10]
+    curve = [{"date": start_date, "value": INITIAL_CAPITAL}]
     running = INITIAL_CAPITAL
     daily = {}
     for t in trades:
@@ -739,31 +1326,60 @@ def _build_equity_curve(trades: list) -> list:
         if t["pnl"] is not None:
             daily[date] = daily.get(date, 0) + t["pnl"]
     for date in sorted(daily):
+        if date == start_date:
+            continue   # skip duplicate start point
         running += daily[date]
         curve.append({"date": date, "value": round(running, 2)})
+    # Always end with the current live value (includes unrealised P&L)
+    if current_value is not None:
+        today = datetime.now().strftime("%Y-%m-%d")
+        if curve and curve[-1]["date"] == today:
+            curve[-1]["value"] = round(current_value, 2)
+        else:
+            curve.append({"date": today, "value": round(current_value, 2)})
     return curve
 
 
-def _calc_strategy_perf(trades: list) -> list:
+def _calc_strategy_perf(trades: list, positions: list = None) -> list:
+    """
+    Strategy P&L = closed trade P&L + unrealised P&L from open positions.
+    This way the chart is meaningful even when no positions have been closed yet.
+    """
     strats: dict = {}
+
+    # Closed trade P&L
     for t in trades:
         s = t.get("strategy", "UNKNOWN")
         if s not in strats:
-            strats[s] = {"trades": 0, "wins": 0, "pnl": 0.0}
+            strats[s] = {"trades": 0, "wins": 0, "closed_pnl": 0.0, "open_pnl": 0.0, "open_count": 0}
         if t["action"] == "SELL" and t["pnl"] is not None:
             strats[s]["trades"] += 1
-            strats[s]["pnl"]    += t["pnl"]
+            strats[s]["closed_pnl"] += t["pnl"]
             if t["pnl"] > 0:
                 strats[s]["wins"] += 1
+
+    # Unrealised P&L from open positions per strategy
+    if positions:
+        for pos in positions:
+            s = pos.get("strategy", "UNKNOWN")
+            if s not in strats:
+                strats[s] = {"trades": 0, "wins": 0, "closed_pnl": 0.0, "open_pnl": 0.0, "open_count": 0}
+            strats[s]["open_pnl"]   += pos.get("pnl", 0.0)
+            strats[s]["open_count"] += 1
+
     result = []
     for s, d in strats.items():
-        win_rate = round(d["wins"] / d["trades"] * 100, 1) if d["trades"] > 0 else 0
+        win_rate  = round(d["wins"] / d["trades"] * 100, 1) if d["trades"] > 0 else 0
+        total_pnl = d["closed_pnl"] + d["open_pnl"]
         result.append({
-            "strategy": s,
-            "trades":   d["trades"],
-            "wins":     d["wins"],
-            "pnl":      round(d["pnl"], 2),
-            "win_rate": win_rate,
+            "strategy":   s,
+            "trades":     d["trades"],
+            "wins":       d["wins"],
+            "pnl":        round(total_pnl, 2),
+            "closed_pnl": round(d["closed_pnl"], 2),
+            "open_pnl":   round(d["open_pnl"], 2),
+            "open_count": d["open_count"],
+            "win_rate":   win_rate,
         })
     return result
 

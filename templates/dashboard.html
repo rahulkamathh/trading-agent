@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>🇮🇳 Indian Institutional Trading Agent</title>
+<title>Trading Agent — NSE Paper Trading</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
   :root {
@@ -115,6 +115,139 @@
   .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
   .section-title { font-size: 14px; font-weight: 600; }
 
+  .active-period { border-color: var(--accent) !important; color: var(--blue) !important; }
+  .mkt-open   { background: #1e3a2e; color: var(--green); border-color: #2ea04333 !important; }
+  .mkt-closed { background: #2d2f36; color: var(--muted); border-color: var(--border) !important; }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    position: fixed; left: 0; top: 0;
+    width: 210px; height: 100vh;
+    background: #080d13; border-right: 1px solid var(--border);
+    z-index: 500; display: flex; flex-direction: column;
+    overflow-y: auto;
+  }
+  .sidebar-logo {
+    padding: 15px 16px 13px; border-bottom: 1px solid var(--border);
+    font-size: 12px; font-weight: 700; color: var(--text); flex-shrink: 0;
+    letter-spacing: .3px;
+  }
+  .nav-group { padding: 8px 0; border-bottom: 1px solid #1c2128; }
+  .nav-group:last-child { border-bottom: none; }
+  .nav-group-title {
+    padding: 4px 16px 6px; font-size: 10px;
+    text-transform: uppercase; letter-spacing: .8px; color: #484f58;
+  }
+  .nav-item {
+    display: flex; align-items: center; gap: 9px;
+    padding: 9px 16px; cursor: pointer; font-size: 13px; color: var(--muted);
+    transition: all .13s; border-left: 3px solid transparent;
+    user-select: none; white-space: nowrap;
+  }
+  .nav-item:hover { background: #161b22; color: var(--text); }
+  .nav-item.active { background: #1f6feb18; color: var(--blue); border-left-color: var(--blue); }
+  .nav-icon { font-size: 14px; width: 18px; text-align: center; }
+
+  /* ── Layout shift for sidebar ── */
+  header { margin-left: 210px; }
+  .container { margin-left: 210px; }
+
+  /* ── Charts view ── */
+  #view-charts {
+    display: none; margin-left: 210px;
+    padding: 20px 24px; min-height: calc(100vh - 54px);
+  }
+  .charts-topbar {
+    display: flex; align-items: center;
+    justify-content: space-between; margin-bottom: 16px;
+  }
+  .charts-title { font-size: 16px; font-weight: 700; }
+  .period-pills { display: flex; gap: 5px; align-items: center; }
+  .period-pills span { font-size: 11px; color: var(--muted); margin-right: 4px; }
+  .ppill {
+    padding: 4px 12px; font-size: 11px; font-weight: 600;
+    border: 1px solid var(--border); border-radius: 20px;
+    background: transparent; color: var(--muted); cursor: pointer; transition: all .13s;
+  }
+  .ppill:hover { border-color: var(--accent); color: var(--blue); }
+  .ppill.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .chart-subnav { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 18px; }
+  .chart-subnav .ctab {
+    padding: 8px 18px; cursor: pointer; font-size: 13px;
+    color: var(--muted); border-bottom: 2px solid transparent; transition: all .13s;
+  }
+  .chart-subnav .ctab:hover { color: var(--text); }
+  .chart-subnav .ctab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .chart-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(390px, 1fr));
+    gap: 16px;
+  }
+  .chart-card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px; transition: border-color .2s;
+  }
+  .chart-card:hover { border-color: #444d56; }
+  .cc-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+  .cc-ticker { font-size: 15px; font-weight: 700; }
+  .cc-name { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .cc-ltp { font-size: 17px; font-weight: 700; text-align: right; }
+  .cc-chg { font-size: 12px; text-align: right; margin-top: 2px; }
+  .cc-periods { display: flex; gap: 4px; margin-bottom: 10px; }
+  .cc-periods button {
+    padding: 3px 8px; font-size: 11px; font-weight: 600;
+    border: 1px solid var(--border); border-radius: 4px;
+    background: transparent; color: var(--muted); cursor: pointer; transition: all .12s;
+  }
+  .cc-periods button:hover { border-color: var(--accent); color: var(--blue); }
+  .cc-periods button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .cc-canvas-wrap { position: relative; height: 190px; }
+  .cc-loading { display:flex; align-items:center; justify-content:center; height:190px; color:var(--muted); font-size:12px; }
+  .chart-empty-state {
+    text-align: center; padding: 70px 20px;
+    color: var(--muted); font-size: 13px; line-height: 1.8;
+  }
+  .fno-note {
+    background: #161b22; border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 16px; font-size: 12px;
+    color: var(--muted); margin-bottom: 16px;
+  }
+
+  /* ── Live price flash animations ── */
+  @keyframes flashUp   { 0%,100%{background:transparent} 30%{background:#3fb95033} }
+  @keyframes flashDown { 0%,100%{background:transparent} 30%{background:#f8514933} }
+  .flash-up   { animation: flashUp   .6s ease; }
+  .flash-down { animation: flashDown .6s ease; }
+
+  /* ── Live feed status badge ── */
+  .feed-live   { background: #1e3a2e; color: var(--green); border-color: #2ea04333 !important; }
+  .feed-delay  { background: #2d2f36; color: var(--yellow); border-color: #d2992233 !important; }
+  .feed-off    { background: #2d2f36; color: var(--muted);  border-color: var(--border) !important; }
+
+  /* ── Tick counter ── */
+  #tickCounter { font-size:10px; color: var(--muted); min-width:80px; text-align:right; }
+
+  /* ── Compact summary bar ── */
+  #summary-bar {
+    display: flex; align-items: center; gap: 0;
+    background: var(--card); border-bottom: 1px solid var(--border);
+    padding: 0 20px; height: 44px;
+    position: sticky; top: 54px; z-index: 90;
+    margin-left: 210px;
+    overflow-x: auto;
+  }
+  .sb-group { display: flex; flex-direction: column; justify-content: center; padding: 0 16px; flex-shrink: 0; }
+  .sb-label { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); }
+  .sb-val   { font-size: 13px; font-weight: 700; line-height: 1.2; }
+  .sb-sub   { font-size: 11px; color: var(--muted); line-height: 1.2; }
+  .sb-sep   { width: 1px; height: 24px; background: var(--border); flex-shrink: 0; margin: 0 4px; }
+
+  /* ── Page sections ── */
+  .page-section { padding: 20px 24px; }
+  .page-header  { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  .page-title   { font-size: 15px; font-weight: 700; }
+  .page-sub     { font-size: 12px; color: var(--muted); }
+
   @media (max-width: 900px) {
     .grid-4, .grid-3 { grid-template-columns: 1fr 1fr; }
     .grid-2 { grid-template-columns: 1fr; }
@@ -126,162 +259,841 @@
 <div id="loader"><div class="spinner"></div></div>
 <div id="toast"></div>
 
+<!-- ── Sidebar ── -->
+<nav class="sidebar">
+  <div class="sidebar-logo">Trading Agent</div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">Overview</div>
+    <div class="nav-item active" data-view="overview" onclick="showView('overview')">
+      <span class="nav-icon">📊</span> Dashboard
+    </div>
+    <div class="nav-item" data-view="charts" onclick="showView('charts')">
+      <span class="nav-icon">📈</span> Charts
+    </div>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">Portfolio</div>
+    <div class="nav-item" data-view="positions" onclick="showView('positions')">
+      <span class="nav-icon">💼</span> Positions
+    </div>
+    <div class="nav-item" data-view="signals" onclick="showView('signals')">
+      <span class="nav-icon">🎯</span> Signals
+    </div>
+    <div class="nav-item" data-view="trades" onclick="showView('trades')">
+      <span class="nav-icon">📝</span> Trades
+    </div>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">Intelligence</div>
+    <div class="nav-item" data-view="telegram" onclick="showView('telegram')">
+      <span class="nav-icon">💬</span> Telegram
+      <span id="tgGroupBadge" style="margin-left:auto;font-size:10px;background:#1f3a5f;color:#58a6ff;padding:1px 6px;border-radius:8px;display:none"></span>
+    </div>
+    <div class="nav-item" data-view="news" onclick="showView('news')">
+      <span class="nav-icon">📰</span> News Feed
+    </div>
+    <div class="nav-item" data-view="penny" onclick="showView('penny')">
+      <span class="nav-icon">💎</span> Penny Stocks
+    </div>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">Tools</div>
+    <div class="nav-item" data-view="controls" onclick="showView('controls')">
+      <span class="nav-icon">⚙️</span> Controls
+    </div>
+    <div class="nav-item" data-view="report" onclick="showView('report')">
+      <span class="nav-icon">📋</span> Daily Report
+    </div>
+  </div>
+</nav>
+
 <!-- ── Header ── -->
 <header>
   <div style="display:flex;align-items:center;gap:12px;">
-    <h1>🇮🇳 Indian Institutional Trading Agent</h1>
-    <span class="badge paper-badge">📄 PAPER TRADE</span>
+    <h1>Trading Agent</h1>
+    <span class="badge paper-badge">PAPER TRADE</span>
     <span class="badge">NSE</span>
+    <span id="feedBadge" class="badge feed-off" style="font-size:11px;padding:2px 10px;border-radius:12px;border:1px solid">⬤ Connecting…</span>
+    <span id="tickCounter">—</span>
   </div>
   <div class="header-right">
     <div class="index-bar" id="indexBar">
       <div class="index-item"><div class="index-name">Nifty 50</div><div class="index-price" id="niftyPrice">—</div><div class="index-chg neu" id="niftyChg">—</div></div>
       <div class="index-item"><div class="index-name">Bank Nifty</div><div class="index-price" id="bankPrice">—</div><div class="index-chg neu" id="bankChg">—</div></div>
     </div>
+    <span id="marketStatusChip" style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:12px;border:1px solid var(--border)">—</span>
     <span id="agentStatus" style="font-size:12px;color:var(--muted)"><span class="status-dot status-idle" id="statusDot"></span>Idle</span>
     <button class="btn btn-primary" id="runBtn" onclick="runCycle()">▶ Run Agent</button>
     <button class="btn btn-ghost" onclick="refreshAll()">↻ Refresh</button>
   </div>
 </header>
 
-<!-- ── Main ── -->
+<!-- ── Compact summary bar (always visible) ── -->
+<div id="summary-bar">
+  <div class="sb-group">
+    <span class="sb-label">Portfolio</span>
+    <span class="sb-val" id="kpiTotal">₹—</span>
+    <span class="sb-sub" id="kpiPnlPct">vs ₹10,00,000</span>
+  </div>
+  <div class="sb-sep"></div>
+  <div class="sb-group">
+    <span class="sb-label">Total P&amp;L</span>
+    <span class="sb-val" id="kpiPnl">₹—</span>
+  </div>
+  <div class="sb-group">
+    <span class="sb-label">Realised</span>
+    <span class="sb-sub" id="kpiReal">₹—</span>
+  </div>
+  <div class="sb-group">
+    <span class="sb-label">Unrealised</span>
+    <span class="sb-sub" id="kpiUnreal">₹—</span>
+  </div>
+  <div class="sb-sep"></div>
+  <div class="sb-group">
+    <span class="sb-label">Cash</span>
+    <span class="sb-val" id="kpiCash">₹—</span>
+    <div class="progress" style="width:56px;margin-top:3px"><div class="progress-fill" id="cashBar" style="width:100%;background:var(--blue)"></div></div>
+  </div>
+  <div class="sb-group">
+    <span class="sb-label">Positions</span>
+    <span class="sb-val" id="kpiPositions">—</span>
+  </div>
+  <div class="sb-group">
+    <span class="sb-label">Signals</span>
+    <span class="sb-sub" id="kpiSignals">—</span>
+  </div>
+  <!-- hidden helpers -->
+  <span id="cashPct" style="display:none"></span>
+</div>
+
+<!-- ── Main content wrapper ── -->
 <div class="container">
 
-  <!-- KPI row -->
-  <div class="grid-4">
-    <div class="card">
-      <div class="card-title">Portfolio Value</div>
-      <div class="card-value" id="kpiTotal">₹—</div>
-      <div class="card-sub" id="kpiPnlPct">vs ₹10,00,000 initial</div>
-    </div>
-    <div class="card">
-      <div class="card-title">Total P&amp;L</div>
-      <div class="card-value" id="kpiPnl">₹—</div>
-      <div class="card-sub">
-        <span id="kpiReal" style="margin-right:8px">Realised: ₹—</span>
-        <span id="kpiUnreal">Unrealised: ₹—</span>
+  <!-- ══ Dashboard page ══ -->
+  <div id="page-overview" class="page-section">
+
+    <!-- KPI Cards -->
+    <div class="grid-4">
+      <div class="card">
+        <div class="card-title">Portfolio Value</div>
+        <div class="card-value" id="dash-total">₹—</div>
+        <div class="card-sub" id="dash-pnlpct" style="margin-top:6px">vs ₹10,00,000</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Total P&amp;L</div>
+        <div class="card-value" id="dash-pnl">₹—</div>
+        <div style="display:flex;gap:16px;margin-top:6px">
+          <div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">Realised</div>
+            <div style="font-size:12px" id="dash-real">₹—</div>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">Unrealised</div>
+            <div style="font-size:12px" id="dash-unreal">₹—</div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Cash Available</div>
+        <div class="card-value" id="dash-cash">₹—</div>
+        <div class="progress" style="margin-top:10px"><div class="progress-fill" id="dash-cashbar" style="width:100%;background:var(--blue)"></div></div>
+        <div class="card-sub" id="dash-cashpct" style="margin-top:4px">of portfolio in cash</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Open Positions</div>
+        <div class="card-value" id="dash-positions">—</div>
+        <div class="card-sub" id="dash-signals" style="margin-top:6px">— active signals</div>
       </div>
     </div>
-    <div class="card">
-      <div class="card-title">Cash Available</div>
-      <div class="card-value" id="kpiCash">₹—</div>
-      <div class="progress"><div class="progress-fill" id="cashBar" style="width:100%;background:var(--blue)"></div></div>
-      <div class="card-sub" id="cashPct">— % of portfolio in cash</div>
-    </div>
-    <div class="card">
-      <div class="card-title">Open Positions</div>
-      <div class="card-value" id="kpiPositions">—</div>
-      <div class="card-sub" id="kpiSignals">Active signals: —</div>
+
+    <!-- Charts -->
+    <div class="grid-2">
+      <div class="card">
+        <div class="section-header">
+          <span class="section-title">📈 Equity Curve</span>
+          <span id="lastCycleTime" style="font-size:11px;color:var(--muted)"></span>
+        </div>
+        <div class="chart-wrap"><canvas id="equityChart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="section-header"><span class="section-title">🎯 Strategy Performance</span></div>
+        <div class="chart-wrap"><canvas id="stratChart"></canvas></div>
+      </div>
     </div>
   </div>
 
-  <!-- Equity Curve + Strategy Perf -->
-  <div class="grid-2">
+  <!-- ══ Positions page ══ -->
+  <div id="page-positions" class="page-section hidden">
+    <div class="page-header">
+      <span class="page-title">💼 Open Positions</span>
+      <span class="page-sub" id="pos-count"></span>
+    </div>
+    <div class="card">
+      <div id="noPositions" class="hidden" style="text-align:center;padding:40px;color:var(--muted)">No open positions yet. Run the agent to start trading.</div>
+      <div class="table-wrap">
+        <table id="posTable">
+          <thead><tr>
+            <th>Ticker</th><th>Segment</th><th>Strategy</th><th>Qty</th><th>Avg Price</th>
+            <th>LTP</th><th>Value</th><th>P&amp;L</th><th>P&amp;L %</th>
+            <th>Stop Loss</th><th>Target</th><th>Entry</th><th>Action</th>
+          </tr></thead>
+          <tbody id="posBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ Signals page ══ -->
+  <div id="page-signals" class="page-section hidden">
+    <div class="page-header">
+      <span class="page-title">🎯 Live Signals</span>
+      <span class="page-sub" id="signalsTs"></span>
+    </div>
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Ticker</th><th>Strategy</th><th>Signal</th><th>Strength</th>
+            <th>Price</th><th>RSI</th><th>Score</th><th>Fund Grade</th>
+          </tr></thead>
+          <tbody id="sigBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ Trades page ══ -->
+  <div id="page-trades" class="page-section hidden">
+    <div class="page-header">
+      <span class="page-title">📝 Trade Log</span>
+    </div>
+    <div class="card">
+      <div id="noTrades" class="hidden" style="text-align:center;padding:40px;color:var(--muted)">No trades yet.</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>#</th><th>Time</th><th>Action</th><th>Ticker</th>
+            <th>Qty</th><th>Price</th><th>Value</th><th>P&amp;L</th><th>Strategy</th><th>Reason</th>
+          </tr></thead>
+          <tbody id="tradeBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ Controls page ══ -->
+  <div id="page-controls" class="page-section hidden">
+    <div class="page-header"><span class="page-title">⚙️ Controls</span></div>
+    <div class="grid-3" style="margin-bottom:16px">
+      <div class="card">
+        <div class="card-title">Manual Buy</div>
+        <div class="trade-form">
+          <input id="buyTicker" placeholder="e.g. RELIANCE" />
+          <button class="btn btn-green" onclick="manualBuy()">Buy</button>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:6px">Uses current LTP &amp; position sizing</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Manual Sell</div>
+        <div class="trade-form">
+          <input id="sellTicker" placeholder="e.g. RELIANCE.NS" />
+          <button class="btn btn-red" onclick="manualSell()">Sell</button>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:6px">Sells entire position at LTP</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Auto-run Interval</div>
+        <div class="trade-form">
+          <input id="intervalInput" type="number" placeholder="seconds (min 60)" value="900" style="width:120px"/>
+          <button class="btn btn-ghost" onclick="setInterval_()">Set</button>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:6px" id="intervalDisplay">Current: 900s (15 min)</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center">
+      <button class="btn btn-red" onclick="resetPortfolio()">🔄 Reset Portfolio to ₹10L</button>
+      <span style="font-size:12px;color:var(--muted)">Clears all positions and trade history.</span>
+    </div>
+  </div>
+
+  <!-- ══ Telegram Intelligence page ══ -->
+  <div id="page-telegram" class="page-section hidden">
+    <div class="page-header">
+      <span class="page-title">💬 Telegram Signal Intelligence</span>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span id="tgStatusBadge" class="badge feed-off" style="font-size:11px">⬤ Not configured</span>
+        <button class="btn btn-primary" style="font-size:12px;padding:6px 14px" onclick="tgDiscover()">🔍 Discover Groups</button>
+      </div>
+    </div>
+
+    <!-- Stats row -->
+    <div class="grid-4" style="margin-bottom:16px" id="tgStatsGrid">
+      <div class="card">
+        <div class="card-title">Active Groups</div>
+        <div class="card-value" id="tgActiveGroups">—</div>
+        <div class="card-sub" id="tgProbationGroups">— in probation</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Total Signals</div>
+        <div class="card-value" id="tgTotalSignals">—</div>
+        <div class="card-sub" id="tgPendingSignals">— pending evaluation</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Overall Win Rate</div>
+        <div class="card-value" id="tgWinRate">—</div>
+        <div class="card-sub" id="tgEvaluated">across — evaluated</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Last Discovery</div>
+        <div class="card-value" style="font-size:14px" id="tgLastDisc">—</div>
+        <div class="card-sub" id="tgDroppedGroups">— groups dropped</div>
+      </div>
+    </div>
+
+    <!-- Manual add form -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="section-header" style="margin-bottom:12px">
+        <span class="section-title">➕ Add Group Manually</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="tgAddInput" placeholder="@channelname  or  https://t.me/joinchat/..."
+          style="background:#0d1117;border:1px solid var(--border);color:var(--text);padding:8px 14px;border-radius:6px;font-size:13px;width:380px;flex-shrink:0"/>
+        <button class="btn btn-green" onclick="tgAddManual()">Add &amp; Join</button>
+        <span style="font-size:12px;color:var(--muted)">Supports @username, public links, and private invite links.</span>
+      </div>
+      <div id="tgAddResult" style="margin-top:8px;font-size:12px"></div>
+    </div>
+
+    <!-- Group leaderboard -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="section-header">
+        <span class="section-title">🏆 Group Leaderboard</span>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="loadTgGroups('active')">Active</button>
+          <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="loadTgGroups('probation')">Probation</button>
+          <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="loadTgGroups('dropped')">Dropped</button>
+          <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="loadTgGroups('')">All</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>#</th><th>Group / Channel</th><th>Status</th><th>Score</th>
+            <th>Win Rate</th><th>Signals</th><th>Evaluated</th>
+            <th>Sig/Week</th><th>Members</th><th>Source</th>
+          </tr></thead>
+          <tbody id="tgGroupsBody">
+            <tr><td colspan="10" style="text-align:center;padding:30px;color:var(--muted)">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Recent signals feed -->
     <div class="card">
       <div class="section-header">
-        <span class="section-title">📈 Equity Curve</span>
-        <span id="lastCycleTime" style="font-size:11px;color:var(--muted)"></span>
+        <span class="section-title">📡 Signal Feed</span>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="loadTgSignals('pending')">Pending</button>
+          <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="loadTgSignals('hit_target')">Hit Target</button>
+          <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="loadTgSignals('hit_sl')">Hit SL</button>
+          <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="loadTgSignals('')">All</button>
+        </div>
       </div>
-      <div class="chart-wrap"><canvas id="equityChart"></canvas></div>
-    </div>
-    <div class="card">
-      <div class="section-header"><span class="section-title">🎯 Strategy Performance</span></div>
-      <div class="chart-wrap"><canvas id="stratChart"></canvas></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Time</th><th>Group</th><th>Ticker</th><th>Signal</th>
+            <th>Entry</th><th>Targets</th><th>SL</th><th>Timeline</th>
+            <th>Specificity</th><th>Status</th><th>Outcome</th>
+          </tr></thead>
+          <tbody id="tgSignalsBody">
+            <tr><td colspan="11" style="text-align:center;padding:30px;color:var(--muted)">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 
-  <!-- Positions + Signals tabs -->
-  <div class="full-row">
+  <!-- ══ Daily Report page ══ -->
+  <div id="page-report" class="page-section hidden">
+    <div class="page-header"><span class="page-title">📋 Daily Report</span></div>
+    <div id="reportEmpty" style="text-align:center;padding:40px;color:var(--muted)">
+      No closing report yet — generated automatically at 3:30 PM IST on trading days.
+    </div>
+    <div id="reportContent" class="hidden">
+      <div class="grid-4" style="margin-bottom:16px" id="reportKPIs"></div>
+      <div class="grid-2">
+        <div>
+          <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px">TODAY'S TRADES</div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Action</th><th>Ticker</th><th>Qty</th><th>Price</th><th>P&amp;L</th><th>Strategy</th></tr></thead>
+            <tbody id="reportTradesBody"></tbody>
+          </table></div>
+        </div>
+        <div>
+          <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px">TOP POSITIONS</div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Ticker</th><th>P&amp;L %</th><th>P&amp;L</th><th>Strategy</th></tr></thead>
+            <tbody id="reportPositionsBody"></tbody>
+          </table></div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:12px" id="reportTs"></div>
+    </div>
+  </div>
+
+  <!-- ══ News Feed page ══ -->
+  <div id="page-news" class="page-section hidden">
+    <div class="page-header">
+      <span class="page-title">📰 News & Commodity Intelligence</span>
+      <button class="btn btn-ghost" style="font-size:12px;padding:6px 14px" onclick="loadNews()">↻ Refresh</button>
+    </div>
+
+    <!-- Commodity tracker -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="section-header" style="margin-bottom:14px">
+        <span class="section-title">🛢️ Commodity Prices (Live)</span>
+        <span style="font-size:11px;color:var(--muted)">Moves above threshold generate BUY/SELL signals automatically</span>
+      </div>
+      <div id="commodGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">
+        <div style="text-align:center;padding:20px;color:var(--muted);font-size:12px;grid-column:1/-1">Loading commodities…</div>
+      </div>
+    </div>
+
+    <!-- News signals generated -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="section-header" style="margin-bottom:12px">
+        <span class="section-title">⚡ Generated Signals</span>
+        <span id="newsSignalsCount" style="font-size:11px;color:var(--muted)"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Ticker</th><th>Signal</th><th>Strength</th><th>Strategy</th><th>Reason</th>
+          </tr></thead>
+          <tbody id="newsSignalsBody">
+            <tr><td colspan="5" style="text-align:center;padding:20px;color:var(--muted)">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Headlines -->
     <div class="card">
-      <div class="tabs">
-        <div class="tab active" onclick="switchTab('positions',this)">Open Positions</div>
-        <div class="tab" onclick="switchTab('signals',this)">Live Signals</div>
-        <div class="tab" onclick="switchTab('trades',this)">Trade Log</div>
-        <div class="tab" onclick="switchTab('controls',this)">⚙ Controls</div>
+      <div class="section-header" style="margin-bottom:12px">
+        <span class="section-title">📋 Latest Headlines</span>
+        <span style="font-size:11px;color:var(--muted)">Sources: ET, Moneycontrol, Business Standard, Livemint</span>
       </div>
+      <div id="headlinesBody">
+        <div style="text-align:center;padding:30px;color:var(--muted)">Loading headlines…</div>
+      </div>
+    </div>
+  </div>
 
-      <!-- Positions -->
-      <div id="tab-positions">
-        <div id="noPositions" class="hidden" style="text-align:center;padding:40px;color:var(--muted)">No open positions yet. Run the agent to start trading.</div>
-        <div class="table-wrap">
-          <table id="posTable">
-            <thead><tr>
-              <th>Ticker</th><th>Strategy</th><th>Qty</th><th>Avg Price</th>
-              <th>LTP</th><th>Value</th><th>P&amp;L</th><th>P&amp;L %</th>
-              <th>Stop Loss</th><th>Target</th><th>Entry</th><th>Action</th>
-            </tr></thead>
-            <tbody id="posBody"></tbody>
-          </table>
+  <!-- ══ Penny Stocks page ══ -->
+  <div id="page-penny" class="page-section hidden">
+    <div class="page-header">
+      <span class="page-title">💎 Penny & Small-Cap Universe</span>
+      <button class="btn btn-ghost" style="font-size:12px;padding:6px 14px" onclick="loadPennyUniverse()">↻ Refresh</button>
+    </div>
+
+    <!-- Info banner -->
+    <div style="background:#1f3a5f22;border:1px solid #58a6ff33;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:12px;color:var(--muted)">
+      💡 <strong style="color:var(--text)">Position sizing: 4% max per stock</strong> (vs 8% for large caps) —
+      high upside potential with controlled risk. Agent uses separate sizing logic for this universe.
+      Strategies: SMA, Fibonacci, RSI Divergence, Bollinger Squeeze, Volume Breakout, News Sentiment, Commodity.
+    </div>
+
+    <!-- Penny positions -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="section-header" style="margin-bottom:12px">
+        <span class="section-title">📂 Open Penny Positions</span>
+        <span id="pennyPosCount" style="font-size:11px;color:var(--muted)"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Ticker</th><th>Qty</th><th>Avg Price</th><th>LTP</th><th>Value</th><th>P&L</th><th>P&L %</th><th>Strategy</th>
+          </tr></thead>
+          <tbody id="pennyPosBody">
+            <tr><td colspan="8" style="text-align:center;padding:20px;color:var(--muted)">No open penny positions</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Universe screener -->
+    <div class="card">
+      <div class="section-header" style="margin-bottom:12px">
+        <span class="section-title">🔭 Universe Screener</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-size:11px;color:var(--muted)">Sorted by fundamental quality score</span>
+          <select id="pennySortSel" onchange="renderPennyTable()" style="background:#0d1117;border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:5px;font-size:11px">
+            <option value="score">Fund Score ↓</option>
+            <option value="ticker">Ticker A–Z</option>
+            <option value="price">Price ↓</option>
+          </select>
         </div>
       </div>
-
-      <!-- Signals -->
-      <div id="tab-signals" class="hidden">
-        <div style="font-size:12px;color:var(--muted);margin-bottom:12px" id="signalsTs"></div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr>
-              <th>Ticker</th><th>Strategy</th><th>Signal</th><th>Strength</th>
-              <th>Price</th><th>RSI</th><th>Score</th>
-            </tr></thead>
-            <tbody id="sigBody"></tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Trade Log -->
-      <div id="tab-trades" class="hidden">
-        <div class="table-wrap">
-          <table>
-            <thead><tr>
-              <th>#</th><th>Time</th><th>Action</th><th>Ticker</th>
-              <th>Qty</th><th>Price</th><th>Value</th><th>P&amp;L</th><th>Strategy</th><th>Reason</th>
-            </tr></thead>
-            <tbody id="tradeBody"></tbody>
-          </table>
-        </div>
-        <div id="noTrades" class="hidden" style="text-align:center;padding:40px;color:var(--muted)">No trades yet.</div>
-      </div>
-
-      <!-- Controls -->
-      <div id="tab-controls" class="hidden" style="padding:8px 0">
-        <div class="grid-3" style="margin-bottom:16px">
-          <div class="card" style="border-color:#30363d">
-            <div class="card-title">Manual Buy</div>
-            <div class="trade-form">
-              <input id="buyTicker" placeholder="e.g. RELIANCE" />
-              <button class="btn btn-green" onclick="manualBuy()">Buy</button>
-            </div>
-            <div style="font-size:11px;color:var(--muted);margin-top:6px">Will use current LTP &amp; position sizing</div>
-          </div>
-          <div class="card" style="border-color:#30363d">
-            <div class="card-title">Manual Sell</div>
-            <div class="trade-form">
-              <input id="sellTicker" placeholder="e.g. RELIANCE.NS" />
-              <button class="btn btn-red" onclick="manualSell()">Sell</button>
-            </div>
-            <div style="font-size:11px;color:var(--muted);margin-top:6px">Sells entire position at LTP</div>
-          </div>
-          <div class="card" style="border-color:#30363d">
-            <div class="card-title">Auto-run Interval</div>
-            <div class="trade-form">
-              <input id="intervalInput" type="number" placeholder="seconds (min 60)" value="900" style="width:120px"/>
-              <button class="btn btn-ghost" onclick="setInterval_()">Set</button>
-            </div>
-            <div style="font-size:11px;color:var(--muted);margin-top:6px" id="intervalDisplay">Current: 900s (15 min)</div>
-          </div>
-        </div>
-        <div style="display:flex;gap:10px;align-items:center">
-          <button class="btn btn-red" onclick="resetPortfolio()">🔄 Reset Portfolio to ₹10L</button>
-          <span style="font-size:12px;color:var(--muted)">This will clear all positions and trade history.</span>
-        </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>#</th><th>Ticker</th><th>Price</th><th>Fund Grade</th><th>Fund Score</th>
+            <th>P/E</th><th>P/B</th><th>ROE %</th><th>D/E</th><th>Rev Growth %</th><th>Sector</th>
+          </tr></thead>
+          <tbody id="pennyUnivBody">
+            <tr><td colspan="11" style="text-align:center;padding:30px;color:var(--muted)">Loading universe…</td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
   </div>
 
 </div><!-- /container -->
 
+<!-- ══════════════════════════════════════════════════
+     Charts View
+══════════════════════════════════════════════════ -->
+<div id="view-charts">
+
+  <!-- Top bar: title + period pills -->
+  <div class="charts-topbar">
+    <span class="charts-title">📈 Charts</span>
+    <div class="period-pills">
+      <span>Period:</span>
+      <button class="ppill active" data-p="1d" onclick="setChartPeriod('1d',this)">1D</button>
+      <button class="ppill" data-p="1w" onclick="setChartPeriod('1w',this)">1W</button>
+      <button class="ppill" data-p="1m" onclick="setChartPeriod('1m',this)">1M</button>
+      <button class="ppill" data-p="3m" onclick="setChartPeriod('3m',this)">3M</button>
+      <button class="ppill" data-p="1y" onclick="setChartPeriod('1y',this)">1Y</button>
+    </div>
+  </div>
+
+  <!-- Sub-nav -->
+  <div class="chart-subnav">
+    <div class="ctab active" data-ctab="indices" onclick="switchChartTab('indices',this)">📉 Indices</div>
+    <div class="ctab" data-ctab="equity"  onclick="switchChartTab('equity',this)">🏢 Equity</div>
+    <div class="ctab" data-ctab="etf"     onclick="switchChartTab('etf',this)">📦 ETFs</div>
+    <div class="ctab" data-ctab="fno"     onclick="switchChartTab('fno',this)">⚡ F&amp;O</div>
+  </div>
+
+  <!-- Indices tab -->
+  <div id="ctab-indices">
+    <div class="chart-grid" id="grid-indices"></div>
+  </div>
+
+  <!-- Equity tab -->
+  <div id="ctab-equity" class="hidden">
+    <div id="equity-empty" class="chart-empty-state hidden">
+      No open equity positions yet.<br>
+      Run the agent during market hours to start trading.
+    </div>
+    <div class="chart-grid" id="grid-equity"></div>
+  </div>
+
+  <!-- ETF tab -->
+  <div id="ctab-etf" class="hidden">
+    <div class="chart-grid" id="grid-etf"></div>
+  </div>
+
+  <!-- F&O tab -->
+  <div id="ctab-fno" class="hidden">
+    <div class="fno-note">
+      ⚡ <strong>F&amp;O Universe</strong> — Charts for the most actively traded Futures &amp; Options
+      counters from the Nifty 50 universe. The agent currently paper-trades the cash segment;
+      F&amp;O execution is on the roadmap.
+    </div>
+    <div class="chart-grid" id="grid-fno"></div>
+  </div>
+
+</div><!-- /view-charts -->
+
 <script>
+// ══════════════════════════════════════════════
+// Sidebar navigation
+// ══════════════════════════════════════════════
+let _currentView = 'overview';
+
+const _ALL_PAGES = ['overview','positions','signals','trades','controls','report','telegram','news','penny'];
+const _lazyLoaded = new Set();
+
+function showView(view) {
+  _currentView = view;
+  const container = document.querySelector('.container');
+  const chartsEl  = document.getElementById('view-charts');
+  const summaryBar = document.getElementById('summary-bar');
+
+  if (view === 'charts') {
+    container.style.display  = 'none';
+    chartsEl.style.display   = 'block';
+    if (summaryBar) summaryBar.style.marginLeft = '210px';
+    loadChartsForTab(_activeChartTab);
+  } else {
+    container.style.display  = 'block';
+    chartsEl.style.display   = 'none';
+    // Show only the matching page, hide all others
+    _ALL_PAGES.forEach(p => {
+      const el = document.getElementById('page-' + p);
+      if (el) el.classList.toggle('hidden', p !== view);
+    });
+    // Lazy-load pages on first visit
+    if (!_lazyLoaded.has(view)) {
+      _lazyLoaded.add(view);
+      if (view === 'telegram') {
+        loadTgStatus(); loadTgGroups('active'); loadTgSignals('');
+      } else if (view === 'news') {
+        loadNews();
+      } else if (view === 'penny') {
+        loadPennyUniverse(); loadPennyPositions();
+      }
+    }
+  }
+
+  // Update sidebar active state
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const active = document.querySelector(`.nav-item[data-view="${view}"]`);
+  if (active) active.classList.add('active');
+}
+
+// ══════════════════════════════════════════════
+// Chart Cards Engine
+// ══════════════════════════════════════════════
+let _chartPeriod    = '1d';
+let _activeChartTab = 'indices';
+const _cardCharts   = {};  // canvasId → Chart instance
+
+const TICKER_DISPLAY = {
+  '^NSEI':       ['NIFTY 50',   'Nifty 50 Index'],
+  '^NSEBANK':    ['BANKNIFTY',  'Bank Nifty Index'],
+  'RELIANCE.NS': ['RELIANCE',   'Reliance Industries'],
+  'TCS.NS':      ['TCS',        'Tata Consultancy Services'],
+  'HDFCBANK.NS': ['HDFCBANK',   'HDFC Bank'],
+  'INFY.NS':     ['INFY',       'Infosys'],
+  'ICICIBANK.NS':['ICICIBANK',  'ICICI Bank'],
+  'SBIN.NS':     ['SBIN',       'State Bank of India'],
+  'BHARTIARTL.NS':['BHARTIARTL','Bharti Airtel'],
+  'BAJFINANCE.NS':['BAJFINANCE','Bajaj Finance'],
+  'KOTAKBANK.NS':['KOTAKBANK',  'Kotak Mahindra Bank'],
+  'LT.NS':       ['LT',         'Larsen & Toubro'],
+  'AXISBANK.NS': ['AXISBANK',   'Axis Bank'],
+  'TATAMOTORS.NS':['TATAMOTORS','Tata Motors'],
+  'WIPRO.NS':    ['WIPRO',      'Wipro'],
+  'MARUTI.NS':   ['MARUTI',     'Maruti Suzuki'],
+  'HCLTECH.NS':  ['HCLTECH',    'HCL Technologies'],
+  'SUNPHARMA.NS':['SUNPHARMA',  'Sun Pharma'],
+  'TITAN.NS':    ['TITAN',      'Titan Company'],
+  'NIFTYBEES.NS': ['NIFTYBEES',   'Nifty 50 ETF'],
+  'BANKBEES.NS':  ['BANKBEES',    'Bank Nifty ETF'],
+  'ITBEES.NS':    ['ITBEES',      'IT Sector ETF'],
+  'PHARMABEES.NS':['PHARMABEES',  'Pharma Sector ETF'],
+  'GOLDBEES.NS':  ['GOLDBEES',    'Gold ETF (SBI)'],
+};
+
+function _tickerLabel(ticker) {
+  return (TICKER_DISPLAY[ticker] || [ticker.replace('.NS',''), ticker.replace('.NS','')])[0];
+}
+function _tickerName(ticker) {
+  return (TICKER_DISPLAY[ticker] || ['', ticker.replace('.NS','')])[1];
+}
+function _safeId(ticker) { return ticker.replace(/[^a-zA-Z0-9]/g, '_'); }
+
+function setChartPeriod(p, btn) {
+  _chartPeriod = p;
+  document.querySelectorAll('.ppill').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  loadChartsForTab(_activeChartTab);
+}
+
+function switchChartTab(tab, el) {
+  _activeChartTab = tab;
+  ['indices','equity','etf','fno'].forEach(t => {
+    document.getElementById('ctab-' + t).classList.add('hidden');
+  });
+  document.querySelectorAll('.ctab').forEach(t => t.classList.remove('active'));
+  document.getElementById('ctab-' + tab).classList.remove('hidden');
+  if (el) el.classList.add('active');
+  loadChartsForTab(tab);
+}
+
+const ALL_ETFS = ['NIFTYBEES.NS','BANKBEES.NS','ITBEES.NS','PHARMABEES.NS','GOLDBEES.NS'];
+
+async function loadChartsForTab(tab) {
+  if (tab === 'indices') await _loadGrid('grid-indices', ['^NSEI','^NSEBANK']);
+  else if (tab === 'equity')  await _loadEquityCharts();
+  else if (tab === 'etf')     await _loadEtfCharts();
+  else if (tab === 'fno')     await _loadGrid('grid-fno', ['RELIANCE.NS','TCS.NS','HDFCBANK.NS','INFY.NS','ICICIBANK.NS','BAJFINANCE.NS','SBIN.NS','AXISBANK.NS','LT.NS','WIPRO.NS','HCLTECH.NS','TATAMOTORS.NS']);
+}
+
+async function _loadEquityCharts() {
+  try {
+    const r = await fetch('/api/positions');
+    const d = await r.json();
+    // Only show non-ETF positions in the Equity tab
+    const tickers = (d.positions || [])
+      .map(p => p.ticker)
+      .filter(t => !ETF_TICKERS.has(t));
+    const emptyEl = document.getElementById('equity-empty');
+    if (!tickers.length) { emptyEl.classList.remove('hidden'); return; }
+    emptyEl.classList.add('hidden');
+    await _loadGrid('grid-equity', tickers);
+  } catch(e) { console.warn(e); }
+}
+
+async function _loadEtfCharts() {
+  try {
+    // Fetch open positions to know which ETFs are held
+    const r = await fetch('/api/positions');
+    const d = await r.json();
+    const heldEtfs = (d.positions || [])
+      .map(p => p.ticker)
+      .filter(t => ETF_TICKERS.has(t));
+    // Held ETFs first, then remaining universe ETFs
+    const remaining = ALL_ETFS.filter(t => !heldEtfs.includes(t));
+    await _loadGrid('grid-etf', [...heldEtfs, ...remaining]);
+  } catch(e) {
+    // Fallback: show full ETF universe
+    await _loadGrid('grid-etf', ALL_ETFS);
+  }
+}
+
+async function _loadGrid(gridId, tickers) {
+  const grid = document.getElementById(gridId);
+  if (!grid) return;
+  grid.innerHTML = '';
+  // Destroy old chart instances in this grid
+  Object.keys(_cardCharts).forEach(id => {
+    if (id.startsWith(gridId)) { _cardCharts[id].destroy(); delete _cardCharts[id]; }
+  });
+  for (const ticker of tickers) {
+    _createCard(grid, ticker, gridId);
+  }
+  // Load all charts in parallel
+  await Promise.all(tickers.map(t => _renderCard(t, _chartPeriod, gridId)));
+}
+
+function _createCard(grid, ticker, gridId) {
+  const sid = _safeId(ticker);
+  const cid = `${gridId}_${sid}`;
+  const div = document.createElement('div');
+  div.className = 'chart-card';
+  div.id = `card-${sid}`;
+  div.innerHTML = `
+    <div class="cc-header">
+      <div>
+        <div class="cc-ticker">${_tickerLabel(ticker)}</div>
+        <div class="cc-name">${_tickerName(ticker)}</div>
+      </div>
+      <div>
+        <div class="cc-ltp" id="cc-ltp-${sid}">—</div>
+        <div class="cc-chg neu" id="cc-chg-${sid}">—</div>
+      </div>
+    </div>
+    <div class="cc-periods">
+      ${['1d','1w','1m','3m','1y'].map(p =>
+        `<button class="${p===_chartPeriod?'active':''}"
+           onclick="reloadCard('${ticker}','${p}','${gridId}')">${p.toUpperCase()}</button>`
+      ).join('')}
+    </div>
+    <div class="cc-canvas-wrap">
+      <div class="cc-loading" id="cc-load-${sid}">Loading…</div>
+      <canvas id="${cid}" style="display:none"></canvas>
+    </div>`;
+  grid.appendChild(div);
+}
+
+async function _renderCard(ticker, period, gridId) {
+  const sid = _safeId(ticker);
+  const cid = `${gridId}_${sid}`;
+  try {
+    const r    = await fetch(`/api/chart/${encodeURIComponent(ticker)}?period=${period}`);
+    const data = await r.json();
+    if (!data.ok || !data.data.length) return;
+
+    const closes   = data.data.map(p => p.close);
+    const labels   = data.data.map(p => p.date);
+    const isUp     = data.change_pct >= 0;
+    const lineCol  = isUp ? '#3fb950' : '#f85149';
+    const fillCol  = isUp ? '#3fb95012' : '#f8514912';
+
+    // Price display — prefer live feed
+    const live   = window._livePrices && window._livePrices[ticker];
+    const ltp    = live ? live.ltp    : closes[closes.length - 1];
+    const chgPct = live ? live.chg_pct : data.change_pct;
+
+    const ltpEl  = document.getElementById(`cc-ltp-${sid}`);
+    const chgEl  = document.getElementById(`cc-chg-${sid}`);
+    const loadEl = document.getElementById(`cc-load-${sid}`);
+    const canEl  = document.getElementById(cid);
+
+    if (ltpEl) ltpEl.textContent = '₹' + fmtN(ltp);
+    if (chgEl) { chgEl.textContent = fmtPct(chgPct); chgEl.className = 'cc-chg ' + cls(chgPct); }
+    if (loadEl) loadEl.style.display = 'none';
+    if (canEl)  canEl.style.display  = 'block';
+
+    // Destroy old instance
+    if (_cardCharts[cid]) { _cardCharts[cid].destroy(); delete _cardCharts[cid]; }
+    if (!canEl) return;
+
+    _cardCharts[cid] = new Chart(canEl, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          data: closes,
+          borderColor: lineCol,
+          backgroundColor: fillCol,
+          borderWidth: 1.5,
+          pointRadius: 0,
+          fill: true,
+          tension: 0.2,
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: { label: c => '₹' + Number(c.parsed.y).toLocaleString('en-IN') }
+          }
+        },
+        scales: {
+          x: {
+            ticks: { color: '#555e6a', maxTicksLimit: data.intraday ? 6 : 5,
+                     font: { size: 10 } },
+            grid: { color: '#1c2128' }
+          },
+          y: {
+            position: 'right',
+            ticks: { color: '#555e6a', maxTicksLimit: 4, font: { size: 10 },
+                     callback: v => '₹' + Number(v).toLocaleString('en-IN',{maximumFractionDigits:0}) },
+            grid: { color: '#1c2128' }
+          }
+        }
+      }
+    });
+  } catch(e) { console.warn('Chart error for', ticker, e); }
+}
+
+async function reloadCard(ticker, period, gridId) {
+  const sid     = _safeId(ticker);
+  const card    = document.getElementById(`card-${sid}`);
+  if (card) {
+    card.querySelectorAll('.cc-periods button').forEach(b => {
+      b.classList.toggle('active', b.textContent.toLowerCase() === period);
+    });
+    const loadEl = document.getElementById(`cc-load-${sid}`);
+    const canEl  = document.getElementById(`${gridId}_${sid}`);
+    if (loadEl) loadEl.style.display = 'flex';
+    if (canEl)  canEl.style.display  = 'none';
+  }
+  await _renderCard(ticker, period, gridId);
+}
+
 // ──────────────────────────────────────────────
 // State
 // ──────────────────────────────────────────────
@@ -316,7 +1128,7 @@ function toast(msg, type='info') {
 }
 
 function switchTab(name, el) {
-  ['positions','signals','trades','controls'].forEach(t => {
+  ['positions','signals','trades','controls','report'].forEach(t => {
     document.getElementById('tab-' + t).classList.add('hidden');
   });
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -380,24 +1192,80 @@ async function loadDashboard() {
 // KPIs
 // ──────────────────────────────────────────────
 function renderKPIs(p) {
-  document.getElementById('kpiTotal').textContent = fmt(p.total_value);
-  document.getElementById('kpiTotal').className   = 'card-value ' + cls(p.total_pnl);
-  document.getElementById('kpiPnlPct').innerHTML  = `<span class="${cls(p.total_pnl_pct)}">${fmtPct(p.total_pnl_pct)}</span> vs ₹10,00,000 initial`;
-  document.getElementById('kpiPnl').textContent   = fmt(p.total_pnl);
-  document.getElementById('kpiPnl').className     = 'card-value ' + cls(p.total_pnl);
-  document.getElementById('kpiReal').textContent  = 'Realised: ' + fmt(p.realised_pnl);
-  document.getElementById('kpiUnreal').textContent= 'Unrealised: ' + fmt(p.unrealised_pnl);
-  document.getElementById('kpiCash').textContent  = fmt(p.cash);
+  // ── Summary bar ──
+  const totalEl = document.getElementById('kpiTotal');
+  totalEl.textContent = fmt(p.total_value);
+  totalEl.className   = 'sb-val ' + cls(p.total_pnl);
+
+  const pnlPctEl = document.getElementById('kpiPnlPct');
+  pnlPctEl.textContent = fmtPct(p.total_pnl_pct);
+  pnlPctEl.className   = 'sb-sub ' + cls(p.total_pnl_pct);
+
+  const pnlEl = document.getElementById('kpiPnl');
+  pnlEl.textContent = fmt(p.total_pnl);
+  pnlEl.className   = 'sb-val ' + cls(p.total_pnl);
+
+  document.getElementById('kpiReal').textContent   = fmt(p.realised_pnl);
+  document.getElementById('kpiUnreal').textContent = fmt(p.unrealised_pnl);
+  document.getElementById('kpiCash').textContent   = fmt(p.cash);
+
   const cashPct = p.total_value ? (p.cash / p.total_value * 100) : 100;
   document.getElementById('cashBar').style.width  = cashPct + '%';
-  document.getElementById('cashPct').textContent  = cashPct.toFixed(1) + '% of portfolio in cash';
+  document.getElementById('cashPct').textContent  = cashPct.toFixed(1) + '%';
+
+  // ── Dashboard KPI cards ──
+  const dt = document.getElementById('dash-total');
+  if (dt) {
+    dt.textContent = fmt(p.total_value);
+    dt.className   = 'card-value ' + cls(p.total_pnl);
+  }
+  const dp = document.getElementById('dash-pnlpct');
+  if (dp) {
+    dp.textContent = fmtPct(p.total_pnl_pct) + ' vs ₹10,00,000';
+    dp.className   = 'card-sub ' + cls(p.total_pnl_pct);
+  }
+  const dpnl = document.getElementById('dash-pnl');
+  if (dpnl) {
+    dpnl.textContent = fmt(p.total_pnl);
+    dpnl.className   = 'card-value ' + cls(p.total_pnl);
+  }
+  const dr = document.getElementById('dash-real');
+  if (dr) { dr.textContent = fmt(p.realised_pnl); dr.className = cls(p.realised_pnl); }
+  const du = document.getElementById('dash-unreal');
+  if (du) { du.textContent = fmt(p.unrealised_pnl); du.className = cls(p.unrealised_pnl); }
+  const dc = document.getElementById('dash-cash');
+  if (dc) dc.textContent = fmt(p.cash);
+  const dcb = document.getElementById('dash-cashbar');
+  if (dcb) dcb.style.width = cashPct + '%';
+  const dcp = document.getElementById('dash-cashpct');
+  if (dcp) dcp.textContent = cashPct.toFixed(1) + '% of portfolio in cash';
 }
 
 // ──────────────────────────────────────────────
 // Positions
 // ──────────────────────────────────────────────
+const ETF_TICKERS = new Set(['NIFTYBEES.NS','BANKBEES.NS','ITBEES.NS','PHARMABEES.NS','GOLDBEES.NS']);
+const FNO_TICKERS = new Set([]); // expand when F&O trading is added
+
+function getSegment(ticker) {
+  if (ETF_TICKERS.has(ticker)) return 'ETF';
+  if (FNO_TICKERS.has(ticker)) return 'F&O';
+  return 'Equity';
+}
+
+function segmentPill(ticker) {
+  const seg = getSegment(ticker);
+  if (seg === 'ETF')    return '<span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;background:#1f3a5f;color:#58a6ff;border:1px solid #58a6ff33">ETF</span>';
+  if (seg === 'F&O')    return '<span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;background:#3d2a1f;color:#ffa657;border:1px solid #ffa65733">F&O</span>';
+  return '<span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;background:#1e2f1e;color:#3fb950;border:1px solid #3fb95033">Equity</span>';
+}
+
 function renderPositions(positions) {
   document.getElementById('kpiPositions').textContent = positions.length;
+  const dp = document.getElementById('dash-positions');
+  if (dp) dp.textContent = positions.length + ' / 20';
+  const pc = document.getElementById('pos-count');
+  if (pc) pc.textContent = positions.length + ' open';
   const tbody = document.getElementById('posBody');
   if (!positions.length) {
     tbody.innerHTML = '';
@@ -406,16 +1274,21 @@ function renderPositions(positions) {
   }
   hide('noPositions');
   const color = s => STRAT_COLORS[s] || '#8b949e';
+  // Cache avg_price + qty for live P&L recalculation
+  window._posCache = {};
+  positions.forEach(p => { window._posCache[p.ticker] = { avg: p.avg_price, qty: p.qty }; });
+
   tbody.innerHTML = positions.map(p => `
-    <tr>
+    <tr data-ticker="${p.ticker}">
       <td><strong>${p.ticker.replace('.NS','')}</strong></td>
+      <td>${segmentPill(p.ticker)}</td>
       <td><span class="strat-dot" style="background:${color(p.strategy)}"></span>${p.strategy}</td>
       <td>${p.qty}</td>
       <td>${fmt(p.avg_price)}</td>
-      <td>${fmt(p.ltp)}</td>
-      <td>${fmt(p.value)}</td>
-      <td class="${cls(p.pnl)}">${fmt(p.pnl)}</td>
-      <td class="${cls(p.pnl_pct)}">${fmtPct(p.pnl_pct)}</td>
+      <td class="live-ltp" data-ticker="${p.ticker}">${fmt(p.ltp)}</td>
+      <td class="live-value" data-ticker="${p.ticker}">${fmt(p.value)}</td>
+      <td class="live-pnl ${cls(p.pnl)}" data-ticker="${p.ticker}">${fmt(p.pnl)}</td>
+      <td class="live-pnlpct ${cls(p.pnl_pct)}" data-ticker="${p.ticker}">${fmtPct(p.pnl_pct)}</td>
       <td style="color:var(--red)">${fmt(p.stop_loss)}</td>
       <td style="color:var(--green)">${fmt(p.target)}</td>
       <td style="color:var(--muted)">${p.entry_date ? p.entry_date.slice(0,10) : '—'}</td>
@@ -427,11 +1300,22 @@ function renderPositions(positions) {
 // Signals
 // ──────────────────────────────────────────────
 function renderSignals(signals, ts) {
-  document.getElementById('kpiSignals').textContent = 'Active signals: ' + signals.length;
+  document.getElementById('kpiSignals').textContent = signals.length + ' active';
+  const ds = document.getElementById('dash-signals');
+  if (ds) {
+    const buys  = signals.filter(s => s.signal === 'BUY').length;
+    const sells = signals.filter(s => s.signal === 'SELL').length;
+    ds.textContent = `${signals.length} signals (${buys}B / ${sells}S)`;
+  }
   if (ts) document.getElementById('signalsTs').textContent = 'Last updated: ' + ts.replace('T',' ').slice(0,19);
   const color = s => STRAT_COLORS[s] || '#8b949e';
-  document.getElementById('sigBody').innerHTML = signals.map(s => `
-    <tr>
+  document.getElementById('sigBody').innerHTML = signals.map(s => {
+    const grade = s.fund_grade;
+    const gradeColor = grade==='A'?'var(--green)':grade==='B'?'#58a6ff':grade==='C'?'var(--yellow)':grade==='D'||grade==='F'?'var(--red)':'var(--muted)';
+    const gradePill = grade && grade!=='-'
+      ? `<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;background:${gradeColor}22;color:${gradeColor}">${grade}</span>`
+      : '<span style="color:var(--muted)">—</span>';
+    return `<tr>
       <td><strong>${(s.ticker||'').replace('.NS','')}</strong></td>
       <td><span class="strat-dot" style="background:${color(s.strategy)}"></span>${s.strategy}</td>
       <td>${pillFor(s.signal)}</td>
@@ -446,7 +1330,9 @@ function renderSignals(signals, ts) {
       <td>${fmt(s.price)}</td>
       <td class="${s.rsi<35?'pos':s.rsi>65?'neg':'neu'}">${(s.rsi||0).toFixed(1)}</td>
       <td style="color:var(--muted)">${(s.score||0).toFixed(4)}</td>
-    </tr>`).join('');
+      <td>${gradePill}</td>
+    </tr>`;
+  }).join('');
 }
 
 function pillFor(sig) {
@@ -491,6 +1377,15 @@ function renderEquityChart(curve) {
   const values = curve.map(p => p.value);
   const isUp = values.length < 2 || values[values.length-1] >= values[0];
 
+  // Tight Y-axis: auto-range around actual data so small moves are visible
+  const minVal  = Math.min(...values);
+  const maxVal  = Math.max(...values);
+  const range   = maxVal - minVal;
+  // Padding = 20% of range, or at least 0.3% of portfolio value (so flat lines still show)
+  const padding = Math.max(range * 0.2, maxVal * 0.003);
+  const yMin    = minVal - padding;
+  const yMax    = maxVal + padding;
+
   if (equityChart) equityChart.destroy();
   equityChart = new Chart(ctx, {
     type: 'line',
@@ -515,7 +1410,12 @@ function renderEquityChart(curve) {
       }},
       scales: {
         x: { ticks: { color: '#8b949e', maxTicksLimit: 8 }, grid: { color: '#21262d' } },
-        y: { ticks: { color: '#8b949e', callback: v => '₹'+Number(v).toLocaleString('en-IN',{maximumFractionDigits:0}) }, grid: { color: '#21262d' } }
+        y: {
+          min: yMin, max: yMax,
+          ticks: { color: '#8b949e', maxTicksLimit: 6,
+                   callback: v => '₹'+Number(v).toLocaleString('en-IN',{maximumFractionDigits:0}) },
+          grid: { color: '#21262d' }
+        }
       }
     }
   });
@@ -533,27 +1433,67 @@ function renderStratChart(perf) {
     });
     return;
   }
-  const labels = perf.map(p => p.strategy);
-  const pnls   = perf.map(p => p.pnl);
-  const colors = labels.map(l => STRAT_COLORS[l] || '#8b949e');
+  const labels    = perf.map(p => p.strategy);
+  const closedPnl = perf.map(p => p.closed_pnl ?? p.pnl);
+  const openPnl   = perf.map(p => p.open_pnl ?? 0);
+  // Bar color: green if total P&L positive, red if negative
+  const barColors = perf.map(p => (p.pnl >= 0) ? '#3fb950' : '#f85149');
+  const openColors= perf.map(p => (p.open_pnl >= 0) ? '#3fb95055' : '#f8514955');
 
   stratChart = new Chart(ctx, {
     type: 'bar',
     data: {
       labels,
       datasets: [
-        { label: 'P&L (₹)', data: pnls, backgroundColor: colors, borderRadius: 4 },
+        {
+          label: 'Closed P&L (₹)',
+          data: closedPnl,
+          backgroundColor: barColors,
+          borderRadius: 3,
+          stack: 'pnl',
+        },
+        {
+          label: 'Open P&L (₹)',
+          data: openPnl,
+          backgroundColor: openColors,
+          borderRadius: 3,
+          stack: 'pnl',
+          borderDash: [4,2],
+        },
       ]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      plugins: { legend: { labels: { color:'#8b949e' } }, tooltip: {
-        callbacks: { label: ctx => 'P&L: ₹' + Number(ctx.parsed.y).toLocaleString('en-IN') }
-      }},
+      plugins: {
+        legend: { labels: { color: '#8b949e', boxWidth: 12 } },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const sign = ctx.parsed.y >= 0 ? '+' : '';
+              return `${ctx.dataset.label}: ${sign}₹${Number(ctx.parsed.y).toLocaleString('en-IN')}`;
+            },
+            footer: items => {
+              const total = items.reduce((s, i) => s + i.parsed.y, 0);
+              const sign = total >= 0 ? '+' : '';
+              return `Total: ${sign}₹${Number(total).toLocaleString('en-IN')}`;
+            }
+          }
+        }
+      },
       scales: {
-        x: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' } },
-        y: { ticks: { color: '#8b949e', callback: v => '₹'+v }, grid: { color: '#21262d' } }
+        x: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' }, stacked: true },
+        y: {
+          stacked: true,
+          ticks: {
+            color: '#8b949e',
+            callback: v => {
+              if (Math.abs(v) >= 1000) return '₹' + (v/1000).toFixed(1) + 'k';
+              return '₹' + v;
+            }
+          },
+          grid: { color: '#21262d' }
+        }
       }
     }
   });
@@ -563,20 +1503,23 @@ function renderStratChart(perf) {
 // Agent Status
 // ──────────────────────────────────────────────
 function updateAgentStatus(running, cycle) {
+  // Re-query every time — earlier innerHTML calls may have replaced statusDot
   const dot = document.getElementById('statusDot');
-  const label = document.getElementById('agentStatus');
   const btn = document.getElementById('runBtn');
-  if (running) {
-    dot.className = 'status-dot status-live';
-    label.innerHTML = '<span class="status-dot status-live"></span>Running…';
-    btn.disabled = true;
-  } else {
-    dot.className = 'status-dot status-idle';
-    label.innerHTML = '<span class="status-dot status-idle"></span>Idle';
-    btn.disabled = false;
+  const label = document.getElementById('agentStatus');
+  if (!btn) return;                          // guard: elements not yet in DOM
+  btn.disabled = !!running;
+  if (dot) dot.className = running ? 'status-dot status-live' : 'status-dot status-idle';
+  // Update only the trailing text node, never innerHTML (would destroy statusDot)
+  if (label) {
+    const textNode = label.lastChild;
+    if (textNode && textNode.nodeType === Node.TEXT_NODE) {
+      textNode.textContent = running ? 'Running…' : 'Idle';
+    }
   }
   if (cycle && cycle.timestamp) {
-    document.getElementById('lastCycleTime').textContent =
+    const el = document.getElementById('lastCycleTime');
+    if (el) el.textContent =
       `Last cycle: ${cycle.timestamp.replace('T',' ').slice(0,19)} | ${cycle.cycle_time_s}s`;
   }
 }
@@ -585,9 +1528,14 @@ function updateAgentStatus(running, cycle) {
 // Actions
 // ──────────────────────────────────────────────
 async function runCycle() {
-  document.getElementById('runBtn').disabled = true;
-  document.getElementById('statusDot').className = 'status-dot status-live';
-  document.getElementById('agentStatus').innerHTML = '<span class="status-dot status-live"></span>Running…';
+  const _btn = document.getElementById('runBtn');
+  const _dot = document.getElementById('statusDot');
+  const _lbl = document.getElementById('agentStatus');
+  if (_btn) _btn.disabled = true;
+  if (_dot) _dot.className = 'status-dot status-live';
+  if (_lbl && _lbl.lastChild && _lbl.lastChild.nodeType === Node.TEXT_NODE) {
+    _lbl.lastChild.textContent = 'Running…';
+  }
   toast('Agent cycle started… (may take 30-60s to fetch market data)', 'info');
   try {
     const r = await fetch('/api/run_cycle', { method:'POST' });
@@ -651,13 +1599,757 @@ async function setInterval_() {
 // ──────────────────────────────────────────────
 // Init
 // ──────────────────────────────────────────────
+
+
+// ──────────────────────────────────────────────
+// Market Status
+// ──────────────────────────────────────────────
+async function loadMarketStatus() {
+  try {
+    const r = await fetch('/api/market_status');
+    const d = await r.json();
+    if (!d.ok) return;
+    const chip = document.getElementById('marketStatusChip');
+    if (!chip) return;
+    chip.textContent = (d.is_open ? '🟢 Market Open  ' : '🔴 Market Closed  ') + d.label;
+    chip.className   = d.is_open ? 'mkt-open' : 'mkt-closed';
+  } catch(e) { /* ignore */ }
+}
+
+// ──────────────────────────────────────────────
+// Daily Report
+// ──────────────────────────────────────────────
+async function loadReport() {
+  try {
+    const r = await fetch('/api/report');
+    const d = await r.json();
+    if (!d.ok || !d.report) return;
+    const rep = d.report;
+    show('reportContent');
+    hide('reportEmpty');
+
+    // KPI cards
+    const isUp = rep.day_pnl >= 0;
+    document.getElementById('reportKPIs').innerHTML = `
+      <div class="card" style="border-color:var(--border)">
+        <div class="card-title">Day P&L</div>
+        <div class="card-value ${isUp?'pos':'neg'}">${fmt(rep.day_pnl)}</div>
+        <div class="card-sub ${isUp?'pos':'neg'}">${fmtPct(rep.day_pnl_pct)}</div>
+      </div>
+      <div class="card" style="border-color:var(--border)">
+        <div class="card-title">Portfolio Value</div>
+        <div class="card-value">${fmt(rep.portfolio_value)}</div>
+      </div>
+      <div class="card" style="border-color:var(--border)">
+        <div class="card-title">Trades Today</div>
+        <div class="card-value">${rep.trades_count}</div>
+      </div>
+      <div class="card" style="border-color:var(--border)">
+        <div class="card-title">Open Positions</div>
+        <div class="card-value">${rep.open_positions}</div>
+      </div>`;
+
+    // Today's trades
+    const tb = document.getElementById('reportTradesBody');
+    if (rep.trades_today && rep.trades_today.length) {
+      tb.innerHTML = rep.trades_today.map(t => `<tr>
+        <td>${t.action==='BUY'?'<span class="pill pill-buy">BUY</span>':'<span class="pill pill-sell">SELL</span>'}</td>
+        <td><strong>${(t.ticker||'').replace('.NS','')}</strong></td>
+        <td>${t.qty}</td>
+        <td>${fmt(t.price)}</td>
+        <td class="${cls(t.pnl)}">${t.pnl!=null?fmt(t.pnl):'—'}</td>
+        <td style="color:var(--muted)">${t.strategy||'—'}</td>
+      </tr>`).join('');
+    } else {
+      tb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">No trades today</td></tr>';
+    }
+
+    // Top positions
+    const pb = document.getElementById('reportPositionsBody');
+    const all_pos = [...(rep.top_gainers||[]), ...(rep.top_losers||[])];
+    const seen = new Set();
+    const unique = all_pos.filter(p => { if(seen.has(p.ticker)) return false; seen.add(p.ticker); return true; });
+    unique.sort((a,b) => b.pnl_pct - a.pnl_pct);
+    pb.innerHTML = unique.map(p => `<tr>
+      <td><strong>${(p.ticker||'').replace('.NS','')}</strong></td>
+      <td class="${cls(p.pnl_pct)}">${fmtPct(p.pnl_pct)}</td>
+      <td class="${cls(p.pnl)}">${fmt(p.pnl)}</td>
+      <td style="color:var(--muted)">${p.strategy||'—'}</td>
+    </tr>`).join('') || '<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:20px">No positions</td></tr>';
+
+    document.getElementById('reportTs').textContent =
+      'Report generated: ' + (rep.generated_at||'').replace('T',' ').slice(0,19) + ' IST';
+  } catch(e) { console.warn('Report load error:', e); }
+}
+
+// ──────────────────────────────────────────────
+// Nifty 50 Chart
+// ──────────────────────────────────────────────
+let niftyChartObj = null;
+let niftyActivePeriod = '1y';
+
+async function loadNiftyChart(period) {
+  niftyActivePeriod = period || niftyActivePeriod;
+
+  // Highlight active button
+  document.querySelectorAll('.active-period').forEach(b => b.classList.remove('active-period'));
+  const btn = document.querySelector(`[onclick="loadNiftyChart('${niftyActivePeriod}')"]`);
+  if (btn) btn.classList.add('active-period');
+
+  try {
+    const r = await fetch('/api/nifty_chart?period=' + niftyActivePeriod);
+    const d = await r.json();
+    if (!d.ok) return;
+
+    const labels  = d.data.map(p => p.date);
+    const closes  = d.data.map(p => p.close);
+    const highs   = d.data.map(p => p.high);
+    const lows    = d.data.map(p => p.low);
+    const volumes = d.data.map(p => p.volume);
+    const isUp    = d.change_pct >= 0;
+    const lineCol = isUp ? '#3fb950' : '#f85149';
+    const fillCol = isUp ? '#3fb95018' : '#f8514918';
+
+    // Change label
+    const chEl = document.getElementById('niftyChartChange');
+    if (chEl) {
+      chEl.textContent  = (isUp ? '+' : '') + d.change_pct + '%';
+      chEl.style.color  = isUp ? 'var(--green)' : 'var(--red)';
+    }
+
+    const ctx = document.getElementById('niftyChart');
+    if (niftyChartObj) niftyChartObj.destroy();
+
+    niftyChartObj = new Chart(ctx, {
+      data: {
+        labels,
+        datasets: [
+          {
+            type: 'line',
+            label: 'Nifty 50',
+            data: closes,
+            borderColor: lineCol,
+            backgroundColor: fillCol,
+            borderWidth: 2,
+            pointRadius: 0,
+            fill: true,
+            tension: 0.2,
+            yAxisID: 'yPrice',
+          },
+          {
+            type: 'bar',
+            label: 'Volume',
+            data: volumes,
+            backgroundColor: '#58a6ff22',
+            borderColor: '#58a6ff44',
+            borderWidth: 0,
+            yAxisID: 'yVol',
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: ctx => {
+                if (ctx.dataset.label === 'Volume') {
+                  return 'Vol: ' + Number(ctx.parsed.y).toLocaleString('en-IN');
+                }
+                return 'Nifty: ₹' + Number(ctx.parsed.y).toLocaleString('en-IN');
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            ticks: { color: '#8b949e', maxTicksLimit: 10, maxRotation: 0 },
+            grid: { color: '#21262d' }
+          },
+          yPrice: {
+            position: 'left',
+            ticks: {
+              color: '#8b949e',
+              callback: v => '₹' + Number(v).toLocaleString('en-IN', { maximumFractionDigits: 0 })
+            },
+            grid: { color: '#21262d' }
+          },
+          yVol: {
+            position: 'right',
+            grid: { display: false },
+            ticks: {
+              color: '#8b949e44',
+              callback: v => {
+                if (v >= 1e7) return (v / 1e7).toFixed(1) + 'Cr';
+                if (v >= 1e5) return (v / 1e5).toFixed(1) + 'L';
+                return v;
+              }
+            }
+          }
+        }
+      }
+    });
+  } catch(e) {
+    console.warn('Nifty chart error:', e);
+  }
+}
+
+// ──────────────────────────────────────────────
+// Live Price Feed (1-second polling)
+// ──────────────────────────────────────────────
+let _prevPrices = {};
+let _tickCount  = 0;
+let _liveConnected = false;
+
+function flashCell(el, dir) {
+  el.classList.remove('flash-up', 'flash-down');
+  // Force reflow so animation restarts even if class already present
+  void el.offsetWidth;
+  el.classList.add(dir === 1 ? 'flash-up' : 'flash-down');
+}
+
+function updateFeedBadge(connected, count) {
+  const badge = document.getElementById('feedBadge');
+  if (!badge) return;
+  if (connected && count > 0) {
+    badge.textContent = '⬤ Live Feed';
+    badge.className = 'badge feed-live';
+    _liveConnected = true;
+  } else if (!connected && count === 0) {
+    badge.textContent = '⬤ Delayed (yfinance)';
+    badge.className = 'badge feed-delay';
+    _liveConnected = false;
+  } else {
+    badge.textContent = '⬤ Connecting…';
+    badge.className = 'badge feed-off';
+  }
+}
+
+async function loadLivePrices() {
+  try {
+    const r = await fetch('/api/live_prices');
+    const d = await r.json();
+    if (!d.ok) return;
+
+    updateFeedBadge(d.connected, d.count);
+
+    const prices = d.prices || {};
+    _tickCount++;
+    const tc = document.getElementById('tickCounter');
+    if (tc) tc.textContent = `Tick #${_tickCount}`;
+
+    // ── Update Nifty / BankNifty header tickers ──
+    const nifty = prices['^NSEI'];
+    const bank  = prices['^NSEBANK'];
+    if (nifty) {
+      const priceEl = document.getElementById('niftyPrice');
+      const chgEl   = document.getElementById('niftyChg');
+      const prev    = _prevPrices['^NSEI'];
+      if (prev && prev !== nifty.ltp) flashCell(priceEl, nifty.ltp > prev ? 1 : -1);
+      priceEl.textContent = fmtN(nifty.ltp);
+      chgEl.textContent   = fmtPct(nifty.chg_pct);
+      chgEl.className     = 'index-chg ' + cls(nifty.chg_pct);
+    }
+    if (bank) {
+      const priceEl = document.getElementById('bankPrice');
+      const chgEl   = document.getElementById('bankChg');
+      const prev    = _prevPrices['^NSEBANK'];
+      if (prev && prev !== bank.ltp) flashCell(priceEl, bank.ltp > prev ? 1 : -1);
+      priceEl.textContent = fmtN(bank.ltp);
+      chgEl.textContent   = fmtPct(bank.chg_pct);
+      chgEl.className     = 'index-chg ' + cls(bank.chg_pct);
+    }
+
+    // ── Update open positions table in-place ──
+    const posCache = window._posCache || {};
+    document.querySelectorAll('td.live-ltp').forEach(cell => {
+      const ticker  = cell.dataset.ticker;
+      const live    = prices[ticker];
+      if (!live) return;
+      const ltp     = live.ltp;
+      const prev    = _prevPrices[ticker] ? _prevPrices[ticker].ltp : null;
+      if (prev !== null && prev !== ltp) flashCell(cell, ltp > prev ? 1 : -1);
+      cell.textContent = fmt(ltp);
+
+      // Recalculate P&L on the same row
+      const cached = posCache[ticker];
+      if (cached) {
+        const pnl     = (ltp - cached.avg) * cached.qty;
+        const pnlPct  = ((ltp / cached.avg) - 1) * 100;
+        const value   = ltp * cached.qty;
+
+        const valCell = document.querySelector(`td.live-value[data-ticker="${ticker}"]`);
+        const pnlCell = document.querySelector(`td.live-pnl[data-ticker="${ticker}"]`);
+        const pctCell = document.querySelector(`td.live-pnlpct[data-ticker="${ticker}"]`);
+
+        if (valCell) valCell.textContent = fmt(value);
+        if (pnlCell) {
+          pnlCell.textContent = fmt(pnl);
+          pnlCell.className   = `live-pnl ${cls(pnl)}`;
+        }
+        if (pctCell) {
+          pctCell.textContent = fmtPct(pnlPct);
+          pctCell.className   = `live-pnlpct ${cls(pnlPct)}`;
+        }
+      }
+    });
+
+    // Expose for chart cards
+    window._livePrices = prices;
+
+    // Update visible chart card prices (Charts view)
+    if (_currentView === 'charts') {
+      Object.entries(prices).forEach(([ticker, data]) => {
+        const sid   = _safeId(ticker);
+        const ltpEl = document.getElementById(`cc-ltp-${sid}`);
+        const chgEl = document.getElementById(`cc-chg-${sid}`);
+        if (ltpEl && data.ltp) {
+          const prev = _prevPrices[ticker];
+          if (prev && prev !== data.ltp) flashCell(ltpEl, data.ltp > prev ? 1 : -1);
+          ltpEl.textContent = '₹' + fmtN(data.ltp);
+        }
+        if (chgEl && data.chg_pct !== undefined) {
+          chgEl.textContent = fmtPct(data.chg_pct);
+          chgEl.className   = 'cc-chg ' + cls(data.chg_pct);
+        }
+      });
+    }
+
+    // Save for next diff
+    Object.entries(prices).forEach(([t, v]) => { _prevPrices[t] = v.ltp; });
+
+  } catch(e) {
+    // Silently ignore — network blips are fine
+  }
+}
+
+// ══════════════════════════════════════════════
+// Telegram Intelligence
+// ══════════════════════════════════════════════
+
+function _tgStatusPill(status) {
+  const map = {
+    active:    ['#1e3a2e','var(--green)','Active'],
+    probation: ['#2d2a1a','var(--yellow)','Probation'],
+    dropped:   ['#2d1f1f','var(--red)','Dropped'],
+  };
+  const [bg, color, label] = map[status] || ['#2d2f36','var(--muted)', status];
+  return `<span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;background:${bg};color:${color}">${label}</span>`;
+}
+
+function _tgOutcomePill(signal) {
+  const s = signal.status;
+  if (s === 'pending')    return '<span style="font-size:10px;color:var(--muted)">Pending</span>';
+  if (s === 'hit_target') return '<span style="font-size:10px;font-weight:700;color:var(--green)">✓ Target</span>';
+  if (s === 'hit_sl')     return '<span style="font-size:10px;font-weight:700;color:var(--red)">✗ SL Hit</span>';
+  if (s === 'expired')    return '<span style="font-size:10px;color:var(--muted)">Expired</span>';
+  if (s === 'eval_error') return '<span style="font-size:10px;color:var(--muted)">Error</span>';
+  return `<span style="font-size:10px;color:var(--muted)">${s}</span>`;
+}
+
+async function loadTgStatus() {
+  try {
+    const r = await fetch('/api/telegram/status');
+    const d = await r.json();
+    if (!d.ok) return;
+
+    const badge = document.getElementById('tgStatusBadge');
+    if (badge) {
+      if (d.status === 'connected') {
+        badge.textContent = '⬤ Connected';
+        badge.className   = 'badge feed-live';
+      } else if (d.status === 'discovering') {
+        badge.textContent = '⬤ Discovering…';
+        badge.className   = 'badge feed-delay';
+      } else if (d.status === 'not_configured') {
+        badge.textContent = '⬤ Not configured';
+        badge.className   = 'badge feed-off';
+      } else {
+        badge.textContent = '⬤ ' + d.status;
+        badge.className   = 'badge feed-off';
+      }
+    }
+
+    // Sidebar badge
+    const nb = document.getElementById('tgGroupBadge');
+    if (nb && d.active_groups > 0) {
+      nb.textContent  = d.active_groups;
+      nb.style.display = 'inline';
+    }
+
+    // Stats cards
+    const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    set('tgActiveGroups',    d.active_groups ?? '—');
+    set('tgProbationGroups', (d.probation_groups ?? '—') + ' in probation');
+    set('tgTotalSignals',    d.total_signals ?? '—');
+    set('tgPendingSignals',  (d.pending_signals ?? '—') + ' pending evaluation');
+    set('tgEvaluated',       'across ' + (d.evaluated_signals ?? '—') + ' evaluated');
+    set('tgDroppedGroups',   (d.dropped_groups ?? '—') + ' groups dropped');
+
+    const wr = document.getElementById('tgWinRate');
+    if (wr) {
+      if (d.overall_win_rate !== null && d.overall_win_rate !== undefined) {
+        wr.textContent = (d.overall_win_rate * 100).toFixed(1) + '%';
+        wr.className   = 'card-value ' + (d.overall_win_rate >= 0.55 ? 'pos' : d.overall_win_rate >= 0.5 ? 'neu' : 'neg');
+      } else {
+        wr.textContent = '—';
+      }
+    }
+
+    const ld = document.getElementById('tgLastDisc');
+    if (ld) {
+      ld.textContent = d.last_discovery
+        ? d.last_discovery.replace('T',' ').slice(0,16)
+        : 'Not yet';
+    }
+  } catch(e) { /* ignore */ }
+}
+
+async function loadTgGroups(statusFilter = 'active') {
+  try {
+    const url = '/api/telegram/groups' + (statusFilter ? `?status=${statusFilter}` : '');
+    const r   = await fetch(url);
+    const d   = await r.json();
+    const tbody = document.getElementById('tgGroupsBody');
+    if (!tbody) return;
+    const groups = d.groups || [];
+    if (!groups.length) {
+      const msg = statusFilter === 'active'
+        ? 'No active groups yet. Click "Discover Groups" to start.'
+        : 'No groups in this category.';
+      tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:30px;color:var(--muted)">${msg}</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = groups.map((g, i) => {
+      const score   = g.score ? (g.score * 100).toFixed(1) + '%' : '—';
+      const wr      = g.win_rate !== null && g.win_rate !== undefined
+                        ? (g.win_rate * 100).toFixed(1) + '%' : '—';
+      const wrCls   = g.win_rate >= 0.55 ? 'pos' : g.win_rate >= 0.5 ? 'neu' : 'neg';
+      const uname   = g.username ? `<div style="font-size:10px;color:var(--muted)">@${g.username}</div>` : '';
+      return `<tr>
+        <td style="color:var(--muted)">${i+1}</td>
+        <td>
+          <strong>${g.title || '—'}</strong>${uname}
+          ${g.added_manually ? '<span style="font-size:9px;color:var(--blue);margin-left:4px">manual</span>' : ''}
+        </td>
+        <td>${_tgStatusPill(g.status)}</td>
+        <td style="font-weight:700">${score}</td>
+        <td class="${wrCls}">${wr}</td>
+        <td>${g.signals_tracked ?? 0}</td>
+        <td>${g.signals_evaluated ?? 0}</td>
+        <td>${g.signals_per_week ?? '—'}</td>
+        <td style="color:var(--muted)">${g.member_count ? Number(g.member_count).toLocaleString('en-IN') : '—'}</td>
+        <td style="color:var(--muted)">${g.source || '—'}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) { console.warn('TG groups error:', e); }
+}
+
+async function loadTgSignals(statusFilter = '') {
+  try {
+    const url = '/api/telegram/signals?limit=60' + (statusFilter ? `&status=${statusFilter}` : '');
+    const r   = await fetch(url);
+    const d   = await r.json();
+    const tbody = document.getElementById('tgSignalsBody');
+    if (!tbody) return;
+    const sigs = d.signals || [];
+    if (!sigs.length) {
+      tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:30px;color:var(--muted)">No signals yet. Groups need time to post.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = sigs.map(s => {
+      const p = s.parsed || {};
+      const outcome = s.outcome;
+      const outcomeStr = outcome
+        ? `<span class="${outcome.won ? 'pos' : 'neg'}">${outcome.won ? '+' : ''}${outcome.pnl_pct?.toFixed(1)}%</span>`
+        : '—';
+      return `<tr>
+        <td style="color:var(--muted);font-size:11px">${(s.received_at||'').replace('T',' ').slice(0,16)}</td>
+        <td style="font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis">${s.group_title || '—'}</td>
+        <td><strong>${(p.ticker||'—').replace('.NS','').replace('^','')}</strong></td>
+        <td>${p.direction === 'BUY'
+              ? '<span class="pill pill-buy">BUY</span>'
+              : '<span class="pill pill-sell">SELL</span>'}</td>
+        <td>${p.entry_price ? '₹'+fmtN(p.entry_price) : '—'}</td>
+        <td style="font-size:11px">${(p.targets||[]).map(t => '₹'+fmtN(t)).join(', ') || '—'}</td>
+        <td style="color:var(--red)">${p.stop_loss ? '₹'+fmtN(p.stop_loss) : '—'}</td>
+        <td style="color:var(--muted);font-size:11px">${p.timeline_raw || '—'}</td>
+        <td>
+          <div style="width:50px;height:4px;background:#21262d;border-radius:2px;overflow:hidden">
+            <div style="width:${(p.specificity||0)*100}%;height:100%;background:var(--blue)"></div>
+          </div>
+        </td>
+        <td>${_tgOutcomePill(s)}</td>
+        <td>${outcomeStr}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) { console.warn('TG signals error:', e); }
+}
+
+async function tgDiscover() {
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = '🔍 Discovering…';
+  try {
+    const r = await fetch('/api/telegram/discover', { method: 'POST' });
+    const d = await r.json();
+    toast(d.message || d.error || 'Done', d.ok ? 'success' : 'error');
+  } catch(e) {
+    toast('Network error', 'error');
+  }
+  btn.disabled   = false;
+  btn.textContent = '🔍 Discover Groups';
+}
+
+// ══════════════════════════════════════════════
+// News Feed
+// ══════════════════════════════════════════════
+const COMMOD_META = {
+  copper:      { icon:'🟤', label:'Copper',      unit:'$/lb' },
+  crude_oil:   { icon:'🛢️', label:'Crude Oil',   unit:'$/bbl' },
+  gold:        { icon:'🥇', label:'Gold',         unit:'$/oz' },
+  silver:      { icon:'🥈', label:'Silver',       unit:'$/oz' },
+  natural_gas: { icon:'🔥', label:'Natural Gas',  unit:'$/mmBtu' },
+  aluminium:   { icon:'⚙️', label:'Aluminium',    unit:'$/ton' },
+};
+
+let _pennyUniverse = [];
+
+async function loadNews() {
+  await Promise.all([loadCommodities(), loadNewsSignals(), loadHeadlines()]);
+}
+
+async function loadCommodities() {
+  try {
+    const r = await fetch('/api/news/commodities');
+    const d = await r.json();
+    const grid = document.getElementById('commodGrid');
+    if (!grid) return;
+    const commod = d.commodities || {};
+    const keys = Object.keys(commod);
+    if (!keys.length) {
+      grid.innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted);font-size:12px;grid-column:1/-1">Commodity data loading (first fetch takes ~30s)…</div>';
+      return;
+    }
+    grid.innerHTML = keys.map(k => {
+      const c    = commod[k];
+      const meta = COMMOD_META[k] || { icon:'📊', label: k, unit:'' };
+      const pct  = c.pct_chg || 0;
+      const clr  = pct >= 2 ? 'var(--green)' : pct <= -2 ? 'var(--red)' : pct > 0 ? '#3fb95099' : '#f8514999';
+      const arrow = pct >= 0 ? '▲' : '▼';
+      return `<div style="background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:14px;text-align:center">
+        <div style="font-size:18px;margin-bottom:4px">${meta.icon}</div>
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">${meta.label}</div>
+        <div style="font-size:16px;font-weight:700;margin:4px 0">${c.price != null ? Number(c.price).toLocaleString('en-US',{maximumFractionDigits:2}) : '—'}</div>
+        <div style="font-size:10px;color:var(--muted)">${meta.unit}</div>
+        <div style="font-size:13px;font-weight:700;color:${clr};margin-top:4px">${arrow} ${Math.abs(pct).toFixed(2)}%</div>
+      </div>`;
+    }).join('');
+  } catch(e) { console.warn('Commodities error:', e); }
+}
+
+async function loadNewsSignals() {
+  try {
+    const r = await fetch('/api/news/signals');
+    const d = await r.json();
+    const tbody = document.getElementById('newsSignalsBody');
+    const countEl = document.getElementById('newsSignalsCount');
+    const sigs = d.signals || [];
+    if (countEl) countEl.textContent = sigs.length + ' signals generated';
+    if (!tbody) return;
+    if (!sigs.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;color:var(--muted)">No signals yet — news fetches every 30 min</td></tr>';
+      return;
+    }
+    tbody.innerHTML = sigs.map(s => `<tr>
+      <td><strong>${(s.ticker||'').replace('.NS','')}</strong></td>
+      <td>${s.action==='BUY'?'<span class="pill pill-buy">BUY</span>':'<span class="pill pill-sell">SELL</span>'}</td>
+      <td>
+        <div style="display:flex;align-items:center;gap:6px">
+          <div style="width:50px;height:4px;background:#21262d;border-radius:2px;overflow:hidden">
+            <div style="width:${Math.round((s.strength||0.5)*100)}%;height:100%;background:${s.action==='BUY'?'var(--green)':'var(--red)'}"></div>
+          </div>
+          <span style="font-size:11px;color:var(--muted)">${Math.round((s.strength||0.5)*100)}%</span>
+        </div>
+      </td>
+      <td style="color:var(--muted)">${s.strategy||'—'}</td>
+      <td style="font-size:11px;color:var(--muted);max-width:300px;overflow:hidden;text-overflow:ellipsis">${s.reason||'—'}</td>
+    </tr>`).join('');
+  } catch(e) { console.warn('News signals error:', e); }
+}
+
+async function loadHeadlines() {
+  try {
+    const r = await fetch('/api/news/headlines?n=40');
+    const d = await r.json();
+    const el = document.getElementById('headlinesBody');
+    if (!el) return;
+    const items = d.headlines || [];
+    if (!items.length) {
+      el.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted)">No headlines yet — RSS feeds fetch every 30 min</div>';
+      return;
+    }
+    el.innerHTML = items.map(h => {
+      const sent = h.sentiment || 0;
+      const sentCol = sent > 0.2 ? 'var(--green)' : sent < -0.2 ? 'var(--red)' : 'var(--muted)';
+      const sentLabel = sent > 0.2 ? '▲' : sent < -0.2 ? '▼' : '–';
+      const tickers = (h.tickers||[]).map(t => `<span style="font-size:10px;background:#1f3a5f;color:#58a6ff;padding:1px 5px;border-radius:4px;margin-left:3px">${t.replace('.NS','')}</span>`).join('');
+      const timeStr = h.published ? h.published.replace('T',' ').slice(0,16) : '';
+      return `<div style="padding:10px 0;border-bottom:1px solid #21262d;display:flex;gap:12px;align-items:flex-start">
+        <span style="font-size:13px;font-weight:700;color:${sentCol};width:16px;flex-shrink:0;margin-top:2px">${sentLabel}</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;line-height:1.4">
+            ${h.link ? `<a href="${h.link}" target="_blank" style="color:var(--text);text-decoration:none;hover:color:var(--blue)">${h.title}</a>` : h.title}
+            ${tickers}
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:3px">${timeStr}</div>
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) { console.warn('Headlines error:', e); }
+}
+
+// ══════════════════════════════════════════════
+// Penny Stocks
+// ══════════════════════════════════════════════
+async function loadPennyUniverse() {
+  try {
+    const r = await fetch('/api/penny/universe');
+    const d = await r.json();
+    _pennyUniverse = d.universe || [];
+    renderPennyTable();
+  } catch(e) { console.warn('Penny universe error:', e); }
+}
+
+async function loadPennyPositions() {
+  try {
+    const r = await fetch('/api/penny/positions');
+    const d = await r.json();
+    const tbody = document.getElementById('pennyPosBody');
+    const countEl = document.getElementById('pennyPosCount');
+    const pos = d.positions || [];
+    if (countEl) countEl.textContent = pos.length + ' open';
+    if (!tbody) return;
+    if (!pos.length) {
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--muted)">No open penny positions</td></tr>';
+      return;
+    }
+    tbody.innerHTML = pos.map(p => `<tr>
+      <td><strong>${(p.ticker||'').replace('.NS','')}</strong></td>
+      <td>${p.qty}</td>
+      <td>${fmt(p.avg_price)}</td>
+      <td>${fmt(p.ltp)}</td>
+      <td>${fmt(p.value)}</td>
+      <td class="${cls(p.pnl)}">${fmt(p.pnl)}</td>
+      <td class="${cls(p.pnl_pct)}">${fmtPct(p.pnl_pct)}</td>
+      <td style="color:var(--muted)">${p.strategy||'—'}</td>
+    </tr>`).join('');
+  } catch(e) { console.warn('Penny positions error:', e); }
+}
+
+function renderPennyTable() {
+  const tbody = document.getElementById('pennyUnivBody');
+  if (!tbody || !_pennyUniverse.length) return;
+  const sortKey = document.getElementById('pennySortSel')?.value || 'score';
+  const rows = [..._pennyUniverse];
+  if (sortKey === 'score')  rows.sort((a,b) => (b.fund_score||0) - (a.fund_score||0));
+  if (sortKey === 'ticker') rows.sort((a,b) => a.ticker.localeCompare(b.ticker));
+  if (sortKey === 'price')  rows.sort((a,b) => (b.price||0) - (a.price||0));
+
+  const gradeColor = g => g==='A'?'var(--green)':g==='B'?'#58a6ff':g==='C'?'var(--yellow)':g==='D'||g==='F'?'var(--red)':'var(--muted)';
+  tbody.innerHTML = rows.map((r, i) => {
+    const m = r.metrics || {};
+    const g = r.fund_grade || '—';
+    const gc = gradeColor(g);
+    const gradePill = g && g!=='—'
+      ? `<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;background:${gc}22;color:${gc}">${g}</span>`
+      : '<span style="color:var(--muted)">—</span>';
+    const scoreBar = r.fund_score != null
+      ? `<div style="display:flex;align-items:center;gap:6px">
+           <div style="width:50px;height:4px;background:#21262d;border-radius:2px;overflow:hidden">
+             <div style="width:${Math.round(r.fund_score*100)}%;height:100%;background:${gc}"></div>
+           </div>
+           <span style="font-size:11px;color:var(--muted)">${Math.round(r.fund_score*100)}%</span>
+         </div>`
+      : '<span style="color:var(--muted);font-size:11px">Not fetched</span>';
+    const fmt1 = v => v != null ? Number(v).toFixed(1) : '—';
+    return `<tr>
+      <td style="color:var(--muted)">${i+1}</td>
+      <td><strong>${r.ticker.replace('.NS','')}</strong></td>
+      <td>${r.price ? '₹'+fmtN(r.price) : '—'}</td>
+      <td>${gradePill}</td>
+      <td>${scoreBar}</td>
+      <td style="color:var(--muted)">${fmt1(m.pe)}</td>
+      <td style="color:var(--muted)">${fmt1(m.pb)}</td>
+      <td class="${m.roe>15?'pos':m.roe<5?'neg':'neu'}">${fmt1(m.roe)}</td>
+      <td class="${m.de<0.5?'pos':m.de>1.5?'neg':'neu'}">${fmt1(m.de)}</td>
+      <td class="${m.rev_growth>10?'pos':m.rev_growth<0?'neg':'neu'}">${fmt1(m.rev_growth)}</td>
+      <td style="color:var(--muted);font-size:11px">${m.sector||'—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function tgAddManual() {
+  const input = document.getElementById('tgAddInput');
+  const res   = document.getElementById('tgAddResult');
+  const val   = (input?.value || '').trim();
+  if (!val) return;
+  if (res) { res.textContent = 'Joining…'; res.style.color = 'var(--muted)'; }
+  try {
+    const r = await fetch('/api/telegram/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ identifier: val }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      if (res) { res.textContent = `✓ Joined: ${d.title}`; res.style.color = 'var(--green)'; }
+      input.value = '';
+      await loadTgGroups('active');
+      await loadTgStatus();
+    } else {
+      if (res) { res.textContent = '✗ ' + (d.error || 'Failed'); res.style.color = 'var(--red)'; }
+    }
+  } catch(e) {
+    if (res) { res.textContent = '✗ Network error'; res.style.color = 'var(--red)'; }
+  }
+}
+
+// ──────────────────────────────────────────────
+// Init
+// ──────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
+  // Start on overview, hide all other pages
+  showView('overview');
   refreshAll();
-  // Auto-refresh every 60s
+  loadMarketStatus();
+  loadReport();
+
+  // ── Live price ticker: 1s when Angel One connected, 5s fallback ──
+  loadLivePrices();
+  setInterval(async () => {
+    await loadLivePrices();
+    // In delayed mode also refresh market overview every 5s
+    if (!_liveConnected) await loadMarketOverview();
+  }, 5000);
+
+  // ── Market status chip: every 10s ──
+  setInterval(loadMarketStatus, 10000);
+
+  // ── Full dashboard refresh (KPIs, equity curve, signals): every 15s ──
   setInterval(async () => {
     await loadDashboard();
-    await loadMarketOverview();
-  }, 60000);
+  }, 15000);
+
+  // ── Daily report: every 5 min ──
+  setInterval(loadReport, 300000);
+
+  // ── Telegram status badge: every 30s (lightweight) ──
+  loadTgStatus();
+  setInterval(loadTgStatus, 30000);
 });
 </script>
 </body>

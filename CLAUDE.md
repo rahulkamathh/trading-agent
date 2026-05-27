@@ -133,12 +133,40 @@ print(df[['Close','rsi','ema_200','adx']].tail(5))
 "
 ```
 
+## Live Data Feed (Angel One SmartAPI)
+
+Real-time tick data via Angel One SmartStream WebSocket.
+
+**Setup:**
+1. Open a free Angel One account at angelone.in
+2. Create an app at smartapi.angelone.in → get API Key
+3. Enable TOTP 2FA in Angel One app → note the secret key
+4. Copy `.env.example` → `.env` and fill in your 4 credentials
+
+**Key file:** `angelone_feed.py`
+- `get_feed()` — singleton factory
+- `feed.start()` — connects WebSocket in background thread (called automatically from `app.py`)
+- `feed.get_price(ticker)` — live LTP, returns None if not connected
+- `feed.get_all_prices()` — dict of all live prices
+- `feed.is_connected()` — True when WebSocket is live
+
+**Fallback:** If `.env` is missing or Angel One is unreachable, `DataFetcher.get_current_price()` falls back to yfinance automatically. No code changes needed.
+
+**Dashboard indicators:**
+- `⬤ Live Feed` (green badge) — Angel One WebSocket connected, prices streaming
+- `⬤ Delayed (yfinance)` (yellow badge) — fallback mode, ~15 min delayed
+- Tick counter in header increments every second
+
 ## Dependencies
 - `flask` — web server
-- `yfinance` — market data (NSE via Yahoo Finance)
+- `yfinance` — market data fallback (NSE via Yahoo Finance)
 - `pandas` / `numpy` — data processing
 - `ta` — technical analysis indicators (RSI, Bollinger, ADX, EMA, ATR)
-- `requests` — HTTP (used by yfinance internally)
+- `requests` — HTTP
+- `smartapi-python` — Angel One SmartAPI client
+- `pyotp` — TOTP 2FA code generation
+- `python-dotenv` — loads `.env` credentials file
+- `websocket-client` — WebSocket transport for SmartStream
 
 ## Notes for Claude Code
 - Always use `get_agent()` singleton — never instantiate `TradingAgent` directly

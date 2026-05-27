@@ -1,52 +1,98 @@
-"""
-Flask API Server — Indian Institutional Trading Agent
-Run: python app.py
-Dashboard: http://localhost:5001
+"""Flask API server for the Indian Institutional Trading Agent.
+
+Run:  python app.py
+Open: http://localhost:5001
 """
 
+import json
 import threading
 import time
-import json
-from datetime import datetime
-from pathlib import Path
-from flask import Flask, jsonify, render_template, request, send_from_directory
+from dataclasses import dataclass, field
+from datetime import datetime, time as dt_time, date as dt_date
+from zoneinfo import ZoneInfo
 
-from engine import get_agent, DataFetcher, INITIAL_CAPITAL, INDEX_TICKERS
+from dotenv import load_dotenv  # type: ignore[import-untyped]
+load_dotenv()  # Load .env before anything else
+
+from flask import Flask, jsonify, request, send_from_directory
+
+from engine import INITIAL_CAPITAL, INDEX_TICKERS, DataFetcher, get_agent
+from angelone_feed import get_feed
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
-# Background agent loop state
-_agent_running   = False
-_last_cycle_info = {}
-_auto_interval   = 900   # 15 minutes default
-_auto_thread     = None
 
-# ──────────────────────────────────────────────
-# HTML Dashboard
-# ──────────────────────────────────────────────
+# ── Agent state ─────────────────────────────────────────────────────────────
+
+# NSE market schedule (IST = UTC+5:30)
+_IST          = ZoneInfo("Asia/Kolkata")
+_MARKET_OPEN  = dt_time(9, 15)
+_MARKET_CLOSE = dt_time(15, 30)
+
+
+def _ist_now() -> datetime:
+    """Return the current time in IST."""
+    return datetime.now(_IST)
+
+
+def _market_open() -> bool:
+    """Return True if NSE is currently open (weekday, 9:15–15:30 IST)."""
+    now = _ist_now()
+    return now.weekday() < 5 and _MARKET_OPEN <= now.time() <= _MARKET_CLOSE
+
+
+def _secs_until_next_open() -> float:
+    """Seconds until the next NSE opening bell."""
+    from datetime import timedelta
+    now = _ist_now()
+    candidate = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    if now.time() >= _MARKET_OPEN:
+        candidate += timedelta(days=1)
+    # Skip weekends
+    while candidate.weekday() >= 5:
+        candidate += timedelta(days=1)
+    return max(60.0, (candidate - now).total_seconds())
+
+
+@dataclass
+class _AgentState:
+    """Mutable runtime state for the background agent loop."""
+
+    running: bool = False
+    last_cycle: dict = field(default_factory=dict)
+    auto_interval: int = 900  # seconds between intra-day cycles
+    closing_report_dates: set = field(default_factory=set)
+
+
+_state = _AgentState()
+
+
+# ── Dashboard ────────────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
+    """Serve the single-page dashboard."""
     return send_from_directory("templates", "dashboard.html")
 
-# ──────────────────────────────────────────────
-# Dashboard Data
-# ──────────────────────────────────────────────
+
+# ── Data endpoints ───────────────────────────────────────────────────────────
 
 @app.route("/api/dashboard")
 def api_dashboard():
+    """Return all data needed to render the dashboard in one call."""
     try:
         data = get_agent().get_dashboard_data()
-        data["agent_running"]    = _agent_running
-        data["last_cycle"]       = _last_cycle_info
-        data["auto_interval_s"]  = _auto_interval
+        data["agent_running"] = _state.running
+        data["last_cycle"] = _state.last_cycle
+        data["auto_interval_s"] = _state.auto_interval
         return jsonify({"ok": True, "data": data})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+    except (ValueError, RuntimeError, KeyError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @app.route("/api/portfolio")
 def api_portfolio():
+    """Return current portfolio summary (value, cash, P&L)."""
     agent = get_agent()
     return jsonify({
         "ok": True,
@@ -55,76 +101,146 @@ def api_portfolio():
             "cash":           round(agent.portfolio.state["cash"], 2),
             "realised_pnl":   round(agent.portfolio.state.get("realised_pnl", 0), 2),
             "unrealised_pnl": round(agent.portfolio.get_unrealised_pnl(), 2),
-        }
+        },
     })
 
 
 @app.route("/api/positions")
 def api_positions():
+    """Return all open positions with live P&L."""
     return jsonify({"ok": True, "positions": get_agent().portfolio.get_positions_display()})
 
 
 @app.route("/api/trades")
 def api_trades():
-    from engine import TRADE_LOG_FILE
+    """Return full trade log, newest first."""
+    from engine import TRADE_LOG_FILE  # pylint: disable=import-outside-toplevel
+
     trades = []
     if TRADE_LOG_FILE.exists():
-        with open(TRADE_LOG_FILE) as f:
-            trades = json.load(f)
+        with open(TRADE_LOG_FILE, encoding="utf-8") as fh:
+            trades = json.load(fh)
     return jsonify({"ok": True, "trades": list(reversed(trades))})
 
 
 @app.route("/api/signals")
 def api_signals():
-    from engine import SIGNALS_FILE
+    """Return the latest generated signals from all strategies."""
+    from engine import SIGNALS_FILE  # pylint: disable=import-outside-toplevel
+
     if SIGNALS_FILE.exists():
-        with open(SIGNALS_FILE) as f:
-            data = json.load(f)
+        with open(SIGNALS_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
         return jsonify({"ok": True, **data})
     return jsonify({"ok": True, "signals": [], "updated_at": ""})
 
 
-# ──────────────────────────────────────────────
-# Agent Controls
-# ──────────────────────────────────────────────
+_market_overview_cache: dict = {}
+_market_overview_ts: float = 0.0
+_MARKET_OVERVIEW_TTL = 30  # seconds — yfinance rate-limit friendly
+
+
+@app.route("/api/market_overview")
+def api_market_overview():
+    """Return latest price and day-change for Nifty 50 and Bank Nifty.
+
+    Caches for 30 seconds to avoid yfinance rate-limits on rapid polling.
+    Angel One live feed prices override this when connected.
+    """
+    global _market_overview_cache, _market_overview_ts  # noqa: PLW0603
+
+    feed = get_feed()
+    now = time.time()
+
+    # If Angel One feed is live, serve from WebSocket prices — always fresh
+    if feed.is_connected():
+        live = feed.get_all_prices()
+        results: dict = {}
+        for name, ticker in INDEX_TICKERS.items():
+            ltp = live.get(ticker)
+            if ltp:
+                results[name] = {
+                    "price":   round(ltp, 2),
+                    "chg_pct": round(feed.get_change(ticker) or 0, 2),
+                    "ticker":  ticker,
+                    "source":  "live",
+                }
+        if results:
+            return jsonify({"ok": True, "indices": results})
+
+    # Fallback: yfinance with a 30-second TTL cache
+    if now - _market_overview_ts < _MARKET_OVERVIEW_TTL and _market_overview_cache:
+        return jsonify({"ok": True, "indices": _market_overview_cache, "source": "cache"})
+
+    # Clear per-ticker cache keys so yfinance re-downloads
+    for _, ticker in INDEX_TICKERS.items():
+        key = f"{ticker}_5d_1d"
+        DataFetcher._cache.pop(key, None)
+
+    results = {}
+    for name, ticker in INDEX_TICKERS.items():
+        df = DataFetcher.fetch(ticker, period="5d")
+        if not df.empty:
+            close = df["Close"]
+            price = float(close.iloc[-1])
+            prev = float(close.iloc[-2]) if len(close) > 1 else price
+            chg_pct = (price / prev - 1) * 100
+            results[name] = {
+                "price":   round(price, 2),
+                "chg_pct": round(chg_pct, 2),
+                "ticker":  ticker,
+                "source":  "yfinance",
+            }
+
+    _market_overview_cache = results
+    _market_overview_ts = now
+    return jsonify({"ok": True, "indices": results})
+
+
+# ── Agent controls ───────────────────────────────────────────────────────────
 
 @app.route("/api/run_cycle", methods=["POST"])
 def api_run_cycle():
-    global _agent_running, _last_cycle_info
-    if _agent_running:
+    """Trigger a full agent cycle (fetch → signal → execute → stop-check)."""
+    if _state.running:
         return jsonify({"ok": False, "error": "Agent already running"})
-    _agent_running = True
+    _state.running = True
     try:
         summary = get_agent().run_cycle()
-        _last_cycle_info = summary
+        _state.last_cycle = summary
         return jsonify({"ok": True, "summary": summary})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+    except (ValueError, RuntimeError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
     finally:
-        _agent_running = False
+        _state.running = False
 
 
 @app.route("/api/manual_buy", methods=["POST"])
 def api_manual_buy():
-    body     = request.get_json(force=True)
-    ticker   = body.get("ticker", "").upper()
+    """Manually buy a stock at current LTP using standard position sizing."""
+    body = request.get_json(force=True)
+    ticker = body.get("ticker", "").upper()
     if not ticker.endswith(".NS"):
         ticker += ".NS"
-    price    = DataFetcher.get_current_price(ticker)
+    price = DataFetcher.get_current_price(ticker)
     if price <= 0:
         return jsonify({"ok": False, "error": f"Could not fetch price for {ticker}"}), 400
     trade = get_agent().portfolio.execute_buy(ticker, price, "MANUAL", "Manual buy")
     if trade:
         return jsonify({"ok": True, "trade": trade})
-    return jsonify({"ok": False, "error": "Could not execute buy (check capital / position limits)"}), 400
+    return jsonify({
+        "ok": False,
+        "error": "Could not execute buy (check capital / position limits)",
+    }), 400
 
 
 @app.route("/api/manual_sell", methods=["POST"])
 def api_manual_sell():
-    body   = request.get_json(force=True)
+    """Manually exit an entire position at current LTP."""
+    body = request.get_json(force=True)
     ticker = body.get("ticker", "")
-    price  = DataFetcher.get_current_price(ticker)
-    trade  = get_agent().portfolio.execute_sell(ticker, price, "MANUAL")
+    price = DataFetcher.get_current_price(ticker)
+    trade = get_agent().portfolio.execute_sell(ticker, price, "MANUAL")
     if trade:
         return jsonify({"ok": True, "trade": trade})
     return jsonify({"ok": False, "error": f"No position in {ticker}"}), 400
@@ -132,6 +248,7 @@ def api_manual_sell():
 
 @app.route("/api/reset", methods=["POST"])
 def api_reset():
+    """Reset portfolio to initial ₹10,00,000 and clear all trade history."""
     get_agent().portfolio.reset()
     DataFetcher.clear_cache()
     return jsonify({"ok": True, "message": "Portfolio reset to ₹10,00,000"})
@@ -139,69 +256,438 @@ def api_reset():
 
 @app.route("/api/set_interval", methods=["POST"])
 def api_set_interval():
-    global _auto_interval
+    """Set the auto-run interval in seconds (minimum 60)."""
     body = request.get_json(force=True)
     secs = int(body.get("seconds", 900))
-    _auto_interval = max(60, secs)
-    return jsonify({"ok": True, "interval": _auto_interval})
+    _state.auto_interval = max(60, secs)
+    return jsonify({"ok": True, "interval": _state.auto_interval})
 
 
-# ──────────────────────────────────────────────
-# Market Overview
-# ──────────────────────────────────────────────
-
-@app.route("/api/market_overview")
-def api_market_overview():
-    results = {}
-    for name, ticker in INDEX_TICKERS.items():
-        df = DataFetcher.fetch(ticker, period="5d")
-        if not df.empty:
-            close = df["Close"].squeeze()
-            price   = float(close.iloc[-1])
-            prev    = float(close.iloc[-2]) if len(close) > 1 else price
-            chg_pct = (price / prev - 1) * 100
-            results[name] = {
-                "price":   round(price, 2),
-                "chg_pct": round(chg_pct, 2),
-                "ticker":  ticker,
-            }
-    return jsonify({"ok": True, "indices": results})
 
 
-# ──────────────────────────────────────────────
-# Auto-run background thread
-# ──────────────────────────────────────────────
+@app.route("/api/live_prices")
+def api_live_prices():
+    """Return live LTP and % change for all tracked instruments from Angel One feed."""
+    feed = get_feed()
+    prices  = feed.get_all_prices()
+    changes = feed.get_all_changes()
 
-def _background_loop():
-    global _agent_running, _last_cycle_info
+    # Build a unified response
+    instruments = {}
+    all_tickers = list(prices.keys()) or []
+    for ticker in all_tickers:
+        instruments[ticker] = {
+            "ltp":     prices.get(ticker, 0),
+            "chg_pct": changes.get(ticker, 0),
+        }
+
+    return jsonify({
+        "ok":        True,
+        "connected": feed.is_connected(),
+        "count":     len(instruments),
+        "prices":    instruments,
+        "ts":        datetime.now(_IST).isoformat(),
+    })
+
+
+@app.route("/api/feed_status")
+def api_feed_status():
+    """Return Angel One live feed connection status."""
+    feed = get_feed()
+    return jsonify({
+        "ok":           True,
+        "connected":    feed.is_connected(),
+        "configured":   feed.is_configured(),
+        "price_count":  len(feed.get_all_prices()),
+    })
+
+
+def _build_ohlcv_response(df, period: str, ticker: str = "") -> dict:
+    """Shared helper: convert a yfinance DataFrame to an API response dict."""
+    intraday = period == "1d"
+    records = []
+    for ts, row in df.iterrows():
+        # For intraday use HH:MM label; for daily use YYYY-MM-DD
+        label = str(ts)[11:16] if intraday else str(ts)[:10]
+        records.append({
+            "date":   label,
+            "open":   round(float(row["Open"]),  2),
+            "high":   round(float(row["High"]),  2),
+            "low":    round(float(row["Low"]),   2),
+            "close":  round(float(row["Close"]), 2),
+            "volume": int(row["Volume"]) if "Volume" in df.columns else 0,
+        })
+    latest     = records[-1]["close"] if records else 0
+    first      = records[0]["close"]  if records else 0
+    change_pct = round((latest / first - 1) * 100, 2) if first else 0
+    return {"ok": True, "ticker": ticker, "data": records,
+            "change_pct": change_pct, "period": period, "intraday": intraday}
+
+
+@app.route("/api/nifty_chart")
+def api_nifty_chart():
+    """Return Nifty 50 OHLCV history for the requested period."""
+    period    = request.args.get("period", "1y")
+    intraday  = period == "1d"
+    valid_day = {"1w": "5d", "1m": "1mo", "3m": "3mo", "6m": "6mo", "1y": "1y", "5y": "5y"}
+    yf_period = "1d"    if intraday else valid_day.get(period, "1y")
+    yf_itvl   = "5m"   if intraday else "1d"
+    if intraday:
+        DataFetcher._cache.pop(f"^NSEI_{yf_period}_{yf_itvl}", None)
+    df = DataFetcher.fetch("^NSEI", period=yf_period, interval=yf_itvl)
+    if df.empty:
+        return jsonify({"ok": False, "error": "No data"}), 500
+    return jsonify(_build_ohlcv_response(df, period, "^NSEI"))
+
+
+@app.route("/api/chart/<path:ticker>")
+def api_chart(ticker: str):
+    """Return OHLCV history for any ticker with optional period.
+
+    period values: 1d (5-min intraday) | 1w | 1m | 3m | 6m | 1y | 5y
+    """
+    period    = request.args.get("period", "3m")
+    intraday  = period == "1d"
+    valid_day = {"1w": "5d", "1m": "1mo", "3m": "3mo", "6m": "6mo", "1y": "1y", "5y": "5y"}
+    yf_period = "1d"  if intraday else valid_day.get(period, "3mo")
+    yf_itvl   = "5m"  if intraday else "1d"
+
+    # Always bypass cache for intraday so we get the freshest bars
+    if intraday:
+        DataFetcher._cache.pop(f"{ticker}_{yf_period}_{yf_itvl}", None)
+
+    df = DataFetcher.fetch(ticker, period=yf_period, interval=yf_itvl)
+    if df.empty:
+        return jsonify({"ok": False, "error": f"No data for {ticker}"}), 500
+    return jsonify(_build_ohlcv_response(df, period, ticker))
+
+# ── Background loop ──────────────────────────────────────────────────────────
+
+
+
+@app.route("/api/market_status")
+def api_market_status():
+    """Return whether NSE is currently open plus time to open/close."""
+    now     = _ist_now()
+    is_open = _market_open()
+    t       = now.time()
+    if is_open:
+        close_dt = now.replace(hour=15, minute=30, second=0, microsecond=0)
+        secs_left = max(0, (close_dt - now).total_seconds())
+        label = f"Closes in {int(secs_left//3600):02d}:{int((secs_left%3600)//60):02d}"
+    else:
+        secs_left = _secs_until_next_open()
+        label = f"Opens in {int(secs_left//3600):02d}:{int((secs_left%3600)//60):02d}"
+    return jsonify({
+        "ok":       True,
+        "is_open":  is_open,
+        "time_ist": now.strftime("%H:%M IST"),
+        "label":    label,
+        "weekday":  now.strftime("%A"),
+    })
+
+
+@app.route("/api/report")
+def api_report():
+    """Return the latest closing report."""
+    from pathlib import Path  # pylint: disable=import-outside-toplevel
+    p = Path("data/closing_report.json")
+    if p.exists():
+        with open(p, encoding="utf-8") as fh:
+            import json as _j  # pylint: disable=import-outside-toplevel
+            return jsonify({"ok": True, "report": _j.load(fh)})
+    return jsonify({"ok": True, "report": None})
+
+# ── Telegram Intelligence endpoints ─────────────────────────────────────────
+
+@app.route("/api/telegram/status")
+def api_telegram_status():
+    """Return Telegram agent connection status and aggregate stats."""
+    from telegram_agent import get_telegram_agent  # pylint: disable=import-outside-toplevel
+    return jsonify({"ok": True, **get_telegram_agent().get_stats()})
+
+
+@app.route("/api/telegram/groups")
+def api_telegram_groups():
+    """Return all tracked groups sorted by score (best first)."""
+    from telegram_agent import get_telegram_agent  # pylint: disable=import-outside-toplevel
+    agent  = get_telegram_agent()
+    status = request.args.get("status")          # filter: active | probation | dropped
+    groups = agent.get_groups()
+    if status:
+        groups = [g for g in groups if g.get("status") == status]
+    return jsonify({"ok": True, "groups": groups, "total": len(groups)})
+
+
+@app.route("/api/telegram/signals")
+def api_telegram_signals():
+    """Return recent Telegram signals with parsed fields and outcomes."""
+    from telegram_agent import get_telegram_agent  # pylint: disable=import-outside-toplevel
+    limit   = int(request.args.get("limit", 50))
+    status  = request.args.get("status")         # filter: pending | hit_target | hit_sl | expired
+    signals = get_telegram_agent().get_signals(limit=max(limit, 200))
+    if status:
+        signals = [s for s in signals if s.get("status") == status]
+    return jsonify({"ok": True, "signals": signals[:limit], "total": len(signals)})
+
+
+@app.route("/api/telegram/add", methods=["POST"])
+def api_telegram_add():
+    """Manually add a Telegram group/channel by @username or invite link."""
+    from telegram_agent import get_telegram_agent  # pylint: disable=import-outside-toplevel
+    body       = request.get_json(force=True)
+    identifier = (body.get("identifier") or "").strip()
+    if not identifier:
+        return jsonify({"ok": False, "error": "identifier is required"}), 400
+    result = get_telegram_agent().add_group_manual(identifier)
+    return jsonify(result), (200 if result["ok"] else 400)
+
+
+@app.route("/api/telegram/discover", methods=["POST"])
+def api_telegram_discover():
+    """Trigger a manual discovery cycle (searches Telegram for new signal groups)."""
+    from telegram_agent import get_telegram_agent  # pylint: disable=import-outside-toplevel
+    result = get_telegram_agent().trigger_discovery()
+    return jsonify(result), (200 if result["ok"] else 400)
+
+
+# ── News & Commodity Intelligence endpoints ──────────────────────────────────
+
+@app.route("/api/news/headlines")
+def api_news_headlines():
+    """Return latest news headlines with sentiment and ticker mentions."""
+    try:
+        from news_agent import get_news_agent  # pylint: disable=import-outside-toplevel
+        n = int(request.args.get("n", 30))
+        headlines = get_news_agent().latest_headlines(n=n)
+        return jsonify({"ok": True, "headlines": headlines})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/news/commodities")
+def api_news_commodities():
+    """Return current commodity prices and % moves."""
+    try:
+        from news_agent import get_news_agent  # pylint: disable=import-outside-toplevel
+        data = get_news_agent().get_commodity_data()
+        return jsonify({"ok": True, "commodities": data})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/news/signals")
+def api_news_signals():
+    """Return all news + commodity signals."""
+    try:
+        from news_agent import get_news_agent  # pylint: disable=import-outside-toplevel
+        signals = get_news_agent().get_all_signals()
+        return jsonify({"ok": True, "signals": signals, "count": len(signals)})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+# ── Fundamental Analysis endpoints ───────────────────────────────────────────
+
+@app.route("/api/fundamentals/<path:ticker>")
+def api_fundamentals_ticker(ticker: str):
+    """Return fundamental score and metrics for a single ticker."""
+    try:
+        from fundamental_analyzer import get_analyzer  # pylint: disable=import-outside-toplevel
+        result = get_analyzer().get_score(ticker)
+        return jsonify({"ok": True, "ticker": ticker, **result})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/fundamentals")
+def api_fundamentals_all():
+    """Return all cached fundamental scores."""
+    try:
+        from fundamental_analyzer import get_analyzer  # pylint: disable=import-outside-toplevel
+        scores = get_analyzer().get_all_scores()
+        return jsonify({"ok": True, "scores": scores, "count": len(scores)})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/fundamentals/top")
+def api_fundamentals_top():
+    """Return top N stocks by fundamental quality from the full universe."""
+    try:
+        from fundamental_analyzer import get_analyzer  # pylint: disable=import-outside-toplevel
+        from engine import NIFTY50_TICKERS, PENNY_UNIVERSE  # pylint: disable=import-outside-toplevel
+        n      = int(request.args.get("n", 15))
+        all_t  = NIFTY50_TICKERS + PENNY_UNIVERSE
+        result = get_analyzer().top_stocks(all_t, n=n)
+        return jsonify({"ok": True, "top": result})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+# ── Penny Stock endpoints ─────────────────────────────────────────────────────
+
+@app.route("/api/penny/universe")
+def api_penny_universe():
+    """Return the penny/small-cap universe with latest prices and fundamental scores."""
+    try:
+        from engine import PENNY_UNIVERSE, DataFetcher  # pylint: disable=import-outside-toplevel
+        from fundamental_analyzer import get_analyzer   # pylint: disable=import-outside-toplevel
+
+        analyzer = get_analyzer()
+        rows = []
+        for ticker in PENNY_UNIVERSE:
+            price = DataFetcher.get_current_price(ticker)
+            cached = analyzer._cache.get(ticker, {})
+            rows.append({
+                "ticker":     ticker,
+                "price":      round(price, 2),
+                "fund_score": cached.get("score"),
+                "fund_grade": cached.get("grade", "-"),
+                "metrics":    cached.get("metrics", {}),
+            })
+        # Sort by fundamental score desc, with unscored at bottom
+        rows.sort(key=lambda r: r["fund_score"] or -1, reverse=True)
+        return jsonify({"ok": True, "universe": rows, "count": len(rows)})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/penny/positions")
+def api_penny_positions():
+    """Return open positions that are in the penny universe."""
+    try:
+        from engine import PENNY_UNIVERSE  # pylint: disable=import-outside-toplevel
+        penny_set  = set(PENNY_UNIVERSE)
+        positions  = get_agent().portfolio.get_positions_display()
+        penny_pos  = [p for p in positions if p["ticker"] in penny_set]
+        return jsonify({"ok": True, "positions": penny_pos, "count": len(penny_pos)})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+def _run_cycle_safe() -> None:
+    """Run one agent cycle, guarded against concurrent calls."""
+    if _state.running:
+        return
+    _state.running = True
+    try:
+        summary = get_agent().run_cycle()
+        _state.last_cycle = summary
+    except (ValueError, RuntimeError) as exc:
+        print(f"[BG] Error in cycle: {exc}")
+    finally:
+        _state.running = False
+
+
+def _generate_closing_report() -> None:
+    """Persist an end-of-day summary to data/closing_report.json."""
+    import json as _json
+    from pathlib import Path
+    from engine import TRADE_LOG_FILE  # pylint: disable=import-outside-toplevel
+
+    agent  = get_agent()
+    today  = _ist_now().date().isoformat()
+    trades = []
+    if TRADE_LOG_FILE.exists():
+        with open(TRADE_LOG_FILE, encoding="utf-8") as fh:
+            trades = _json.load(fh)
+
+    today_trades = [t for t in trades if t.get("time", "").startswith(today)]
+    day_pnl      = sum(t.get("pnl") or 0 for t in today_trades if t["action"] == "SELL")
+    port_value   = agent.portfolio.get_total_value()
+    positions    = agent.portfolio.get_positions_display()
+
+    report = {
+        "date":           today,
+        "generated_at":   _ist_now().isoformat(),
+        "portfolio_value": round(port_value, 2),
+        "day_pnl":        round(day_pnl, 2),
+        "day_pnl_pct":    round(day_pnl / 1_000_000 * 100, 4),
+        "trades_today":   today_trades,
+        "trades_count":   len(today_trades),
+        "open_positions": len(positions),
+        "top_gainers":    sorted(positions, key=lambda p: p["pnl_pct"], reverse=True)[:3],
+        "top_losers":     sorted(positions, key=lambda p: p["pnl_pct"])[:3],
+        "last_cycle":     _state.last_cycle,
+    }
+    Path("data/closing_report.json").write_text(
+        _json.dumps(report, indent=2), encoding="utf-8"
+    )
+    print(f"[CLOSE] Closing report saved for {today}  day_pnl=₹{day_pnl:,.0f}")
+
+
+def _background_loop() -> None:
+    """Market-aware scheduler: runs every 15 min during NSE hours (9:15–15:30 IST).
+
+    Opening bell  → immediate first cycle
+    Intra-day     → cycle every _state.auto_interval seconds
+    Closing bell  → final cycle + closing report at 15:15–15:30 IST
+    After hours   → sleep until next opening bell
+    """
+    print("[SCHEDULER] Market-aware agent loop started")
+    opening_done_dates: set = set()
+
     while True:
-        time.sleep(_auto_interval)
-        if not _agent_running:
-            _agent_running = True
-            try:
-                summary = get_agent().run_cycle()
-                _last_cycle_info = summary
-            except Exception as e:
-                print(f"[BG] Error in auto-cycle: {e}")
-            finally:
-                _agent_running = False
+        now   = _ist_now()
+        today = now.date()
+
+        if _market_open():
+            # ── Opening bell: run immediately on first entry ──────────────
+            if today not in opening_done_dates:
+                print(f"[BELL] Opening bell — {now.strftime('%H:%M IST')}")
+                _run_cycle_safe()
+                opening_done_dates.add(today)
+
+            # ── Closing bell: generate report when ≥15:15 ─────────────────
+            if now.time() >= dt_time(15, 15) and today not in _state.closing_report_dates:
+                _run_cycle_safe()
+                _generate_closing_report()
+                _state.closing_report_dates.add(today)
+
+            time.sleep(_state.auto_interval)
+
+        else:
+            # Market closed — sleep in 60-s increments until next open
+            secs = _secs_until_next_open()
+            print(f"[SCHEDULER] Market closed. Next open in {secs/3600:.1f}h")
+            # Sleep at most 5 min at a time so we catch the open promptly
+            time.sleep(min(300, secs))
 
 
-# ──────────────────────────────────────────────
-# Main
-# ──────────────────────────────────────────────
+# ── Entry point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # Start background auto-run thread
-    t = threading.Thread(target=_background_loop, daemon=True)
-    t.start()
+    # ── Start Angel One live feed (if credentials are present in .env) ────────
+    feed = get_feed()
+    if feed.is_configured():
+        feed.start()
+        print("  📡  Angel One SmartAPI feed starting…")
+    else:
+        print("  ⚠️   Angel One credentials not found in .env — using yfinance (delayed)")
+        print("       Copy .env.example → .env and fill in your credentials for live data.")
+
+    # ── Start Telegram intelligence agent ────────────────────────────────────
+    from telegram_agent import get_telegram_agent  # pylint: disable=import-outside-toplevel
+    tg = get_telegram_agent()
+    tg.start()
+    if tg.is_configured():
+        print("  💬  Telegram agent starting (discovering signal groups…)")
+    else:
+        print("  ⚠️   Telegram credentials not set — add TELEGRAM_API_ID / HASH / PHONE to .env")
+
+    # ── Start market-aware background agent loop ──────────────────────────────
+    threading.Thread(target=_background_loop, daemon=True).start()
 
     print("\n" + "=" * 60)
     print("  🇮🇳  Indian Institutional Trading Agent  —  Paper Mode")
     print("=" * 60)
     print("  Dashboard → http://localhost:5001")
-    print(f"  Capital  → ₹{INITIAL_CAPITAL:,.0f}")
-    print("  Strategies: Momentum | Mean Reversion | Multi-Factor | Sector Rotation")
+    print(f"  Capital   → ₹{INITIAL_CAPITAL:,.0f}")
+    print("  Strategies: Momentum | Mean Rev | Multi-Factor | Sector Rot | SMA | Fibonacci")
+    print("              RSI Divergence | Bollinger Squeeze | Volume Breakout | Telegram")
+    print("              News Sentiment | Commodity | Fundamental Rescoring")
     print("=" * 60 + "\n")
 
-    app.run(host="0.0.0.0", port=5001, debug=False)
+    port = int(os.environ.get("PORT", 5001))
+    app.run(host="0.0.0.0", port=port, debug=False)
