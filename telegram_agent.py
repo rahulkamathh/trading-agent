@@ -539,12 +539,21 @@ class TelegramAgent:
     async def _async_main(self, api_id: str, api_hash: str, phone: str):
         try:
             from telethon import TelegramClient, events
+            from telethon.sessions import StringSession
         except ImportError:
             self._status = "error: telethon not installed (pip install telethon)"
             logger.error("telethon not installed")
             return
 
-        self._client = TelegramClient(SESSION_FILE, int(api_id), api_hash, loop=self._loop)
+        # Prefer StringSession env var (cloud-friendly, no file needed)
+        string_session = os.environ.get("TELEGRAM_STRING_SESSION", "").strip()
+        if string_session:
+            session = StringSession(string_session)
+            logger.info("Using StringSession from env var (no OTP needed).")
+        else:
+            session = SESSION_FILE
+
+        self._client = TelegramClient(session, int(api_id), api_hash, loop=self._loop)
 
         try:
             await self._client.start(phone=phone)
