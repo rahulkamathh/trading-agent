@@ -11,6 +11,8 @@ import json
 import os
 import time
 import logging
+import requests
+import io
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -163,6 +165,73 @@ NIFTY50_TICKERS = [
     "MMTC.NS","MSTC.NS","NBCC.NS","RAILTEL.NS","RITES.NS",
 ]
 
+
+# ---------------------------------------------------------------------------
+# Dynamic NSE Universe Loader
+# ---------------------------------------------------------------------------
+_NSE_EQUITY_CSV = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
+_NSE_UNIVERSE_CACHE = None   # in-memory cache for the current process
+
+def load_nse_universe(force_refresh: bool = False) -> list:
+    """
+    Download the full NSE equity list and return every EQ-series stock as a
+    list of .NS ticker strings.  Results are cached to data/nse_universe.json
+    for 24 h so we don't hammer NSE on every restart.
+
+    Falls back to the hardcoded NIFTY50_TICKERS if the download fails.
+    """
+    global _NSE_UNIVERSE_CACHE
+    if _NSE_UNIVERSE_CACHE and not force_refresh:
+        return _NSE_UNIVERSE_CACHE
+
+    cache_path = DATA_DIR / "nse_universe.json"
+
+    # Return file-cached list if fresh (< 24 h)
+    if not force_refresh and cache_path.exists():
+        age_hours = (time.time() - cache_path.stat().st_mtime) / 3600
+        if age_hours < 24:
+            try:
+                with open(cache_path) as f:
+                    tickers = json.load(f)
+                if tickers:
+                    _NSE_UNIVERSE_CACHE = tickers
+                    logger.info(f"NSE universe loaded from cache: {len(tickers)} stocks")
+                    return tickers
+            except Exception:
+                pass
+
+    logger.info("Downloading full NSE equity list…")
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept-Encoding": "gzip, deflate",
+            "Accept": "*/*",
+            "Referer": "https://www.nseindia.com/",
+        }
+        resp = requests.get(_NSE_EQUITY_CSV, headers=headers, timeout=30)
+        resp.raise_for_status()
+        df = pd.read_csv(io.StringIO(resp.text))
+
+        # NSE CSV columns: SYMBOL, NAME OF COMPANY, SERIES, DATE OF LISTING, …
+        # Keep only regular equity (EQ series) — excludes ETFs, SME, debt, etc.
+        if "SERIES" in df.columns:
+            df = df[df["SERIES"].str.strip() == "EQ"]
+
+        symbols = df["SYMBOL"].dropna().str.strip().unique().tolist()
+        tickers = [s + ".NS" for s in symbols if s]
+
+        with open(cache_path, "w") as f:
+            json.dump(tickers, f)
+        _NSE_UNIVERSE_CACHE = tickers
+        logger.info(f"NSE universe refreshed: {len(tickers)} EQ stocks")
+        return tickers
+
+    except Exception as exc:
+        logger.warning(f"NSE universe download failed ({exc}), using hardcoded fallback.")
+        _NSE_UNIVERSE_CACHE = NIFTY50_TICKERS
+        return NIFTY50_TICKERS
+
+
 SECTOR_ETFS = {
     "Nifty50":   "NIFTYBEES.NS",
     "Banking":   "BANKBEES.NS",
@@ -245,12 +314,65 @@ class DataFetcher:
         return cls.fetch(ticker, period="max", interval="1d")
 
     @classmethod
-    def fetch_multi(cls, tickers: list, period: str = "2y") -> dict:
-        result = {}
-        for t in tickers:
-            df = cls.fetch(t, period=period)
-            if not df.empty:
-                result[t] = df
+    def fetch_multi(cls, tickers: list, period: str = "2y", batch_size: int = 200) -> dict:
+        """
+        Batch-download historical data for a list of tickers.
+        Uses yfinance's multi-ticker download (single HTTP call per batch)
+        so even 1 000+ tickers are fetched in seconds rather than minutes.
+        Results are cached per (ticker, period) in cls._cache.
+        """
+        if not tickers:
+            return {}
+
+        # Check which tickers are already cached
+        missing = [t for t in tickers if f"{t}_{period}_1d" not in cls._cache]
+        result  = {t: cls._cache[f"{t}_{period}_1d"] for t in tickers if f"{t}_{period}_1d" in cls._cache}
+
+        # Batch-fetch missing ones in chunks of batch_size
+        for i in range(0, len(missing), batch_size):
+            chunk = missing[i:i + batch_size]
+            try:
+                raw = yf.download(
+                    " ".join(chunk),
+                    period=period,
+                    interval="1d",
+                    auto_adjust=True,
+                    progress=False,
+                    group_by="ticker",
+                    threads=True,
+                )
+                if raw.empty:
+                    continue
+
+                # Single ticker: yfinance returns flat columns, not grouped
+                if len(chunk) == 1:
+                    t = chunk[0]
+                    if not raw.empty:
+                        raw.columns = [c if isinstance(c, str) else c[0] for c in raw.columns]
+                        raw = raw.dropna(how="all")
+                        if not raw.empty:
+                            cls._cache[f"{t}_{period}_1d"] = raw
+                            result[t] = raw
+                    continue
+
+                # Multi-ticker: top-level columns are tickers
+                for t in chunk:
+                    try:
+                        df = raw[t].copy() if t in raw.columns.get_level_values(0) else pd.DataFrame()
+                        df = df.dropna(how="all")
+                        if not df.empty:
+                            cls._cache[f"{t}_{period}_1d"] = df
+                            result[t] = df
+                    except Exception:
+                        pass
+            except Exception as exc:
+                logger.debug(f"Batch download error (chunk {i}–{i+batch_size}): {exc}")
+                # fall back to individual fetches for this chunk
+                for t in chunk:
+                    df = cls.fetch(t, period=period)
+                    if not df.empty:
+                        result[t] = df
+
         return result
 
     @classmethod
@@ -1265,20 +1387,27 @@ class SignalAggregator:
         self.telegram    = TelegramSignalStrategy()
 
     def run(self) -> list:
-        logger.info("Fetching market data…")
-        stock_data  = DataFetcher.fetch_multi(NIFTY50_TICKERS, period="2y")
-        penny_data  = DataFetcher.fetch_multi(PENNY_UNIVERSE,  period="2y")
+        # ── Build full universe: NSE equity list (refreshed daily) + PENNY_UNIVERSE ──
+        logger.info("Loading stock universe…")
+        full_universe = load_nse_universe()   # all NSE EQ-series stocks
+        # Merge penny universe; deduplicate
+        all_tickers = list(dict.fromkeys(full_universe + PENNY_UNIVERSE))
+        logger.info(f"Universe size: {len(all_tickers)} stocks (NSE + curated)")
+
+        logger.info("Fetching market data (batch download)…")
+        # Batch fetch entire universe — yfinance does this in a handful of HTTP calls
+        all_data    = DataFetcher.fetch_multi(all_tickers, period="2y", batch_size=200)
+        # Sector ETFs + index fetched separately (small list, already cached)
         etf_data    = DataFetcher.fetch_multi(list(SECTOR_ETFS.values()), period="2y")
         index_df    = DataFetcher.fetch("^NSEI", period="2y")
-        all_data    = {**stock_data, **penny_data}   # combined universe
+        logger.info(f"Data fetched for {len(all_data)} stocks")
 
         all_signals = []
-        # ── Existing strategies (Nifty 50 universe) ──
-        all_signals += self.momentum.generate_signals(stock_data)
-        all_signals += self.mean_rev.generate_signals(stock_data)
-        all_signals += self.multifactor.generate_signals(stock_data)
+        # ── All strategies run on the full universe ──
+        all_signals += self.momentum.generate_signals(all_data)
+        all_signals += self.mean_rev.generate_signals(all_data)
+        all_signals += self.multifactor.generate_signals(all_data)
         all_signals += self.sector_rot.generate_signals(etf_data, index_df)
-        # ── New technical strategies (full universe incl. penny) ──
         all_signals += self.sma.generate_signals(all_data)
         all_signals += self.fibonacci.generate_signals(all_data)
         all_signals += self.rsi_div.generate_signals(all_data)

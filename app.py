@@ -544,14 +544,26 @@ def api_screener_all():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
+@app.route("/api/universe")
+def api_universe():
+    """Return the current full NSE trading universe (or force-refresh it)."""
+    try:
+        from engine import load_nse_universe, PENNY_UNIVERSE  # pylint: disable=import-outside-toplevel
+        force = request.args.get("refresh", "").lower() in ("1", "true", "yes")
+        tickers = load_nse_universe(force_refresh=force)
+        return jsonify({"ok": True, "count": len(tickers), "tickers": tickers})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 @app.route("/api/fundamentals/top")
 def api_fundamentals_top():
     """Return top N stocks by fundamental quality from the full universe."""
     try:
         from fundamental_analyzer import get_analyzer  # pylint: disable=import-outside-toplevel
-        from engine import NIFTY50_TICKERS, PENNY_UNIVERSE  # pylint: disable=import-outside-toplevel
+        from engine import load_nse_universe, PENNY_UNIVERSE  # pylint: disable=import-outside-toplevel
         n      = int(request.args.get("n", 15))
-        all_t  = NIFTY50_TICKERS + PENNY_UNIVERSE
+        all_t  = load_nse_universe() + PENNY_UNIVERSE
         result = get_analyzer().top_stocks(all_t, n=n)
         return jsonify({"ok": True, "top": result})
     except Exception as exc:
