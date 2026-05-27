@@ -292,6 +292,9 @@
       <span class="nav-icon">💬</span> Telegram
       <span id="tgGroupBadge" style="margin-left:auto;font-size:10px;background:#1f3a5f;color:#58a6ff;padding:1px 6px;border-radius:8px;display:none"></span>
     </div>
+    <div class="nav-item" data-view="groupfeed" onclick="showView('groupfeed')">
+      <span class="nav-icon">📡</span> Group Feed
+    </div>
     <div class="nav-item" data-view="news" onclick="showView('news')">
       <span class="nav-icon">📰</span> News Feed
     </div>
@@ -647,6 +650,33 @@
     </div>
   </div>
 
+  <!-- ══ Group Feed page ══ -->
+  <div id="page-groupfeed" class="page-section hidden">
+    <div style="display:flex;gap:16px;height:calc(100vh - 120px)">
+
+      <!-- Left panel: group list -->
+      <div style="width:280px;flex-shrink:0;background:var(--card);border:1px solid var(--border);border-radius:10px;overflow-y:auto;display:flex;flex-direction:column">
+        <div style="padding:14px 16px;border-bottom:1px solid var(--border);font-weight:700;font-size:14px">
+          📡 Groups
+          <span id="gfGroupCount" style="float:right;font-size:11px;color:var(--muted);font-weight:400"></span>
+        </div>
+        <div id="gfGroupList" style="flex:1;overflow-y:auto"></div>
+      </div>
+
+      <!-- Right panel: message feed -->
+      <div style="flex:1;background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden;display:flex;flex-direction:column">
+        <div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">
+          <span id="gfSelectedName" style="font-weight:700;font-size:14px">← Select a group</span>
+          <span id="gfSelectedStatus" style="font-size:11px;padding:2px 8px;border-radius:10px;background:#1f3a5f;color:#58a6ff;display:none"></span>
+          <button onclick="loadGroupFeed()" style="margin-left:auto;padding:4px 12px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px">↻ Refresh</button>
+        </div>
+        <div id="gfMessages" style="flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px">
+          <div style="text-align:center;color:var(--muted);margin-top:40px">Select a group from the left to see its messages</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ══ News Feed page ══ -->
   <div id="page-news" class="page-section hidden">
     <div class="page-header">
@@ -846,6 +876,8 @@ function showView(view) {
       _lazyLoaded.add(view);
       if (view === 'telegram') {
         loadTgStatus(); loadTgGroups('active'); loadTgSignals('');
+      } else if (view === 'groupfeed') {
+        loadGroupList();
       } else if (view === 'news') {
         loadNews();
       } else if (view === 'penny') {
@@ -2102,6 +2134,86 @@ async function tgDiscover() {
   }
   btn.disabled   = false;
   btn.textContent = '🔍 Discover Groups';
+}
+
+// ══════════════════════════════════════════════
+// Group Feed
+// ══════════════════════════════════════════════
+let _gfSelectedId = null;
+let _gfSelectedName = null;
+
+async function loadGroupList() {
+  const res = await fetch('/api/telegram/groups').then(r => r.json()).catch(() => ({}));
+  const groups = res.groups || [];
+  document.getElementById('gfGroupCount').textContent = groups.length + ' groups';
+
+  const STATUS_COLOR = { active: '#3fb950', probation: '#d29922', dropped: '#f85149' };
+  const STATUS_BG    = { active: '#1e3a2e', probation: '#3a2e1e', dropped: '#3a1e1e' };
+
+  const list = document.getElementById('gfGroupList');
+  if (!groups.length) {
+    list.innerHTML = '<div style="padding:20px;color:var(--muted);font-size:12px;text-align:center">No groups yet — click Discover Groups on the Telegram page</div>';
+    return;
+  }
+
+  list.innerHTML = groups.map(g => {
+    const st = g.status || 'probation';
+    const color = STATUS_COLOR[st] || '#8b949e';
+    const bg    = STATUS_BG[st]    || '#21262d';
+    const score = (g.score || 0).toFixed(2);
+    const sigs  = g.signals_tracked || 0;
+    const name  = g.title || g.username || g.group_id || 'Unknown';
+    const isSelected = g.group_id === _gfSelectedId;
+    return `<div onclick="selectGroup('${g.group_id}','${name.replace(/'/g,"\\'")}','${st}')"
+      style="padding:10px 14px;cursor:pointer;border-bottom:1px solid var(--border);
+             background:${isSelected ? '#1f3a5f22' : 'transparent'};
+             border-left:${isSelected ? '3px solid #58a6ff' : '3px solid transparent'}">
+      <div style="font-size:13px;font-weight:600;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${name}</div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <span style="font-size:10px;padding:1px 6px;border-radius:8px;background:${bg};color:${color}">${st}</span>
+        <span style="font-size:10px;color:var(--muted)">score ${score}</span>
+        <span style="font-size:10px;color:var(--muted)">${sigs} sigs</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function selectGroup(groupId, name, status) {
+  _gfSelectedId = groupId;
+  _gfSelectedName = name;
+  document.getElementById('gfSelectedName').textContent = name;
+  const badge = document.getElementById('gfSelectedStatus');
+  badge.textContent = status;
+  badge.style.display = 'inline';
+  loadGroupFeed();
+  // Re-render list to highlight selected
+  loadGroupList();
+}
+
+async function loadGroupFeed() {
+  const msgs = document.getElementById('gfMessages');
+  if (!_gfSelectedId) {
+    msgs.innerHTML = '<div style="text-align:center;color:var(--muted);margin-top:40px">Select a group from the left</div>';
+    return;
+  }
+  msgs.innerHTML = '<div style="text-align:center;color:var(--muted);margin-top:40px">Loading…</div>';
+  const url = `/api/telegram/messages?group_id=${encodeURIComponent(_gfSelectedId)}&limit=100`;
+  const res = await fetch(url).then(r => r.json()).catch(() => ({}));
+  const messages = res.messages || [];
+
+  if (!messages.length) {
+    msgs.innerHTML = '<div style="text-align:center;color:var(--muted);margin-top:40px">No messages yet — messages appear here in real time when the group posts</div>';
+    return;
+  }
+
+  msgs.innerHTML = messages.map(m => {
+    const t = new Date(m.time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+    const text = m.text.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+    return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${t}</div>
+      <div style="font-size:13px;line-height:1.6;white-space:pre-wrap">${text}</div>
+    </div>`;
+  }).join('');
 }
 
 // ══════════════════════════════════════════════

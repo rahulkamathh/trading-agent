@@ -412,6 +412,7 @@ class TelegramAgent:
         self._scorer   = GroupScorer()
         self._groups   = self._load_groups()
         self._signals  = self._load_signals()
+        self._messages: list = []   # in-memory ring buffer of raw messages (last 500)
 
     # ── Persistence ──────────────────────────────────────────────────────── #
 
@@ -473,6 +474,13 @@ class TelegramAgent:
 
     def get_status(self) -> str:
         return self._status
+
+    def get_messages(self, group_id: str = None, limit: int = 50) -> list:
+        """Return recent raw messages, optionally filtered by group_id."""
+        msgs = list(reversed(self._messages[-200:]))
+        if group_id:
+            msgs = [m for m in msgs if m.get("group_id") == group_id]
+        return msgs[:limit]
 
     def get_groups(self) -> list:
         return sorted(
@@ -591,11 +599,24 @@ class TelegramAgent:
     async def _handle_message(self, event):
         try:
             text = event.message.text or ""
-            if len(text.strip()) < 15:
+            if len(text.strip()) < 5:
                 return
             chat  = await event.get_chat()
             gid   = str(event.chat_id)
             title = getattr(chat, "title", gid)
+
+            # Store raw message in ring buffer
+            raw_msg = {
+                "group_id":   gid,
+                "group_name": title,
+                "text":       text[:1000],
+                "time":       datetime.now().isoformat(),
+                "msg_id":     event.message.id,
+            }
+            self._messages.append(raw_msg)
+            if len(self._messages) > 500:
+                self._messages = self._messages[-500:]
+
 
             signal = self._parser.parse(text, event.chat_id, title, event.message.id)
             if signal:

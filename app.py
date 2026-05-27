@@ -420,6 +420,17 @@ def api_telegram_groups():
     return jsonify({"ok": True, "groups": groups, "total": len(groups)})
 
 
+@app.route("/api/telegram/messages")
+def api_telegram_messages():
+    """Return recent raw messages from all monitored groups."""
+    from telegram_agent import get_telegram_agent  # pylint: disable=import-outside-toplevel
+    agent    = get_telegram_agent()
+    limit    = int(request.args.get("limit", 50))
+    group_id = request.args.get("group_id")
+    messages = agent.get_messages(group_id=group_id, limit=limit)
+    return jsonify({"ok": True, "messages": messages, "total": len(messages)})
+
+
 @app.route("/api/telegram/signals")
 def api_telegram_signals():
     """Return recent Telegram signals with parsed fields and outcomes."""
