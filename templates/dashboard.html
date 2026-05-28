@@ -424,6 +424,9 @@
 
   <div class="nav-group">
     <div class="nav-group-title">Tools</div>
+    <div class="nav-item" data-view="agentlog" onclick="showView('agentlog')">
+      <span class="nav-icon">🧠</span> Agent Log
+    </div>
     <div class="nav-item" data-view="controls" onclick="showView('controls')">
       <span class="nav-icon">⚙️</span> Controls
     </div>
@@ -606,6 +609,39 @@
         </table>
       </div>
     </div>
+  </div>
+
+  <!-- ══ Agent Log page ══ -->
+  <div id="page-agentlog" class="page-section hidden">
+    <div class="page-header">
+      <span class="page-title">🧠 Agent Log</span>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span id="logLiveChip" style="font-size:11px;padding:2px 10px;border-radius:10px;border:1px solid var(--border);color:var(--muted)">● Connecting…</span>
+        <select id="logLevelFilter" onchange="renderLog()" style="background:#0d1117;border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:5px;font-size:11px">
+          <option value="">All levels</option>
+          <option value="INFO">INFO+</option>
+          <option value="WARNING">Warnings+</option>
+          <option value="ERROR">Errors only</option>
+        </select>
+        <input id="logSearch" type="text" placeholder="Filter…" oninput="renderLog()"
+          style="padding:4px 10px;background:#0d1117;border:1px solid var(--border);color:var(--text);border-radius:5px;font-size:11px;width:140px"/>
+        <button onclick="clearLog()" class="btn btn-ghost" style="font-size:11px;padding:4px 10px">Clear</button>
+        <button onclick="scrollLogBottom()" class="btn btn-ghost" style="font-size:11px;padding:4px 10px">↓ Bottom</button>
+      </div>
+    </div>
+
+    <!-- Live activity strip -->
+    <div id="logActivity" style="background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--muted);min-height:36px">
+      Waiting for agent activity…
+    </div>
+
+    <!-- Log terminal -->
+    <div id="logTerminal" style="
+      background:#090d12;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;font-family:'SF Mono','Fira Code','Consolas',monospace;
+      font-size:12px;line-height:1.7;height:60vh;overflow-y:auto;
+      overflow-x:hidden;word-break:break-word;
+    "></div>
   </div>
 
   <!-- ══ Controls page ══ -->
@@ -1037,7 +1073,7 @@ function closeSidebar() {
 // ══════════════════════════════════════════════
 let _currentView = 'overview';
 
-const _ALL_PAGES = ['overview','positions','signals','trades','controls','report','telegram','groupfeed','news','penny','screener'];
+const _ALL_PAGES = ['overview','positions','signals','trades','controls','report','telegram','groupfeed','news','penny','screener','agentlog'];
 const _lazyLoaded = new Set();
 
 function showView(view) {
@@ -1072,6 +1108,8 @@ function showView(view) {
         loadPennyUniverse(); loadPennyPositions();
       } else if (view === 'screener') {
         // Nothing to preload — user initiates search
+      } else if (view === 'agentlog') {
+        startLogPolling();
       }
     }
   }
@@ -2516,6 +2554,125 @@ async function loadHeadlines() {
     }).join('');
   } catch(e) { console.warn('Headlines error:', e); }
 }
+
+// ══════════════════════════════════════════════
+// Agent Log (live streaming log viewer)
+// ══════════════════════════════════════════════
+let _logEntries   = [];      // all entries received this session
+let _logTimer     = null;    // polling interval handle
+let _logAutoScroll = true;   // auto-scroll to bottom unless user scrolled up
+
+const _LOG_COLOURS = {
+  DEBUG:    'color:#484f58',
+  INFO:     'color:#e6edf3',
+  WARNING:  'color:#d29922',
+  ERROR:    'color:#f85149',
+  CRITICAL: 'color:#f85149;font-weight:700',
+};
+
+// Emoji prefix based on message content
+function _logEmoji(msg) {
+  if (msg.includes('✅') || msg.includes('BOUGHT'))   return '';
+  if (msg.includes('🛑') || msg.includes('STOP'))     return '';
+  if (msg.includes('🎯') || msg.includes('PROFIT'))   return '';
+  if (msg.includes('⏳') || msg.includes('COOLDOWN')) return '';
+  if (msg.includes('⏭')  || msg.includes('SKIP'))    return '';
+  if (msg.includes('📋') || msg.includes('candidate')) return '';
+  if (msg.includes('🔎') || msg.includes('Evaluating')) return '';
+  if (msg.includes('📊') || msg.includes('HOLD'))     return '';
+  if (msg.includes('Fetching') || msg.includes('Loading') || msg.includes('Download')) return '';
+  if (msg.includes('Universe') || msg.includes('universe')) return '';
+  if (msg.includes('Cycle'))  return '';
+  if (msg.includes('ERROR') || msg.includes('Error')) return '';
+  if (msg.includes('WARNING') || msg.includes('warn')) return '';
+  return '';
+}
+
+function renderLog() {
+  const term   = document.getElementById('logTerminal');
+  if (!term) return;
+  const filter  = (document.getElementById('logLevelFilter')?.value || '').toUpperCase();
+  const search  = (document.getElementById('logSearch')?.value || '').toLowerCase();
+  const LEVELS  = ['DEBUG','INFO','WARNING','ERROR','CRITICAL'];
+  const minIdx  = filter ? LEVELS.indexOf(filter) : 0;
+
+  const visible = _logEntries.filter(e => {
+    if (minIdx > 0 && LEVELS.indexOf(e.level) < minIdx) return false;
+    if (search && !e.msg.toLowerCase().includes(search)) return false;
+    return true;
+  });
+
+  const wasAtBottom = term.scrollHeight - term.scrollTop - term.clientHeight < 60;
+
+  term.innerHTML = visible.map(e => {
+    const style = _LOG_COLOURS[e.level] || _LOG_COLOURS.INFO;
+    const ts    = `<span style="color:#484f58;user-select:none">${e.t} </span>`;
+    const msg   = e.msg.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return `<div style="${style};padding:1px 0">${ts}${msg}</div>`;
+  }).join('');
+
+  if (wasAtBottom || _logAutoScroll) {
+    term.scrollTop = term.scrollHeight;
+  }
+
+  // Update activity strip with last meaningful line
+  const important = [..._logEntries].reverse().find(e =>
+    e.level !== 'DEBUG' || e.msg.includes('BUY') || e.msg.includes('SELL')
+  );
+  const actEl = document.getElementById('logActivity');
+  if (actEl && important) {
+    actEl.textContent = `${important.t}  ${important.msg}`;
+    actEl.style.color = important.level === 'WARNING' ? 'var(--yellow)'
+                      : important.level === 'ERROR'   ? 'var(--red)'
+                      : 'var(--text)';
+  }
+}
+
+async function _fetchLogs() {
+  try {
+    const res  = await fetch('/api/logs?n=500');
+    const data = await res.json();
+    if (!data.ok) return;
+    const prev = _logEntries.length;
+    _logEntries = data.logs;
+    const chip  = document.getElementById('logLiveChip');
+    if (chip) {
+      chip.textContent = `● Live  ${_logEntries.length} lines`;
+      chip.style.color = 'var(--green)';
+      chip.style.borderColor = '#2ea04333';
+    }
+    if (_logEntries.length !== prev) renderLog();
+  } catch {
+    const chip = document.getElementById('logLiveChip');
+    if (chip) { chip.textContent = '● Offline'; chip.style.color = 'var(--muted)'; }
+  }
+}
+
+function startLogPolling() {
+  _fetchLogs();
+  if (_logTimer) clearInterval(_logTimer);
+  _logTimer = setInterval(_fetchLogs, 3000);
+  // Detect if user scrolls up → disable auto-scroll
+  const term = document.getElementById('logTerminal');
+  if (term) {
+    term.addEventListener('scroll', () => {
+      _logAutoScroll = term.scrollHeight - term.scrollTop - term.clientHeight < 60;
+    }, { passive: true });
+  }
+}
+
+function clearLog() {
+  _logEntries = [];
+  renderLog();
+}
+
+function scrollLogBottom() {
+  const term = document.getElementById('logTerminal');
+  if (term) { term.scrollTop = term.scrollHeight; _logAutoScroll = true; }
+}
+
+// Stop polling when navigating away
+const _origShowView = showView;
 
 // ══════════════════════════════════════════════
 // Stock Screener (screener.in + yfinance)

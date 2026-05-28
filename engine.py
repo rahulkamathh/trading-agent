@@ -1128,14 +1128,28 @@ class Portfolio:
             price = DataFetcher.get_current_price(ticker)
             if price <= 0:
                 continue
+            pnl_pct = (price / pos["avg_price"] - 1) * 100
             if price <= pos["stop_loss"]:
+                logger.warning(
+                    f"🛑 STOP-LOSS {ticker} @ ₹{price:.2f}  "
+                    f"entry=₹{pos['avg_price']:.2f}  loss={pnl_pct:.1f}%"
+                )
                 trade = self.execute_sell(ticker, price, reason="STOP_LOSS")
                 if trade:
                     triggered.append(trade)
             elif price >= pos["target"]:
+                logger.info(
+                    f"🎯 TAKE-PROFIT {ticker} @ ₹{price:.2f}  "
+                    f"entry=₹{pos['avg_price']:.2f}  gain={pnl_pct:.1f}%"
+                )
                 trade = self.execute_sell(ticker, price, reason="TAKE_PROFIT")
                 if trade:
                     triggered.append(trade)
+            else:
+                logger.debug(
+                    f"📊 HOLD {ticker} @ ₹{price:.2f}  "
+                    f"SL=₹{pos['stop_loss']:.2f}  TP=₹{pos['target']:.2f}  {pnl_pct:+.1f}%"
+                )
         return triggered
 
     def _log_trade(self, action, ticker, qty, price, strategy, reason, pnl=None) -> dict:
@@ -1550,24 +1564,33 @@ class TradingAgent:
             buy_candidates.append((ticker, boosted, agg["price"], agg["strategies"]))
 
         buy_candidates.sort(key=lambda x: x[1], reverse=True)
+        logger.info(f"📋 {len(buy_candidates)} BUY candidates after aggregation "
+                    f"({len([c for c in buy_candidates if c[1] >= MIN_BUY_STRENGTH])} above threshold)")
 
         executed = []
         for ticker, composite_strength, price, strategies in buy_candidates:
+            strat_str = "+".join(sorted(set(strategies)))
             # Guard-rail 1: minimum strength
             if composite_strength < MIN_BUY_STRENGTH:
                 logger.debug(
-                    f"SKIP BUY {ticker} — strength {composite_strength:.1f} < {MIN_BUY_STRENGTH}"
+                    f"⏭  SKIP {ticker} — strength {composite_strength:.0f} < {MIN_BUY_STRENGTH} [{strat_str}]"
                 )
+                continue
+            if self.portfolio.in_cooldown(ticker):
+                logger.info(f"⏳ COOLDOWN {ticker} — skipping (exited recently)")
                 continue
             if price <= 0:
                 price = DataFetcher.get_current_price(ticker)
+            logger.info(f"🔎 Evaluating BUY {ticker} @ ₹{price:.2f}  "
+                        f"strength={composite_strength:.0f}  strategies=[{strat_str}]")
             trade = self.portfolio.execute_buy(
                 ticker, price,
-                strategy="+".join(set(strategies)),
+                strategy=strat_str,
                 reason=f"SIGNAL strength={composite_strength:.0f}",
             )
             if trade:
                 executed.append(trade)
+                logger.info(f"✅ BOUGHT {ticker}  qty={trade['qty']}  @ ₹{price:.2f}  [{strat_str}]")
 
         # ── Signal-based SELL: intentionally disabled ─────────────────────
         # Positions are closed ONLY by price-based rules (stop-loss / take-profit)

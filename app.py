@@ -5,9 +5,11 @@ Open: http://localhost:5001
 """
 
 import json
+import logging
 import os
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, time as dt_time, date as dt_date
 from zoneinfo import ZoneInfo
@@ -21,6 +23,39 @@ from engine import INITIAL_CAPITAL, INDEX_TICKERS, DataFetcher, get_agent
 from angelone_feed import get_feed
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
+
+# ── In-memory agent log (ring buffer, last 500 lines) ────────────────────────
+_agent_log: deque = deque(maxlen=500)
+_log_lock   = threading.Lock()
+
+# Level → colour tag used by the dashboard
+_LEVEL_TAG = {
+    "DEBUG":    "muted",
+    "INFO":     "text",
+    "WARNING":  "yellow",
+    "ERROR":    "red",
+    "CRITICAL": "red",
+}
+
+class _AgentLogHandler(logging.Handler):
+    """Captures all agent log records into the in-memory ring buffer."""
+    def emit(self, record: logging.LogRecord):
+        msg = self.format(record)
+        entry = {
+            "t":     datetime.now().strftime("%H:%M:%S"),
+            "level": record.levelname,
+            "tag":   _LEVEL_TAG.get(record.levelname, "text"),
+            "msg":   msg,
+        }
+        with _log_lock:
+            _agent_log.append(entry)
+
+# Attach to the root logger so every module (engine, telegram_agent, etc.) is captured
+_handler = _AgentLogHandler()
+_handler.setFormatter(logging.Formatter("%(name)s — %(message)s"))
+_handler.setLevel(logging.DEBUG)
+logging.getLogger().addHandler(_handler)
+logging.getLogger().setLevel(logging.DEBUG)
 
 
 # ── Agent state ─────────────────────────────────────────────────────────────
@@ -542,6 +577,18 @@ def api_screener_all():
         return jsonify({"ok": True, "data": get_screener().get_all_cached()})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/logs")
+def api_logs():
+    """Return recent agent log lines.  ?since=HH:MM:SS returns only newer entries."""
+    since = request.args.get("since", "")
+    n     = int(request.args.get("n", 200))
+    with _log_lock:
+        entries = list(_agent_log)
+    if since:
+        entries = [e for e in entries if e["t"] > since]
+    return jsonify({"ok": True, "logs": entries[-n:], "total": len(entries)})
 
 
 @app.route("/api/universe")
