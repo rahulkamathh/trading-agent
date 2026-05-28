@@ -1,8 +1,13 @@
 """
 Angel One SmartAPI — Live WebSocket Price Feed
 ===============================================
-Streams real-time NSE tick data for all Nifty 50 stocks + sector ETFs + indices.
-Maintains a thread-safe in-memory price cache that the rest of the app reads.
+Streams real-time NSE tick data for the full NSE equity universe.
+On startup the Angel One scrip master JSON is downloaded to build a
+dynamic symbol→token map covering all ~2000 NSE EQ stocks.
+Subscribes in batches of 50 tokens (SmartStream limit per call).
+
+Fallback: if the scrip master download fails the original 55-stock
+hardcoded map is used so the feed still works.
 
 Usage:
     from angelone_feed import LiveFeed
@@ -23,14 +28,14 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# ── Instrument token map ──────────────────────────────────────────────────────
-# Angel One uses numeric tokens to identify instruments on the exchange.
-# Exchange type 1 = NSE CM (cash market equities + ETFs)
-# These tokens are stable; sourced from Angel One's instrument master.
-# Indices use a special token on NSE_INDEX segment (exchange type 13).
+# ── Scrip master URL ──────────────────────────────────────────────────────────
+_SCRIP_MASTER_URL = (
+    "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+)
 
-NSE_CM_TOKENS: dict[str, str] = {
-    # Nifty 50 constituents
+# ── Hardcoded fallback token map (used if scrip master download fails) ────────
+# Nifty 50 constituents + sector ETFs — stable tokens sourced from Angel One.
+_FALLBACK_CM_TOKENS: dict[str, str] = {
     "RELIANCE.NS":    "2885",
     "TCS.NS":         "11536",
     "HDFCBANK.NS":    "1333",
@@ -81,7 +86,6 @@ NSE_CM_TOKENS: dict[str, str] = {
     "BAJAJ-AUTO.NS":  "16669",
     "HINDALCO.NS":    "1363",
     "VEDL.NS":        "3063",
-    # Sector ETFs
     "NIFTYBEES.NS":   "2714",
     "BANKBEES.NS":    "13269",
     "ITBEES.NS":      "15141",
@@ -95,11 +99,55 @@ NSE_INDEX_TOKENS: dict[str, str] = {
     "^NSEBANK": "99926009",   # Bank Nifty
 }
 
-# Reverse map: token → ticker (for decoding WebSocket messages)
-_TOKEN_TO_TICKER: dict[str, str] = {
-    **{v: k for k, v in NSE_CM_TOKENS.items()},
-    **{v: k for k, v in NSE_INDEX_TOKENS.items()},
-}
+# ── Dynamic maps (populated at startup from scrip master) ─────────────────────
+# NSE_CM_TOKENS  :  { "RELIANCE.NS": "2885", ... }  — ALL NSE EQ stocks
+# _TOKEN_TO_TICKER: { "2885": "RELIANCE.NS", ... }  — reverse lookup
+NSE_CM_TOKENS:    dict[str, str] = {}
+_TOKEN_TO_TICKER: dict[str, str] = {}
+
+_BATCH_SIZE = 50          # SmartStream max tokens per subscribe call
+_MAX_STOCKS = 2000        # safety cap (covers full NSE EQ universe)
+
+
+def _load_scrip_master() -> dict[str, str]:
+    """
+    Download the Angel One scrip master JSON and return a dict mapping
+    yfinance-style tickers ("RELIANCE.NS") to Angel One numeric tokens.
+
+    Only NSE cash-market equities are included (exch_seg=NSE, symbol ends -EQ).
+    Falls back to the hardcoded 55-stock map on any error.
+    """
+    try:
+        import requests as req  # type: ignore[import-untyped]
+        logger.info("[LiveFeed] Downloading scrip master…")
+        resp = req.get(_SCRIP_MASTER_URL, timeout=30)
+        resp.raise_for_status()
+        records: list[dict] = resp.json()
+
+        result: dict[str, str] = {}
+        for item in records:
+            if (
+                item.get("exch_seg") == "NSE"
+                and str(item.get("symbol", "")).endswith("-EQ")
+            ):
+                raw_symbol = item["symbol"][:-3]        # strip "-EQ"
+                token      = str(item["token"]).strip()
+                if raw_symbol and token:
+                    result[raw_symbol + ".NS"] = token
+
+        count = len(result)
+        if count < 10:
+            raise ValueError(f"Scrip master returned only {count} records — suspicious")
+
+        logger.info(f"[LiveFeed] Scrip master loaded: {count} NSE EQ stocks")
+        return result
+
+    except Exception as exc:
+        logger.warning(
+            f"[LiveFeed] Scrip master download failed ({exc}) — using fallback {len(_FALLBACK_CM_TOKENS)}-stock map"
+        )
+        return dict(_FALLBACK_CM_TOKENS)
+
 
 # ── LiveFeed ──────────────────────────────────────────────────────────────────
 
@@ -108,7 +156,7 @@ class LiveFeed:
     Manages the Angel One SmartStream WebSocket connection.
 
     Thread-safe price cache:  LiveFeed._prices  { "RELIANCE.NS": 2450.35, ... }
-    Change map:               LiveFeed._changes { "RELIANCE.NS": +1.23,   ... }  (% change vs day open)
+    Change map:               LiveFeed._changes { "RELIANCE.NS": +1.23,   ... }
     """
 
     _prices:  dict[str, float] = {}
@@ -116,23 +164,22 @@ class LiveFeed:
     _lock = threading.Lock()
 
     def __init__(self) -> None:
-        self._api_key    = os.environ.get("ANGELONE_API_KEY", "")
-        self._client_id  = os.environ.get("ANGELONE_CLIENT_ID", "")
-        self._password   = os.environ.get("ANGELONE_PASSWORD", "")
-        self._totp_secret = os.environ.get("ANGELONE_TOTP_SECRET", "")
-        self._sws        = None
-        self._smart      = None
-        self._thread     = None
-        self._stop_event = threading.Event()
-        self._connected  = False
-        self._auth_token = ""
-        self._feed_token = ""
+        self._api_key        = os.environ.get("ANGELONE_API_KEY", "")
+        self._client_id      = os.environ.get("ANGELONE_CLIENT_ID", "")
+        self._password       = os.environ.get("ANGELONE_PASSWORD", "")
+        self._totp_secret    = os.environ.get("ANGELONE_TOTP_SECRET", "")
+        self._sws            = None
+        self._smart          = None
+        self._thread         = None
+        self._stop_event     = threading.Event()
+        self._connected      = False
+        self._auth_token     = ""
+        self._feed_token     = ""
         self._correlation_id = "trading_agent_live"
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def is_configured(self) -> bool:
-        """Return True if all 4 credentials are present in env."""
         return all([self._api_key, self._client_id, self._password, self._totp_secret])
 
     def is_connected(self) -> bool:
@@ -174,12 +221,12 @@ class LiveFeed:
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _generate_totp(self) -> str:
-        """Generate current TOTP from secret using pyotp."""
         import pyotp  # type: ignore[import-untyped]
         return pyotp.TOTP(self._totp_secret).now()
 
     def _authenticate(self) -> bool:
-        """Log in to SmartAPI and cache auth + feed tokens."""
+        """Log in to SmartAPI, cache tokens, and load the scrip master."""
+        global NSE_CM_TOKENS, _TOKEN_TO_TICKER  # noqa: PLW0603
         try:
             from SmartApi import SmartConnect  # type: ignore[import-untyped]
             self._smart = SmartConnect(api_key=self._api_key)
@@ -191,43 +238,34 @@ class LiveFeed:
             self._auth_token = data["data"]["jwtToken"]
             self._feed_token = self._smart.getfeedToken()
             logger.info("[LiveFeed] Authenticated with Angel One SmartAPI")
+
+            # Build dynamic token maps from scrip master
+            NSE_CM_TOKENS = _load_scrip_master()
+            _TOKEN_TO_TICKER = {
+                **{v: k for k, v in NSE_CM_TOKENS.items()},
+                **{v: k for k, v in NSE_INDEX_TOKENS.items()},
+            }
             return True
         except Exception as exc:
             logger.error(f"[LiveFeed] Authentication error: {exc}")
             return False
 
-    def _build_subscription(self) -> list[dict]:
-        """Build the subscribe payload for SmartWebSocketV2."""
-        return [
-            {
-                "exchangeType": 1,   # NSE CM
-                "tokens": list(NSE_CM_TOKENS.values()),
-            },
-            {
-                "exchangeType": 13,  # NSE Index
-                "tokens": list(NSE_INDEX_TOKENS.values()),
-            },
-        ]
-
     def _on_data(self, wsapp, message: str) -> None:  # noqa: ARG002
-        """Handle incoming tick messages from SmartStream."""
         try:
             if isinstance(message, bytes):
                 message = message.decode("utf-8")
             tick = json.loads(message) if isinstance(message, str) else message
-            # SmartStreamV2 sends dicts directly when parsed
             self._process_tick(tick)
         except Exception as exc:
             logger.debug(f"[LiveFeed] Tick parse error: {exc}")
 
     def _process_tick(self, tick: dict) -> None:
-        """Update the in-memory price cache from a decoded tick."""
         try:
             token   = str(tick.get("token", ""))
             ltp     = tick.get("last_traded_price", 0) or tick.get("ltp", 0)
             open_px = tick.get("open_price_of_the_day", 0) or tick.get("open", 0)
 
-            # Angel One sends prices multiplied by 100 for CM segment
+            # Angel One sends prices ×100 for CM segment
             ltp     = ltp / 100.0
             open_px = open_px / 100.0 if open_px else ltp
 
@@ -236,7 +274,6 @@ class LiveFeed:
                 return
 
             chg_pct = ((ltp / open_px) - 1) * 100 if open_px > 0 else 0.0
-
             with self._lock:
                 LiveFeed._prices[ticker]  = round(ltp, 2)
                 LiveFeed._changes[ticker] = round(chg_pct, 4)
@@ -247,13 +284,29 @@ class LiveFeed:
         self._connected = True
         logger.info("[LiveFeed] WebSocket connected — subscribing to tickers")
         try:
-            token_list = self._build_subscription()
+            # Subscribe NSE CM equities in batches of _BATCH_SIZE
+            cm_tokens  = list(NSE_CM_TOKENS.values())[:_MAX_STOCKS]
+            batches    = [cm_tokens[i:i + _BATCH_SIZE] for i in range(0, len(cm_tokens), _BATCH_SIZE)]
+            subscribed = 0
+            for batch in batches:
+                self._sws.subscribe(
+                    correlation_id=self._correlation_id,
+                    mode=1,      # LTP only — lowest bandwidth
+                    token_list=[{"exchangeType": 1, "tokens": batch}],
+                )
+                subscribed += len(batch)
+                time.sleep(0.05)   # small pause to avoid flooding the socket
+
+            # Subscribe NSE indices
             self._sws.subscribe(
                 correlation_id=self._correlation_id,
-                mode=1,          # Mode 1 = LTP only (fastest)
-                token_list=token_list,
+                mode=1,
+                token_list=[{"exchangeType": 13, "tokens": list(NSE_INDEX_TOKENS.values())}],
             )
-            logger.info(f"[LiveFeed] Subscribed to {len(NSE_CM_TOKENS)} stocks + 2 indices")
+            logger.info(
+                f"[LiveFeed] Subscribed to {subscribed} stocks + {len(NSE_INDEX_TOKENS)} indices"
+                f" ({len(batches)} batches)"
+            )
         except Exception as exc:
             logger.error(f"[LiveFeed] Subscribe error: {exc}")
 
@@ -283,15 +336,15 @@ class LiveFeed:
                     feed_token=self._feed_token,
                     max_retry_attempt=5,
                 )
-                self._sws.on_open    = self._on_open
-                self._sws.on_data    = self._on_data
-                self._sws.on_error   = self._on_error
-                self._sws.on_close   = self._on_close
+                self._sws.on_open  = self._on_open
+                self._sws.on_data  = self._on_data
+                self._sws.on_error = self._on_error
+                self._sws.on_close = self._on_close
 
                 logger.info("[LiveFeed] Connecting to SmartStream WebSocket…")
-                self._sws.connect()       # blocks until closed
+                self._sws.connect()   # blocks until closed
 
-                backoff = 5  # reset on clean disconnect
+                backoff = 5
             except Exception as exc:
                 logger.error(f"[LiveFeed] Feed error: {exc}")
                 self._connected = False
