@@ -173,22 +173,54 @@ def api_signals():
 
 _market_overview_cache: dict = {}
 _market_overview_ts: float = 0.0
-_MARKET_OVERVIEW_TTL = 30  # seconds — yfinance rate-limit friendly
+_MARKET_OVERVIEW_TTL = 60  # seconds between yfinance refreshes
+
+
+def _fetch_index_price(ticker: str) -> tuple[float, float]:
+    """
+    Return (current_price, pct_change_vs_prev_close) for an index ticker.
+    Uses yf.Ticker.fast_info which gives the *live delayed* price (15-min lag)
+    rather than the previous day's EOD close that daily OHLCV bars return.
+    Falls back to 5d daily bars if fast_info fails.
+    """
+    import yfinance as yf  # pylint: disable=import-outside-toplevel
+    try:
+        fi = yf.Ticker(ticker).fast_info
+        price = float(fi.last_price or 0)
+        prev  = float(fi.previous_close or 0)
+        if price > 0 and prev > 0:
+            return price, (price / prev - 1) * 100
+    except Exception:
+        pass
+    # Fallback to daily bars (gives previous close during market hours)
+    try:
+        df = yf.download(ticker, period="5d", interval="1d",
+                         auto_adjust=True, progress=False)
+        if not df.empty:
+            price = float(df["Close"].iloc[-1])
+            prev  = float(df["Close"].iloc[-2]) if len(df) > 1 else price
+            return price, (price / prev - 1) * 100
+    except Exception:
+        pass
+    return 0.0, 0.0
 
 
 @app.route("/api/market_overview")
 def api_market_overview():
-    """Return latest price and day-change for Nifty 50 and Bank Nifty.
+    """Return latest price and % change for Nifty 50 and Bank Nifty.
 
-    Caches for 30 seconds to avoid yfinance rate-limits on rapid polling.
-    Angel One live feed prices override this when connected.
+    Priority:
+      1. Angel One SmartAPI live WebSocket feed (if configured + connected)
+      2. yfinance fast_info — delayed ~15 min but updates *intraday*
+      3. Daily OHLCV bar fallback (gives previous EOD close)
+    Result cached for 60 s to avoid hammering yfinance.
     """
     global _market_overview_cache, _market_overview_ts  # noqa: PLW0603
 
     feed = get_feed()
-    now = time.time()
+    now  = time.time()
 
-    # If Angel One feed is live, serve from WebSocket prices — always fresh
+    # ── 1. Angel One live feed (sub-second, no cache needed) ──────────────
     if feed.is_connected():
         live = feed.get_all_prices()
         results: dict = {}
@@ -204,32 +236,23 @@ def api_market_overview():
         if results:
             return jsonify({"ok": True, "indices": results})
 
-    # Fallback: yfinance with a 30-second TTL cache
+    # ── 2. yfinance fast_info (60-second TTL cache) ───────────────────────
     if now - _market_overview_ts < _MARKET_OVERVIEW_TTL and _market_overview_cache:
         return jsonify({"ok": True, "indices": _market_overview_cache, "source": "cache"})
 
-    # Clear per-ticker cache keys so yfinance re-downloads
-    for _, ticker in INDEX_TICKERS.items():
-        key = f"{ticker}_5d_1d"
-        DataFetcher._cache.pop(key, None)
-
     results = {}
     for name, ticker in INDEX_TICKERS.items():
-        df = DataFetcher.fetch(ticker, period="5d")
-        if not df.empty:
-            close = df["Close"]
-            price = float(close.iloc[-1])
-            prev = float(close.iloc[-2]) if len(close) > 1 else price
-            chg_pct = (price / prev - 1) * 100
+        price, chg_pct = _fetch_index_price(ticker)
+        if price > 0:
             results[name] = {
                 "price":   round(price, 2),
                 "chg_pct": round(chg_pct, 2),
                 "ticker":  ticker,
-                "source":  "yfinance",
+                "source":  "delayed",
             }
 
     _market_overview_cache = results
-    _market_overview_ts = now
+    _market_overview_ts    = now
     return jsonify({"ok": True, "indices": results})
 
 

@@ -384,9 +384,22 @@ class DataFetcher:
 
         return result
 
+    # Per-ticker price cache with a short TTL so stop-loss checks stay current
+    _price_cache: dict = {}   # ticker → (price, timestamp)
+    _PRICE_TTL   = 120        # seconds before re-fetching via fast_info
+
     @classmethod
     def get_current_price(cls, ticker: str) -> float:
-        # Prefer live Angel One feed when available
+        """
+        Return the best available current price for a ticker.
+        Priority:
+          1. Angel One SmartAPI live feed (sub-second, if configured)
+          2. yfinance fast_info.last_price (~15 min delayed, but intraday)
+          3. Cached OHLCV last close (EOD, stale during market hours)
+        Result is cached for _PRICE_TTL seconds to avoid hammering yfinance
+        on every stop-loss check across hundreds of positions.
+        """
+        # 1. Angel One live feed
         try:
             from angelone_feed import get_feed  # pylint: disable=import-outside-toplevel
             live_price = get_feed().get_price(ticker)
@@ -394,11 +407,29 @@ class DataFetcher:
                 return live_price
         except ImportError:
             pass
-        # Fallback: yfinance (delayed / EOD)
+
+        # 2. Short-TTL intraday price via fast_info
+        now = time.time()
+        cached = cls._price_cache.get(ticker)
+        if cached and now - cached[1] < cls._PRICE_TTL:
+            return cached[0]
+
+        try:
+            fi    = yf.Ticker(ticker).fast_info
+            price = float(fi.last_price or 0)
+            if price > 0:
+                cls._price_cache[ticker] = (price, now)
+                return price
+        except Exception:
+            pass
+
+        # 3. Last close from historical data (EOD fallback)
         df = cls.fetch(ticker, period="5d")
-        if df.empty:
-            return 0.0
-        return float(df["Close"].iloc[-1])
+        if not df.empty:
+            price = float(df["Close"].iloc[-1])
+            cls._price_cache[ticker] = (price, now)
+            return price
+        return 0.0
 
     @classmethod
     def clear_cache(cls):
