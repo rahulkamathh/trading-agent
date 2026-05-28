@@ -250,7 +250,7 @@ class ScreenerScraper:
                 if nums:
                     result["piotroski"] = int(nums[0])
 
-        logger.info(f"Screener.in scraped {symbol}: {list(result.keys())}")
+        logger.debug(f"Screener.in scraped {symbol}: {list(result.keys())}")
         return result
 
     def get_all_cached(self) -> dict:
