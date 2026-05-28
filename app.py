@@ -37,9 +37,19 @@ _LEVEL_TAG = {
     "CRITICAL": "red",
 }
 
+# Only capture logs from our own modules — silence library internals
+_OUR_MODULES = {
+    "engine", "app", "telegram_agent", "news_agent",
+    "fundamental_analyzer", "angelone_feed", "__main__",
+}
+
 class _AgentLogHandler(logging.Handler):
-    """Captures all agent log records into the in-memory ring buffer."""
+    """Captures agent log records into the ring buffer, ignoring library noise."""
     def emit(self, record: logging.LogRecord):
+        # Drop anything from yfinance, peewee, urllib, requests, etc.
+        top = record.name.split(".")[0]
+        if top not in _OUR_MODULES:
+            return
         msg = self.format(record)
         entry = {
             "t":     datetime.now().strftime("%H:%M:%S"),
@@ -50,12 +60,16 @@ class _AgentLogHandler(logging.Handler):
         with _log_lock:
             _agent_log.append(entry)
 
-# Attach to the root logger so every module (engine, telegram_agent, etc.) is captured
+# Attach to root but only emit for our modules (handler filters internally)
 _handler = _AgentLogHandler()
 _handler.setFormatter(logging.Formatter("%(name)s — %(message)s"))
 _handler.setLevel(logging.DEBUG)
 logging.getLogger().addHandler(_handler)
-logging.getLogger().setLevel(logging.DEBUG)
+
+# Silence noisy third-party loggers explicitly
+for _noisy in ("yfinance", "peewee", "urllib3", "requests", "httpx",
+               "asyncio", "telethon", "websocket", "charset_normalizer"):
+    logging.getLogger(_noisy).setLevel(logging.CRITICAL)
 
 
 # ── Agent state ─────────────────────────────────────────────────────────────
