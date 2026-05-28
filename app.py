@@ -79,19 +79,22 @@ _IST          = ZoneInfo("Asia/Kolkata")
 _MARKET_OPEN  = dt_time(9, 15)
 _MARKET_CLOSE = dt_time(15, 30)
 
-# ── NSE holiday calendar (via exchange-calendars, cached per process) ─────────
+# ── NSE holiday calendar (via pandas_market_calendars, cached per process) ────
 _nse_calendar = None
+_nse_calendar_loaded = False  # True once we've attempted to load
 
 def _get_nse_calendar():
-    """Lazy-load the NSE exchange calendar (XNSE)."""
-    global _nse_calendar  # noqa: PLW0603
-    if _nse_calendar is None:
+    """Lazy-load the NSE exchange calendar using pandas_market_calendars."""
+    global _nse_calendar, _nse_calendar_loaded  # noqa: PLW0603
+    if not _nse_calendar_loaded:
+        _nse_calendar_loaded = True
         try:
-            import exchange_calendars as xcals  # type: ignore[import-untyped]
-            _nse_calendar = xcals.get_calendar("XNSE")
+            import pandas_market_calendars as mcal  # type: ignore[import-untyped]
+            _nse_calendar = mcal.get_calendar("NSE")
+            logging.getLogger(__name__).info("[Scheduler] NSE holiday calendar loaded (pandas_market_calendars)")
         except Exception as exc:
             logging.getLogger(__name__).warning(
-                f"[Scheduler] exchange_calendars unavailable — holiday check disabled: {exc}"
+                f"[Scheduler] pandas_market_calendars unavailable — holiday check disabled: {exc}"
             )
     return _nse_calendar
 
@@ -102,7 +105,9 @@ def _is_nse_holiday(date_obj) -> bool:
     if cal is None:
         return False  # can't check, assume not a holiday
     try:
-        return not cal.is_session(date_obj.strftime("%Y-%m-%d"))
+        date_str = date_obj.strftime("%Y-%m-%d") if hasattr(date_obj, "strftime") else str(date_obj)
+        schedule = cal.schedule(start_date=date_str, end_date=date_str)
+        return schedule.empty  # empty schedule = holiday or weekend
     except Exception:
         return False
 
