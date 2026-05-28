@@ -79,6 +79,33 @@ _IST          = ZoneInfo("Asia/Kolkata")
 _MARKET_OPEN  = dt_time(9, 15)
 _MARKET_CLOSE = dt_time(15, 30)
 
+# ── NSE holiday calendar (via exchange-calendars, cached per process) ─────────
+_nse_calendar = None
+
+def _get_nse_calendar():
+    """Lazy-load the NSE exchange calendar (XNSE)."""
+    global _nse_calendar  # noqa: PLW0603
+    if _nse_calendar is None:
+        try:
+            import exchange_calendars as xcals  # type: ignore[import-untyped]
+            _nse_calendar = xcals.get_calendar("XNSE")
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                f"[Scheduler] exchange_calendars unavailable — holiday check disabled: {exc}"
+            )
+    return _nse_calendar
+
+
+def _is_nse_holiday(date_obj) -> bool:
+    """Return True if date_obj is an NSE trading holiday (not a session day)."""
+    cal = _get_nse_calendar()
+    if cal is None:
+        return False  # can't check, assume not a holiday
+    try:
+        return not cal.is_session(date_obj.strftime("%Y-%m-%d"))
+    except Exception:
+        return False
+
 
 def _ist_now() -> datetime:
     """Return the current time in IST."""
@@ -86,20 +113,26 @@ def _ist_now() -> datetime:
 
 
 def _market_open() -> bool:
-    """Return True if NSE is currently open (weekday, 9:15–15:30 IST)."""
+    """Return True if NSE is currently open (weekday, 9:15–15:30 IST, non-holiday)."""
     now = _ist_now()
-    return now.weekday() < 5 and _MARKET_OPEN <= now.time() <= _MARKET_CLOSE
+    if now.weekday() >= 5:
+        return False  # weekend
+    if not (_MARKET_OPEN <= now.time() <= _MARKET_CLOSE):
+        return False  # outside trading hours
+    if _is_nse_holiday(now.date()):
+        return False  # NSE declared holiday
+    return True
 
 
 def _secs_until_next_open() -> float:
-    """Seconds until the next NSE opening bell."""
+    """Seconds until the next NSE trading day opening bell."""
     from datetime import timedelta
     now = _ist_now()
     candidate = now.replace(hour=9, minute=15, second=0, microsecond=0)
     if now.time() >= _MARKET_OPEN:
         candidate += timedelta(days=1)
-    # Skip weekends
-    while candidate.weekday() >= 5:
+    # Skip weekends AND NSE holidays
+    while candidate.weekday() >= 5 or _is_nse_holiday(candidate.date()):
         candidate += timedelta(days=1)
     return max(60.0, (candidate - now).total_seconds())
 
@@ -441,19 +474,23 @@ def api_chart(ticker: str):
 @app.route("/api/market_status")
 def api_market_status():
     """Return whether NSE is currently open plus time to open/close."""
-    now     = _ist_now()
-    is_open = _market_open()
-    t       = now.time()
+    now      = _ist_now()
+    is_open  = _market_open()
+    holiday  = _is_nse_holiday(now.date())
     if is_open:
-        close_dt = now.replace(hour=15, minute=30, second=0, microsecond=0)
+        close_dt  = now.replace(hour=15, minute=30, second=0, microsecond=0)
         secs_left = max(0, (close_dt - now).total_seconds())
         label = f"Closes in {int(secs_left//3600):02d}:{int((secs_left%3600)//60):02d}"
+    elif holiday:
+        secs_left = _secs_until_next_open()
+        label = f"Holiday — opens in {int(secs_left//3600):02d}:{int((secs_left%3600)//60):02d}"
     else:
         secs_left = _secs_until_next_open()
         label = f"Opens in {int(secs_left//3600):02d}:{int((secs_left%3600)//60):02d}"
     return jsonify({
         "ok":       True,
         "is_open":  is_open,
+        "holiday":  holiday,
         "time_ist": now.strftime("%H:%M IST"),
         "label":    label,
         "weekday":  now.strftime("%A"),
@@ -746,16 +783,19 @@ def _generate_closing_report() -> None:
     print(f"[CLOSE] Closing report saved for {today}  day_pnl=₹{day_pnl:,.0f}")
 
 
+_bg_logger = logging.getLogger("app")
+
 def _background_loop() -> None:
     """Market-aware scheduler: runs every 15 min during NSE hours (9:15–15:30 IST).
 
     Opening bell  → immediate first cycle
     Intra-day     → cycle every _state.auto_interval seconds
     Closing bell  → final cycle + closing report at 15:15–15:30 IST
-    After hours   → sleep until next opening bell
+    Holiday/weekend → sleep until next trading day open
     """
-    print("[SCHEDULER] Market-aware agent loop started")
+    _bg_logger.info("[Scheduler] Market-aware agent loop started")
     opening_done_dates: set = set()
+    _holiday_logged_dates: set = set()
 
     while True:
         now   = _ist_now()
@@ -764,7 +804,7 @@ def _background_loop() -> None:
         if _market_open():
             # ── Opening bell: run immediately on first entry ──────────────
             if today not in opening_done_dates:
-                print(f"[BELL] Opening bell — {now.strftime('%H:%M IST')}")
+                _bg_logger.info(f"🔔 Opening bell — {now.strftime('%H:%M IST')}")
                 _run_cycle_safe()
                 opening_done_dates.add(today)
 
@@ -777,9 +817,18 @@ def _background_loop() -> None:
             time.sleep(_state.auto_interval)
 
         else:
-            # Market closed — sleep in 60-s increments until next open
             secs = _secs_until_next_open()
-            print(f"[SCHEDULER] Market closed. Next open in {secs/3600:.1f}h")
+            if _is_nse_holiday(today):
+                if today not in _holiday_logged_dates:
+                    _bg_logger.info(
+                        f"🏖️ NSE Holiday today ({today}) — next trading session opens "
+                        f"in {secs/3600:.1f}h"
+                    )
+                    _holiday_logged_dates.add(today)
+            else:
+                _bg_logger.info(
+                    f"[Scheduler] Market closed. Next open in {secs/3600:.1f}h"
+                )
             # Sleep at most 5 min at a time so we catch the open promptly
             time.sleep(min(300, secs))
 
