@@ -434,35 +434,106 @@ class Notifier:
             "sms":      {"sent": sms_ok, "configured": self._sms.configured},
         }
 
-    def send_daily_summary(
+    def send_closing_report(
         self,
-        date:        str,
-        day_pnl:     float,
-        trades_today: int,
-        win_rate:    float | None,
-        portfolio_value: float,
-        top_win:     str = "",
-        top_loss:    str = "",
+        date:             str,
+        day_pnl:          float,
+        portfolio_value:  float,
+        initial_capital:  float,
+        today_trades:     list,        # list of trade dicts from trade_log
+        open_positions:   list,        # list of position dicts
+        win_rate:         float | None = None,
     ):
-        """End-of-day summary pushed automatically at 15:30 IST."""
+        """
+        Full end-of-day closing report — mirrors the dashboard Daily Report page.
+        Sent automatically at 15:30 IST. Splits into multiple messages if too long.
+        """
         if not self._enabled:
             return
-        emoji   = "📈" if day_pnl >= 0 else "📉"
-        wr_str  = f"{win_rate*100:.0f}%" if win_rate is not None else "—"
-        lines   = [
-            f"{emoji} <b>Daily Summary — {date}</b>",
+
+        total_pnl_pct = round((portfolio_value / initial_capital - 1) * 100, 2)
+        day_emoji     = "📈" if day_pnl >= 0 else "📉"
+        total_emoji   = "🟢" if portfolio_value >= initial_capital else "🔴"
+        wr_str        = f"{win_rate * 100:.0f}%" if win_rate is not None else "—"
+        sells_today   = [t for t in today_trades if t.get("action") == "SELL"]
+        buys_today    = [t for t in today_trades if t.get("action") == "BUY"]
+
+        # ── Header ───────────────────────────────────────────────────────────
+        header = [
+            f"{day_emoji} <b>Closing Report — {date}</b>",
             f"",
+            f"{total_emoji} <b>Portfolio</b>  ₹{portfolio_value:,.0f}  ({total_pnl_pct:+.2f}% all-time)",
+            f"💵 <b>Day P&amp;L</b>  ₹{day_pnl:+,.0f}",
+            f"🎯 <b>Win rate today</b>  {wr_str}",
+            f"🔢 <b>Trades</b>  {len(sells_today)} closed · {len(buys_today)} opened · {len(open_positions)} still open",
+            f"",
+        ]
+
+        # ── Closed trades (sells) ─────────────────────────────────────────
+        trade_lines = []
+        if sells_today:
+            trade_lines.append("<b>📋 Today's closed trades:</b>")
+            for t in sells_today:
+                short  = (t.get("ticker") or "").replace(".NS", "").replace("^", "")
+                pnl    = t.get("pnl") or 0
+                rr     = t.get("actual_rr")
+                hdays  = t.get("hold_days", 0)
+                ttype  = t.get("trade_type", "")
+                emoji  = "✅" if pnl > 0 else "❌"
+                rr_str = f" · RR {rr:+.2f}" if rr is not None else ""
+                hold   = f"{hdays}d" if hdays else "intraday"
+                tax    = {"INTRADAY": "Int", "STCG": "STCG", "LTCG": "LTCG"}.get(ttype, "")
+                trade_lines.append(
+                    f"  {emoji} <b>{short}</b>  ₹{pnl:+,.0f}{rr_str}  <i>({hold} · {tax})</i>"
+                )
+
+        # ── Open positions ────────────────────────────────────────────────
+        pos_lines = []
+        if open_positions:
+            pos_lines.append("")
+            pos_lines.append("<b>📂 Open positions carried forward:</b>")
+            for p in open_positions[:8]:   # cap at 8 to keep message readable
+                short   = (p.get("ticker") or "").replace(".NS", "").replace("^", "")
+                pnl_pct = p.get("pnl_pct", 0)
+                sl      = p.get("stop_loss")
+                tp      = p.get("target")
+                e       = "🟢" if pnl_pct >= 0 else "🔴"
+                sl_str  = f"  SL ₹{sl:,.0f}" if sl else ""
+                tp_str  = f"  TP ₹{tp:,.0f}" if tp else ""
+                pos_lines.append(f"  {e} <b>{short}</b>  {pnl_pct:+.1f}%{sl_str}{tp_str}")
+            if len(open_positions) > 8:
+                pos_lines.append(f"  … +{len(open_positions) - 8} more")
+
+        footer = ["", f"🕐 {_ist_now_str()}", "<i>Paper trade — not real money</i>"]
+
+        # Telegram message limit is 4096 chars — split if needed
+        body = "\n".join(header + trade_lines + pos_lines + footer)
+        if len(body) <= 4000:
+            self._tg.send_async(body)
+        else:
+            # Send header + trades first, then positions
+            self._tg.send_async("\n".join(header + trade_lines + footer))
+            if pos_lines:
+                self._tg.send_async("\n".join(pos_lines + footer))
+
+        logger.info(f"[Notifier] Closing report fired for {date}")
+
+    # Keep old name as alias for backward compatibility
+    def send_daily_summary(self, date, day_pnl, trades_today, win_rate,
+                           portfolio_value, top_win="", top_loss=""):
+        """Thin wrapper kept for backward compat — prefer send_closing_report."""
+        emoji  = "📈" if day_pnl >= 0 else "📉"
+        wr_str = f"{win_rate * 100:.0f}%" if win_rate is not None else "—"
+        lines  = [
+            f"{emoji} <b>Daily Summary — {date}</b>", "",
             f"💵 <b>Day P&amp;L</b>  ₹{day_pnl:+,.0f}",
             f"📊 <b>Portfolio</b>  ₹{portfolio_value:,.0f}",
             f"🔢 <b>Trades today</b>  {trades_today}",
             f"🎯 <b>Win rate</b>  {wr_str}",
         ]
-        if top_win:
-            lines.append(f"🏆 <b>Best trade</b>  {top_win}")
-        if top_loss:
-            lines.append(f"⚠️ <b>Worst trade</b>  {top_loss}")
+        if top_win:  lines.append(f"🏆 <b>Best</b>  {top_win}")
+        if top_loss: lines.append(f"⚠️ <b>Worst</b>  {top_loss}")
         lines += ["", f"🕐 {_ist_now_str()}", "<i>Paper trade — not real money</i>"]
-
         self._tg.send_async("\n".join(lines))
         logger.info(f"[Notifier] Daily summary fired for {date}")
 
