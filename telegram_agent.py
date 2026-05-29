@@ -90,6 +90,26 @@ _build_ticker_map()
 # Discovery keywords
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Telegram ID normalisation
+# ---------------------------------------------------------------------------
+
+def _get_dict_key(chat_id: int) -> str:
+    """
+    Convert a Telethon event.chat_id to the string key used in self._groups["groups"].
+
+    Telethon returns channel/supergroup chat_ids as negative numbers with a -100 prefix
+    (e.g. -1001234567890).  When we discover a channel via SearchRequest, we store it
+    under str(chat.id) which is the positive form (e.g. "1234567890").
+    Regular group chats also have negative IDs but without the 100 prefix.
+    """
+    abs_id = abs(int(chat_id))
+    # Channel / supergroup: abs value > 1_000_000_000_000 → strip the 100 prefix
+    if abs_id > 1_000_000_000_000:
+        return str(abs_id - 1_000_000_000_000)
+    return str(abs_id)
+
+
 DISCOVERY_KEYWORDS = [
     "NSE stock signals",
     "Nifty intraday tips",
@@ -445,11 +465,21 @@ class TelegramAgent:
             json.dump(self._signals[-3000:], f, indent=2)
 
     def _load_messages(self) -> list:
-        """Load persisted messages from disk (survives server restarts)."""
+        """Load persisted messages from disk (survives server restarts).
+        Also normalises any legacy group_ids that were stored in the -100XXXXXXXX format.
+        """
         if MESSAGES_FILE.exists():
             try:
                 with open(MESSAGES_FILE) as f:
                     data = json.load(f)
+                # Normalise legacy group_ids (e.g. "-1001234567890" → "1234567890")
+                for m in data:
+                    raw_gid = m.get("group_id", "")
+                    if isinstance(raw_gid, str) and raw_gid.startswith("-"):
+                        try:
+                            m["group_id"] = _get_dict_key(int(raw_gid))
+                        except Exception:
+                            pass
                 logger.info(f"[Telegram] Loaded {len(data)} persisted messages from disk")
                 return data[-1000:]
             except Exception:
@@ -507,11 +537,13 @@ class TelegramAgent:
         return msgs[:limit]
 
     def get_groups(self) -> list:
-        return sorted(
-            self._groups.get("groups", {}).values(),
-            key=lambda g: g.get("score", 0),
-            reverse=True,
-        )
+        groups = self._groups.get("groups", {})
+        out = []
+        for gid, g in groups.items():
+            rec = dict(g)
+            rec["group_id"] = gid   # inject the string dict key so the frontend can filter messages
+            out.append(rec)
+        return sorted(out, key=lambda g: g.get("score", 0), reverse=True)
 
     def get_signals(self, limit: int = 100) -> list:
         return list(reversed(self._signals[-limit:]))
@@ -596,9 +628,11 @@ class TelegramAgent:
             # Listen to new messages from monitored groups
             @self._client.on(events.NewMessage)
             async def _on_message(event):
-                gid = str(event.chat_id)
+                # Normalise the Telethon chat_id (e.g. -1001234567890 → "1234567890")
+                # to match the dict key format used during discovery.
+                gid = _get_dict_key(event.chat_id)
                 if gid in self._groups.get("groups", {}):
-                    await self._handle_message(event)
+                    await self._handle_message(event, gid)
 
             # Startup tasks
             await self._discover_groups()
@@ -621,19 +655,35 @@ class TelegramAgent:
             self._status = f"error: {e}"
             logger.error(f"Telegram agent crashed: {e}", exc_info=True)
 
-    async def _handle_message(self, event):
+    async def _handle_message(self, event, gid: str = None):
         try:
             text = event.message.text or ""
             if len(text.strip()) < 5:
                 return
             chat  = await event.get_chat()
-            gid   = str(event.chat_id)
+            # Use the pre-normalised dict key (passed from _on_message) so that
+            # stored group_id always matches the groups dict key and backfill IDs.
+            if gid is None:
+                gid = _get_dict_key(event.chat_id)
             title = getattr(chat, "title", gid)
+
+            # Capture sender name (best-effort; channels return None)
+            try:
+                sender = await event.get_sender()
+                if sender:
+                    fname = getattr(sender, "first_name", "") or ""
+                    lname = getattr(sender, "last_name",  "") or ""
+                    sender_name = (fname + " " + lname).strip() or getattr(sender, "title", None)
+                else:
+                    sender_name = None
+            except Exception:
+                sender_name = None
 
             # Store raw message in ring buffer and persist to disk
             raw_msg = {
-                "group_id":   gid,
+                "group_id":   gid,       # always the dict key ("1234567890")
                 "group_name": title,
+                "sender":     sender_name,
                 "text":       text[:1000],
                 "time":       datetime.now().isoformat(),
                 "msg_id":     event.message.id,
@@ -685,17 +735,26 @@ class TelegramAgent:
         for gid, g in active_groups.items():
             try:
                 title    = g.get("title", gid)
-                entity   = int(gid) if gid.lstrip("-").isdigit() else gid
-                messages = await self._client.get_messages(entity, limit=50)
+                # Prefer username for entity resolution — Telethon resolves it reliably.
+                # Fall back to integer ID (works when entity is already in Telethon's cache).
+                username = g.get("username")
+                if username:
+                    entity = username
+                else:
+                    entity = int(gid) if gid.lstrip("-").isdigit() else gid
+                messages = await self._client.get_messages(entity, limit=100)
                 new_msgs = []
                 for msg in messages:
                     if not msg.text or len(msg.text.strip()) < 5:
                         continue
                     if msg.id in known_ids:
                         continue
+                    # Best-effort sender: use post_author (channels) or None
+                    sender_name = getattr(msg, "post_author", None)
                     new_msgs.append({
                         "group_id":   gid,
                         "group_name": title,
+                        "sender":     sender_name,
                         "text":       msg.text[:1000],
                         "time":       msg.date.isoformat() if msg.date else datetime.now().isoformat(),
                         "msg_id":     msg.id,
@@ -711,7 +770,7 @@ class TelegramAgent:
 
                 await asyncio.sleep(0.5)   # gentle rate-limiting
             except Exception as exc:
-                logger.debug(f"[Telegram] History backfill failed for {gid}: {exc}")
+                logger.warning(f"[Telegram] History backfill failed for {title!r} ({gid}): {exc}")
 
         if fetched_total:
             # Keep buffer bounded and save to disk

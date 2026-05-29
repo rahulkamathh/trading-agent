@@ -2683,45 +2683,114 @@ function selectGroup(groupId, name, status) {
   loadGroupList();
 }
 
+// Persistent sender → colour map so the same person always gets the same colour
+const _senderColors = {};
+const _SENDER_PALETTE = [
+  '#58a6ff','#3fb950','#d29922','#f78166','#bc8cff',
+  '#ff7b72','#39d353','#ffa657','#56d364','#79c0ff',
+];
+function _senderColor(name) {
+  if (!name) return '#8b949e';
+  if (!_senderColors[name]) {
+    _senderColors[name] = _SENDER_PALETTE[Object.keys(_senderColors).length % _SENDER_PALETTE.length];
+  }
+  return _senderColors[name];
+}
+
+function _formatMsgText(raw) {
+  // Escape HTML
+  let t = raw.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  // Highlight NSE tickers (2-10 uppercase letters not part of common words)
+  t = t.replace(/\b([A-Z][A-Z0-9&]{1,9})\b/g, (match) => {
+    // Skip common all-caps words that aren't tickers
+    const skip = new Set(['BUY','SELL','SL','TP','CMP','NSE','BSE','IPO','NFO','EPS',
+                          'PE','PB','ROE','PAT','QOQ','YOY','CY','FY','Q1','Q2','Q3','Q4',
+                          'WRT','ALL','FOR','AND','THE','OR','IN','AT','ON','OF']);
+    if (skip.has(match)) return `<span style="color:#8b949e;font-weight:600">${match}</span>`;
+    return `<span style="color:#58a6ff;font-weight:700">${match}</span>`;
+  });
+  // Bold **text**
+  t = t.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  // Bold *text*
+  t = t.replace(/\*([^*\n]+)\*/g, '<strong>$1</strong>');
+  // Italic _text_
+  t = t.replace(/_([^_\n]+)_/g, '<em>$1</em>');
+  // Preserve line breaks
+  t = t.replace(/\n/g, '<br>');
+  return t;
+}
+
+function _fmtTime(isoStr) {
+  const d = new Date(isoStr);
+  if (isNaN(d)) return '';
+  // Show date only if not today
+  const now  = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  const time = d.toLocaleTimeString('en-IN', { timeZone:'Asia/Kolkata', hour:'2-digit', minute:'2-digit', hour12:false });
+  if (sameDay) return time;
+  const date = d.toLocaleDateString('en-IN', { timeZone:'Asia/Kolkata', day:'numeric', month:'short' });
+  return `${date}, ${time}`;
+}
+
 async function loadGroupFeed() {
   const msgs = document.getElementById('gfMessages');
   if (!_gfSelectedId) {
-    msgs.innerHTML = '<div style="text-align:center;color:var(--muted);margin-top:40px">Select a group from the left</div>';
+    msgs.innerHTML = '<div style="text-align:center;color:var(--muted);margin-top:60px;font-size:13px">← Select a group to see messages</div>';
     return;
   }
-  msgs.innerHTML = '<div style="text-align:center;color:var(--muted);margin-top:40px">Loading…</div>';
-  const url = `/api/telegram/messages?group_id=${encodeURIComponent(_gfSelectedId)}&limit=100`;
+  msgs.innerHTML = '<div style="text-align:center;color:var(--muted);margin-top:60px">Loading…</div>';
+  const url = `/api/telegram/messages?group_id=${encodeURIComponent(_gfSelectedId)}&limit=200`;
   const res = await fetch(url).then(r => r.json()).catch(() => ({}));
-  const messages = res.messages || [];
+  const messages = (res.messages || []).slice().reverse(); // oldest first for chat order
 
   if (!messages.length) {
-    msgs.innerHTML = `<div style="text-align:center;color:var(--muted);margin-top:40px;font-size:13px">
-      No messages yet for <strong>${_gfSelectedName}</strong><br>
-      <span style="font-size:11px">Messages load from Telegram history on startup and stream live as they arrive</span>
+    msgs.innerHTML = `<div style="text-align:center;color:var(--muted);margin-top:60px;font-size:13px;padding:20px">
+      <div style="font-size:28px;margin-bottom:12px">💬</div>
+      <strong>No messages yet for ${_gfSelectedName}</strong><br>
+      <span style="font-size:11px;margin-top:6px;display:block">History is loaded on startup · New messages appear in real-time</span>
     </div>`;
     return;
   }
 
-  msgs.innerHTML = messages.map(m => {
-    // Format as IST datetime
+  // Group consecutive messages from the same sender (5-min window = same "block")
+  let prevSender = null, prevTime = null;
+  msgs.innerHTML = messages.map((m, i) => {
+    const sender  = m.sender || m.group_name || 'Channel';
+    const color   = _senderColor(sender);
+    const timeStr = _fmtTime(m.time);
+    const textFmt = _formatMsgText(m.text || '');
+
+    // Show sender header only when sender changes or >5 min gap
     const d = new Date(m.time);
-    const ts = d.toLocaleString('en-IN', {
-      timeZone: 'Asia/Kolkata',
-      day: '2-digit', month: 'short',
-      hour: '2-digit', minute: '2-digit',
-      hour12: false,
-    }) + ' IST';
-    const text    = (m.text || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    // Highlight potential ticker mentions (3-6 uppercase letters)
-    const textFmt = text.replace(/\b([A-Z]{2,6})\b/g,
-      '<span style="color:#58a6ff;font-weight:600">$1</span>');
-    return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${ts}</div>
-      <div style="font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word">${textFmt}</div>
+    const sameSender = sender === prevSender;
+    const smallGap   = prevTime && (d - prevTime) < 5 * 60 * 1000;
+    const hideHeader = sameSender && smallGap;
+    prevSender = sender;
+    prevTime   = d;
+
+    // Avatar initial
+    const initial = sender.charAt(0).toUpperCase();
+
+    return `<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:${hideHeader?'2px':'10px'}">
+      <!-- Avatar -->
+      <div style="width:32px;height:32px;border-radius:50%;background:${color}22;color:${color};
+                  display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;
+                  flex-shrink:0;margin-top:2px;visibility:${hideHeader?'hidden':'visible'}">
+        ${initial}
+      </div>
+      <!-- Bubble -->
+      <div style="flex:1;max-width:calc(100% - 44px)">
+        ${hideHeader ? '' : `<div style="font-size:11px;font-weight:700;color:${color};margin-bottom:3px">${sender}</div>`}
+        <div style="background:#1c2128;border:1px solid #30363d;border-radius:${hideHeader?'8px':'0 8px 8px 8px'};
+                    padding:8px 12px;display:inline-block;max-width:100%;box-sizing:border-box">
+          <div style="font-size:13px;line-height:1.65;word-break:break-word">${textFmt}</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:4px;text-align:right">${timeStr}</div>
+        </div>
+      </div>
     </div>`;
   }).join('');
 
-  // Scroll to latest message
+  // Scroll to bottom (latest message)
   msgs.scrollTop = msgs.scrollHeight;
 }
 
