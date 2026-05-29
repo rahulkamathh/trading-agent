@@ -225,7 +225,7 @@ def api_signals():
 
 _market_overview_cache: dict = {}
 _market_overview_ts: float = 0.0
-_MARKET_OVERVIEW_TTL = 60  # seconds between yfinance refreshes
+_MARKET_OVERVIEW_TTL = 15  # seconds between yfinance refreshes (fast enough for ~live feel)
 
 
 def _fetch_index_price(ticker: str) -> tuple[float, float]:
@@ -273,6 +273,7 @@ def api_market_overview():
     now  = time.time()
 
     # ── 1. Angel One live feed (sub-second, no cache needed) ──────────────
+    now_ist_str = _ist_now().strftime("%H:%M:%S IST")
     if feed.is_connected():
         live = feed.get_all_prices()
         results: dict = {}
@@ -280,10 +281,11 @@ def api_market_overview():
             ltp = live.get(ticker)
             if ltp:
                 results[name] = {
-                    "price":   round(ltp, 2),
-                    "chg_pct": round(feed.get_change(ticker) or 0, 2),
-                    "ticker":  ticker,
-                    "source":  "live",
+                    "price":       round(ltp, 2),
+                    "chg_pct":     round(feed.get_change(ticker) or 0, 2),
+                    "ticker":      ticker,
+                    "source":      "live",
+                    "last_updated": now_ist_str,
                 }
         if results:
             return jsonify({"ok": True, "indices": results})
@@ -297,10 +299,11 @@ def api_market_overview():
         price, chg_pct = _fetch_index_price(ticker)
         if price > 0:
             results[name] = {
-                "price":   round(price, 2),
-                "chg_pct": round(chg_pct, 2),
-                "ticker":  ticker,
-                "source":  "delayed",
+                "price":        round(price, 2),
+                "chg_pct":      round(chg_pct, 2),
+                "ticker":       ticker,
+                "source":       "delayed",
+                "last_updated": now_ist_str,
             }
 
     _market_overview_cache = results

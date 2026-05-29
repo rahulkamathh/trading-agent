@@ -14,6 +14,14 @@ import logging
 import requests
 import io
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+_IST_TZ = ZoneInfo("Asia/Kolkata")
+
+
+def _now_ist() -> datetime:
+    """Return current datetime in IST (UTC+5:30)."""
+    return datetime.now(_IST_TZ)
 from pathlib import Path
 
 import numpy as np
@@ -1057,8 +1065,8 @@ class Portfolio:
             "positions":    {},          # ticker → {qty, avg_price, strategy, entry_date}
             "realised_pnl": 0.0,
             "exit_log":     {},          # ticker → ISO timestamp of last exit (cooldown tracking)
-            "created_at":   datetime.now().isoformat(),
-            "last_updated": datetime.now().isoformat(),
+            "created_at":   _now_ist().isoformat(),
+            "last_updated": _now_ist().isoformat(),
         }
 
     def _load(self) -> dict:
@@ -1072,7 +1080,7 @@ class Portfolio:
     def _save(self, state: dict = None):
         if state:
             self.state = state
-        self.state["last_updated"] = datetime.now().isoformat()
+        self.state["last_updated"] = _now_ist().isoformat()
         with open(PORTFOLIO_FILE, "w") as f:
             json.dump(self.state, f, indent=2)
 
@@ -1108,7 +1116,7 @@ class Portfolio:
         if not last_exit:
             return False
         try:
-            elapsed_days = (datetime.now() - datetime.fromisoformat(last_exit)).days
+            elapsed_days = (_now_ist() - datetime.fromisoformat(last_exit)).days
             return elapsed_days < COOLDOWN_DAYS
         except Exception:
             return False
@@ -1139,7 +1147,7 @@ class Portfolio:
             "qty":        qty,
             "avg_price":  price,
             "strategy":   strategy,
-            "entry_date": datetime.now().isoformat(),
+            "entry_date": _now_ist().isoformat(),
             "stop_loss":  round(price * (1 - STOP_LOSS_PCT), 2),
             "target":     round(price * (1 + TAKE_PROFIT_PCT), 2),
         }
@@ -1157,7 +1165,7 @@ class Portfolio:
         if reason not in ("STOP_LOSS", "TAKE_PROFIT"):
             try:
                 entry_dt  = datetime.fromisoformat(pos["entry_date"])
-                held_days = (datetime.now() - entry_dt).days
+                held_days = (_now_ist() - entry_dt).days
                 if held_days < MIN_HOLD_DAYS:
                     logger.debug(f"SKIP SELL {ticker} — held only {held_days}d (min {MIN_HOLD_DAYS}d)")
                     return None
@@ -1175,7 +1183,7 @@ class Portfolio:
         # Record exit time for cooldown — prevents immediate re-entry
         if "exit_log" not in self.state:
             self.state["exit_log"] = {}
-        self.state["exit_log"][ticker] = datetime.now().isoformat()
+        self.state["exit_log"][ticker] = _now_ist().isoformat()
 
         self._save()
         trade = self._log_trade("SELL", ticker, qty, price, strategy, reason, pnl=pnl)
@@ -1228,7 +1236,7 @@ class Portfolio:
             "strategy": strategy,
             "reason":   reason,
             "pnl":      round(pnl, 2) if pnl is not None else None,
-            "time":     datetime.now().isoformat(),
+            "time":     _now_ist().isoformat(),
         }
         log.append(trade)
         with open(TRADE_LOG_FILE, "w") as f:
@@ -1345,7 +1353,7 @@ class MarketStructureStrategy:
 
     def generate_signals(self, stock_data: dict) -> list:
         signals = []
-        now_str = datetime.now().isoformat()
+        now_str = _now_ist().isoformat()
 
         for ticker, df in stock_data.items():
             if df is None or len(df) < self.PIVOT_LENGTH * 2 + 10:
@@ -1445,7 +1453,7 @@ class TelegramSignalStrategy:
                 return []
 
             # Recent pending signals from good groups only
-            cutoff = (datetime.now() - timedelta(hours=self.MAX_SIGNAL_AGE_H)).isoformat()
+            cutoff = (_now_ist() - timedelta(hours=self.MAX_SIGNAL_AGE_H)).isoformat()
             recent = [
                 s for s in agent.get_signals(limit=1000)
                 if s.get("status") == "pending"
@@ -1551,7 +1559,7 @@ class SignalAggregator:
         with open(SIGNALS_FILE, "w") as f:
             json.dump({
                 "signals":    all_signals,
-                "updated_at": datetime.now().isoformat(),
+                "updated_at": _now_ist().isoformat(),
             }, f, indent=2)
         logger.info(f"Generated {len(all_signals)} signals")
         return all_signals
@@ -1670,7 +1678,7 @@ class TradingAgent:
             "sells_executed":  len([t for t in executed if t["action"] == "SELL"]),
             "stops_triggered": len(stops),
             "portfolio_value": round(self.portfolio.get_total_value(), 2),
-            "timestamp":       datetime.now().isoformat(),
+            "timestamp":       _now_ist().isoformat(),
         }
         logger.info(f"=== Cycle done in {elapsed}s | {summary} ===")
         return summary
@@ -1742,7 +1750,7 @@ def _build_equity_curve(trades: list, current_value: float = None, created_at: s
     Starts at the portfolio creation date. Always appends today's actual
     total value (cash + unrealised positions) as the latest data point.
     """
-    start_date = (created_at or datetime.now().isoformat())[:10]
+    start_date = (created_at or _now_ist().isoformat())[:10]
     curve = [{"date": start_date, "value": INITIAL_CAPITAL}]
     running = INITIAL_CAPITAL
     daily = {}
@@ -1757,7 +1765,7 @@ def _build_equity_curve(trades: list, current_value: float = None, created_at: s
         curve.append({"date": date, "value": round(running, 2)})
     # Always end with the current live value (includes unrealised P&L)
     if current_value is not None:
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = _now_ist().strftime("%Y-%m-%d")
         if curve and curve[-1]["date"] == today:
             curve[-1]["value"] = round(current_value, 2)
         else:

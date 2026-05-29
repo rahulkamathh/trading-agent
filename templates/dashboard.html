@@ -448,8 +448,8 @@
   </div>
   <div class="header-right">
     <div class="index-bar" id="indexBar">
-      <div class="index-item"><div class="index-name">Nifty 50</div><div class="index-price" id="niftyPrice">—</div><div class="index-chg neu" id="niftyChg">—</div></div>
-      <div class="index-item"><div class="index-name">Bank Nifty</div><div class="index-price" id="bankPrice">—</div><div class="index-chg neu" id="bankChg">—</div></div>
+      <div class="index-item"><div class="index-name">Nifty 50</div><div class="index-price" id="niftyPrice">—</div><div class="index-chg neu" id="niftyChg">—</div><div id="niftyTs" style="font-size:9px;color:var(--muted);margin-top:1px"></div></div>
+      <div class="index-item"><div class="index-name">Bank Nifty</div><div class="index-price" id="bankPrice">—</div><div class="index-chg neu" id="bankChg">—</div><div id="bankTs" style="font-size:9px;color:var(--muted);margin-top:1px"></div></div>
     </div>
     <span id="marketStatusChip" style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:12px;border:1px solid var(--border)">—</span>
     <span id="agentStatus" style="font-size:12px;color:var(--muted)"><span class="status-dot status-idle" id="statusDot"></span>Idle</span>
@@ -1464,12 +1464,16 @@ async function loadMarketOverview() {
       const el = document.getElementById('niftyChg');
       el.textContent  = fmtPct(ni.chg_pct);
       el.className    = 'index-chg ' + cls(ni.chg_pct);
+      const tsEl = document.getElementById('niftyTs');
+      if (tsEl) tsEl.textContent = ni.last_updated || '';
     }
     if (bn) {
       document.getElementById('bankPrice').textContent = fmtN(bn.price);
       const el = document.getElementById('bankChg');
       el.textContent  = fmtPct(bn.chg_pct);
       el.className    = 'index-chg ' + cls(bn.chg_pct);
+      const tsEl = document.getElementById('bankTs');
+      if (tsEl) tsEl.textContent = bn.last_updated || '';
     }
   } catch(e) { console.warn('Market overview error:', e); }
 }
@@ -1614,7 +1618,7 @@ function renderSignals(signals, ts) {
     const sells = signals.filter(s => s.signal === 'SELL').length;
     ds.textContent = `${signals.length} signals (${buys}B / ${sells}S)`;
   }
-  if (ts) document.getElementById('signalsTs').textContent = 'Last updated: ' + ts.replace('T',' ').slice(0,19);
+  if (ts) document.getElementById('signalsTs').textContent = 'Last updated: ' + ts.replace('T',' ').slice(0,19) + ' IST';
   const color = s => STRAT_COLORS[s] || '#8b949e';
   document.getElementById('sigBody').innerHTML = signals.map(s => {
     const grade = s.fund_grade;
@@ -1663,7 +1667,7 @@ function renderTrades(trades) {
   el.innerHTML = trades.map(t => `
     <tr>
       <td style="color:var(--muted)">${t.id}</td>
-      <td style="color:var(--muted)">${(t.time||'').replace('T',' ').slice(0,19)}</td>
+      <td style="color:var(--muted)">${(t.time||'').replace('T',' ').slice(0,19)} IST</td>
       <td>${t.action==='BUY'?'<span class="pill pill-buy">BUY</span>':'<span class="pill pill-sell">SELL</span>'}</td>
       <td><strong>${(t.ticker||'').replace('.NS','')}</strong></td>
       <td>${t.qty}</td>
@@ -1827,7 +1831,7 @@ function updateAgentStatus(running, cycle) {
   if (cycle && cycle.timestamp) {
     const el = document.getElementById('lastCycleTime');
     if (el) el.textContent =
-      `Last cycle: ${cycle.timestamp.replace('T',' ').slice(0,19)} | ${cycle.cycle_time_s}s`;
+      `Last cycle: ${cycle.timestamp.replace('T',' ').slice(0,19)} IST | ${cycle.cycle_time_s}s`;
   }
 }
 
@@ -2309,7 +2313,7 @@ async function loadTgStatus() {
     const ld = document.getElementById('tgLastDisc');
     if (ld) {
       ld.textContent = d.last_discovery
-        ? d.last_discovery.replace('T',' ').slice(0,16)
+        ? d.last_discovery.replace('T',' ').slice(0,16) + ' IST'
         : 'Not yet';
     }
   } catch(e) { /* ignore */ }
@@ -2374,7 +2378,7 @@ async function loadTgSignals(statusFilter = '') {
         ? `<span class="${outcome.won ? 'pos' : 'neg'}">${outcome.won ? '+' : ''}${outcome.pnl_pct?.toFixed(1)}%</span>`
         : '—';
       return `<tr>
-        <td style="color:var(--muted);font-size:11px">${(s.received_at||'').replace('T',' ').slice(0,16)}</td>
+        <td style="color:var(--muted);font-size:11px">${(s.received_at||'').replace('T',' ').slice(0,16)} IST</td>
         <td style="font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis">${s.group_title || '—'}</td>
         <td><strong>${(p.ticker||'—').replace('.NS','').replace('^','')}</strong></td>
         <td>${p.direction === 'BUY'
@@ -2584,7 +2588,7 @@ async function loadHeadlines() {
       const sentCol = sent > 0.2 ? 'var(--green)' : sent < -0.2 ? 'var(--red)' : 'var(--muted)';
       const sentLabel = sent > 0.2 ? '▲' : sent < -0.2 ? '▼' : '–';
       const tickers = (h.tickers||[]).map(t => `<span style="font-size:10px;background:#1f3a5f;color:#58a6ff;padding:1px 5px;border-radius:4px;margin-left:3px">${t.replace('.NS','')}</span>`).join('');
-      const timeStr = h.published ? h.published.replace('T',' ').slice(0,16) : '';
+      const timeStr = h.published ? h.published.replace('T',' ').slice(0,16) + ' IST' : '';
       return `<div style="padding:10px 0;border-bottom:1px solid #21262d;display:flex;gap:12px;align-items:flex-start">
         <span style="font-size:13px;font-weight:700;color:${sentCol};width:16px;flex-shrink:0;margin-top:2px">${sentLabel}</span>
         <div style="flex:1;min-width:0">
