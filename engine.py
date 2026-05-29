@@ -16,6 +16,7 @@ import io
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from learning_engine import get_learning_engine
+from notifier import get_notifier
 
 _IST_TZ = ZoneInfo("Asia/Kolkata")
 
@@ -1245,6 +1246,26 @@ class Portfolio:
             f"BUY  {ticker:20s} qty={qty} @ ₹{price:.2f}  "
             f"SL=₹{stop_loss:.2f}  TP=₹{target:.2f}  RR=1:{planned_rr}  [{strategy}]"
         )
+        # ── Notify ──────────────────────────────────────────────────────────
+        try:
+            # Extract source group name if this is a Telegram-triggered trade
+            source_group = None
+            if strategy == "Telegram" and reason:
+                # reason format: "BUY RELIANCE from <GroupName> (score 0.72)"
+                import re as _re
+                m = _re.search(r'from (.+?) \(score', reason)
+                if m:
+                    source_group = m.group(1).strip()
+            get_notifier().notify_buy(
+                ticker=ticker, price=price,
+                stop_loss=stop_loss, take_profit=target,
+                planned_rr=planned_rr, strength=strength,
+                strategy=strategy, reason=reason,
+                source_group=source_group,
+                qty=qty, capital_used=cost,
+            )
+        except Exception:
+            pass   # never let notifier crash the trade engine
         return trade
 
     def execute_sell(self, ticker: str, price: float, reason: str = "") -> dict | None:
@@ -1309,6 +1330,21 @@ class Portfolio:
         rr_str   = f"  RR={actual_rr:+.2f}(planned 1:{planned_rr})" if planned_rr else ""
         type_str = f"  [{trade_type}/{hold_days}d]"
         logger.info(f"SELL {ticker:20s} qty={qty} @ ₹{price:.2f}  pnl=₹{pnl:.2f}  [{reason}]{rr_str}{type_str}")
+        # ── Notify ──────────────────────────────────────────────────────────
+        try:
+            avg_price = pos["avg_price"]
+            pnl_pct   = round((price / avg_price - 1) * 100, 2)
+            get_notifier().notify_sell(
+                ticker=ticker, price=price, avg_price=avg_price,
+                pnl=pnl, pnl_pct=pnl_pct,
+                actual_rr=actual_rr, planned_rr=planned_rr,
+                strategy=strategy, hold_days=hold_days or 0,
+                trade_type=trade_type or "STCG",
+                reason=reason, qty=qty,
+                strength=pos.get("strength", 65.0),
+            )
+        except Exception:
+            pass   # never let notifier crash the trade engine
         return trade
 
     def check_stops(self) -> list:

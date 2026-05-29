@@ -684,6 +684,27 @@ def api_learning():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
+@app.route("/api/notifier/status")
+def api_notifier_status():
+    """Return notification channel configuration status."""
+    try:
+        from notifier import get_notifier  # pylint: disable=import-outside-toplevel
+        return jsonify({"ok": True, **get_notifier().get_status()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/notifier/test", methods=["POST"])
+def api_notifier_test():
+    """Send a test alert to all configured channels."""
+    try:
+        from notifier import get_notifier  # pylint: disable=import-outside-toplevel
+        results = get_notifier().send_test()
+        return jsonify({"ok": True, "results": results})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 @app.route("/api/learning/reset", methods=["POST"])
 def api_learning_reset():
     """Reset all learning state to defaults (use with caution)."""
@@ -811,6 +832,28 @@ def _generate_closing_report() -> None:
         _json.dumps(report, indent=2), encoding="utf-8"
     )
     print(f"[CLOSE] Closing report saved for {today}  day_pnl=₹{day_pnl:,.0f}")
+
+    # ── Daily summary notification ────────────────────────────────────────────
+    try:
+        from notifier import get_notifier  # pylint: disable=import-outside-toplevel
+        today_sells  = [t for t in today_trades if t.get("action") == "SELL"]
+        wins         = [t for t in today_sells if (t.get("pnl") or 0) > 0]
+        win_rate_val = (len(wins) / len(today_sells)) if today_sells else None
+        top_win  = max(today_sells, key=lambda t: t.get("pnl") or 0, default=None)
+        top_loss = min(today_sells, key=lambda t: t.get("pnl") or 0, default=None)
+        tw_str   = f"{top_win['ticker'].replace('.NS','')}  +₹{top_win['pnl']:,.0f}" if top_win and (top_win.get("pnl") or 0) > 0 else ""
+        tl_str   = f"{top_loss['ticker'].replace('.NS','')}  ₹{top_loss['pnl']:,.0f}" if top_loss and (top_loss.get("pnl") or 0) < 0 else ""
+        get_notifier().send_daily_summary(
+            date=today,
+            day_pnl=day_pnl,
+            trades_today=len(today_sells),
+            win_rate=win_rate_val,
+            portfolio_value=port_value,
+            top_win=tw_str,
+            top_loss=tl_str,
+        )
+    except Exception as _ne:
+        print(f"[CLOSE] Notifier daily summary error: {_ne}")
 
 
 _bg_logger = logging.getLogger("app")

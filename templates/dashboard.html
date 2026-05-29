@@ -837,9 +837,51 @@
         <div style="font-size:11px;color:var(--muted);margin-top:6px" id="intervalDisplay">Current: 900s (15 min)</div>
       </div>
     </div>
-    <div style="display:flex;gap:10px;align-items:center">
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:24px">
       <button class="btn btn-red" onclick="resetPortfolio()">🔄 Reset Portfolio to ₹10L</button>
       <span style="font-size:12px;color:var(--muted)">Clears all positions and trade history.</span>
+    </div>
+
+    <!-- ── Notifications ─────────────────────────────────────────────── -->
+    <div class="card">
+      <div class="section-header" style="margin-bottom:14px">
+        <span class="section-title">🔔 Notifications</span>
+        <button class="btn btn-ghost" style="font-size:12px;padding:5px 12px" onclick="loadNotifierStatus()">↻ Refresh</button>
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+        <!-- Telegram bot status -->
+        <div style="background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:12px 16px;min-width:220px">
+          <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Telegram Bot</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span id="notifTgDot" style="width:8px;height:8px;border-radius:50%;background:#444;flex-shrink:0"></span>
+            <span id="notifTgStatus" style="font-size:13px;font-weight:600">—</span>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:5px" id="notifTgChat"></div>
+        </div>
+        <!-- SMS status -->
+        <div style="background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:12px 16px;min-width:220px">
+          <div style="font-size:12px;color:var(--muted);margin-bottom:6px">SMS (Twilio)</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span id="notifSmsDot" style="width:8px;height:8px;border-radius:50%;background:#444;flex-shrink:0"></span>
+            <span id="notifSmsStatus" style="font-size:13px;font-weight:600">—</span>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:5px" id="notifSmsNote"></div>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-primary" style="font-size:13px;padding:7px 18px" onclick="sendTestAlert()">
+          📨 Send Test Alert
+        </button>
+        <span id="notifTestResult" style="font-size:12px;color:var(--muted)"></span>
+      </div>
+      <div style="margin-top:14px;padding:12px;background:#0d1117;border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--muted);line-height:1.8">
+        <strong style="color:var(--text)">Setup guide:</strong><br>
+        1. Create a bot via <code>@BotFather</code> on Telegram → copy the token<br>
+        2. Add bot to your group (or start a DM with it) and send any message<br>
+        3. Visit <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code> to find your chat ID<br>
+        4. Add to Railway Variables: <code>TELEGRAM_BOT_TOKEN</code> and <code>TELEGRAM_NOTIFY_CHAT_ID</code><br>
+        5. <em>Optional SMS:</em> add <code>TWILIO_ACCOUNT_SID</code>, <code>TWILIO_AUTH_TOKEN</code>, <code>TWILIO_FROM_NUMBER</code>, <code>TWILIO_TO_NUMBER</code>
+      </div>
     </div>
   </div>
 
@@ -1276,6 +1318,8 @@ function showView(view) {
         startLogPolling();
       } else if (view === 'learning') {
         loadLearning();
+      } else if (view === 'controls') {
+        loadNotifierStatus();
       }
     }
   }
@@ -2088,6 +2132,75 @@ async function setInterval_() {
     toast(`Auto-run interval set to ${d.interval}s ✓`, 'success');
     document.getElementById('intervalDisplay').textContent = `Current: ${d.interval}s (${Math.round(d.interval/60)} min)`;
   }
+}
+
+// ══════════════════════════════════════════════
+// Notifications
+// ══════════════════════════════════════════════
+
+async function loadNotifierStatus() {
+  try {
+    const d = await fetch('/api/notifier/status').then(r => r.json());
+    if (!d.ok) return;
+
+    // Telegram bot
+    const tgDot    = document.getElementById('notifTgDot');
+    const tgStatus = document.getElementById('notifTgStatus');
+    const tgChat   = document.getElementById('notifTgChat');
+    if (d.telegram_configured) {
+      tgDot.style.background    = '#3fb950';
+      tgStatus.textContent      = 'Connected';
+      tgStatus.style.color      = 'var(--green)';
+      tgChat.textContent        = d.telegram_chat_id ? `Chat ID: ${d.telegram_chat_id}` : '';
+    } else {
+      tgDot.style.background    = '#f85149';
+      tgStatus.textContent      = 'Not configured';
+      tgStatus.style.color      = 'var(--red)';
+      tgChat.textContent        = 'Set TELEGRAM_BOT_TOKEN + TELEGRAM_NOTIFY_CHAT_ID';
+    }
+
+    // SMS
+    const smsDot    = document.getElementById('notifSmsDot');
+    const smsStatus = document.getElementById('notifSmsStatus');
+    const smsNote   = document.getElementById('notifSmsNote');
+    if (d.sms_configured) {
+      smsDot.style.background   = '#3fb950';
+      smsStatus.textContent     = 'Connected';
+      smsStatus.style.color     = 'var(--green)';
+      smsNote.textContent       = `Fires when strength ≥ ${d.sms_min_strength}`;
+    } else {
+      smsDot.style.background   = '#8b949e';
+      smsStatus.textContent     = 'Not configured';
+      smsStatus.style.color     = 'var(--muted)';
+      smsNote.textContent       = 'Optional — add TWILIO_* vars to enable';
+    }
+  } catch(e) {}
+}
+
+async function sendTestAlert() {
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = 'Sending…';
+  const el = document.getElementById('notifTestResult');
+  try {
+    const d = await fetch('/api/notifier/test', { method:'POST' }).then(r => r.json());
+    if (d.ok) {
+      const tg  = d.results?.telegram;
+      const sms = d.results?.sms;
+      const tgStr  = tg?.configured  ? (tg.sent  ? '✅ Telegram sent'  : '❌ Telegram failed')  : '⚪ Telegram not configured';
+      const smsStr = sms?.configured ? (sms.sent ? '✅ SMS sent'        : '❌ SMS failed')        : '⚪ SMS not configured';
+      el.style.color = '#3fb950';
+      el.textContent = `${tgStr}  ·  ${smsStr}`;
+    } else {
+      el.style.color = 'var(--red)';
+      el.textContent = d.error || 'Error';
+    }
+  } catch(e) {
+    el.style.color = 'var(--red)';
+    el.textContent = 'Request failed';
+  }
+  btn.disabled    = false;
+  btn.textContent = '📨 Send Test Alert';
 }
 
 // ──────────────────────────────────────────────
