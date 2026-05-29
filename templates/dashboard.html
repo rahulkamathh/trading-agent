@@ -188,7 +188,8 @@
     border-radius: 10px; padding: 16px; transition: border-color .2s;
   }
   .chart-card:hover { border-color: #444d56; }
-  .cc-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+  .cc-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; border-radius: 4px; transition: background 0.15s; }
+  a.cc-header:hover { background: rgba(255,255,255,0.04); }
   .cc-ticker { font-size: 15px; font-weight: 700; }
   .cc-name { font-size: 11px; color: var(--muted); margin-top: 2px; }
   .cc-ltp { font-size: 17px; font-weight: 700; text-align: right; }
@@ -887,6 +888,63 @@
         <strong style="color:#d29922">Optional SMS:</strong> add <code>TWILIO_ACCOUNT_SID</code>, <code>TWILIO_AUTH_TOKEN</code>, <code>TWILIO_FROM_NUMBER</code>, <code>TWILIO_TO_NUMBER</code>
       </div>
     </div>
+
+    <!-- ── Dynamic Risk Manager ─────────────────────────────────────────── -->
+    <div class="card" style="margin-top:20px" id="riskCard">
+      <div class="section-header" style="margin-bottom:14px">
+        <span class="section-title">🛡️ Dynamic Risk Manager</span>
+        <button class="btn btn-ghost" style="font-size:12px;padding:5px 12px" onclick="loadRiskStatus()">↻ Refresh</button>
+      </div>
+
+      <!-- Row 1: macro + drawdown badges -->
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+        <div style="background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:12px 16px;min-width:200px;flex:1">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:5px">MACRO RISK</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span id="riskMacroDot" style="width:10px;height:10px;border-radius:50%;background:#444;flex-shrink:0"></span>
+            <span id="riskMacroLabel" style="font-size:18px;font-weight:700;letter-spacing:.5px">—</span>
+          </div>
+          <div id="riskMacroScore" style="font-size:12px;color:var(--muted);margin-top:4px">score —</div>
+        </div>
+        <div style="background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:12px 16px;min-width:200px;flex:1">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:5px">INTRADAY DRAWDOWN</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span id="riskDdDot" style="width:10px;height:10px;border-radius:50%;background:#444;flex-shrink:0"></span>
+            <span id="riskDdLabel" style="font-size:18px;font-weight:700">—</span>
+          </div>
+          <div id="riskDdPct" style="font-size:12px;color:var(--muted);margin-top:4px">— from peak</div>
+        </div>
+        <div style="background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:12px 16px;min-width:160px;flex:1">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:5px">NEW BUYS ALLOWED</div>
+          <div id="riskMaxBuys" style="font-size:24px;font-weight:700;color:var(--green)">—</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">this cycle</div>
+        </div>
+        <div style="background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:12px 16px;min-width:160px;flex:1">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:5px">INDIA VIX SIGNAL</div>
+          <div id="riskVixScore" style="font-size:24px;font-weight:700">—</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">VIX risk score</div>
+        </div>
+      </div>
+
+      <!-- Row 2: upcoming events -->
+      <div style="margin-bottom:12px">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px;font-weight:600">UPCOMING HIGH-RISK EVENTS (next 7 days)</div>
+        <div id="riskEventsList" style="font-size:13px;color:var(--text)">Loading…</div>
+      </div>
+
+      <!-- Row 3: breakdown detail -->
+      <div id="riskBreakdown" style="font-size:11px;color:var(--muted);line-height:1.8;background:#0d1117;padding:10px;border-radius:6px;border:1px solid var(--border)"></div>
+
+      <!-- How it works -->
+      <div style="margin-top:14px;padding:12px;background:#0d1117;border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--muted);line-height:1.9">
+        <strong style="color:var(--text)">How dynamic risk management works:</strong><br>
+        <strong style="color:#58a6ff">Position sizing:</strong> Each trade risks exactly 0.5% of portfolio value. Size = risk ÷ ATR × conviction. No hardcoded amounts.<br>
+        <strong style="color:#58a6ff">Event calendar:</strong> MSCI rebalancing (quarterly), F&amp;O expiry (monthly), RBI MPC days, Budget → auto-reduces position sizes 2–3 days before.<br>
+        <strong style="color:#58a6ff">India VIX:</strong> VIX &gt; 20 → HIGH risk, &gt; 30 → EXTREME. Positions shrink proportionally.<br>
+        <strong style="color:#58a6ff">Drawdown circuit-breaker:</strong> Portfolio down 2% from today's peak → CAUTION (half size). Down 4% → STOP (no new buys). Down 6% → HALT.<br>
+        <strong style="color:#d29922">EXTREME macro:</strong> Zero new buys until risk normalises. Existing positions held until SL/TP.
+      </div>
+    </div>
   </div>
 
   <!-- ══ Telegram Intelligence page ══ -->
@@ -1324,6 +1382,7 @@ function showView(view) {
         loadLearning();
       } else if (view === 'controls') {
         loadNotifierStatus();
+        loadRiskStatus();
       }
     }
   }
@@ -1453,6 +1512,14 @@ async function _loadGrid(gridId, tickers) {
   await Promise.all(tickers.map(t => _renderCard(t, _chartPeriod, gridId)));
 }
 
+function _tvUrl(ticker) {
+  // Convert yfinance ticker → TradingView symbol
+  if (ticker === '^NSEI')    return 'https://www.tradingview.com/chart/?symbol=NSE:NIFTY';
+  if (ticker === '^NSEBANK') return 'https://www.tradingview.com/chart/?symbol=NSE:BANKNIFTY';
+  const sym = ticker.replace(/\.NS$/i, '').replace(/\^/g, '').toUpperCase();
+  return `https://www.tradingview.com/chart/?symbol=NSE:${sym}`;
+}
+
 function _createCard(grid, ticker, gridId) {
   const sid = _safeId(ticker);
   const cid = `${gridId}_${sid}`;
@@ -1460,16 +1527,17 @@ function _createCard(grid, ticker, gridId) {
   div.className = 'chart-card';
   div.id = `card-${sid}`;
   div.innerHTML = `
-    <div class="cc-header">
+    <a class="cc-header" href="${_tvUrl(ticker)}" target="_blank" rel="noopener"
+       title="Open on TradingView" style="text-decoration:none;color:inherit;">
       <div>
         <div class="cc-ticker">${_tickerLabel(ticker)}</div>
         <div class="cc-name">${_tickerName(ticker)}</div>
       </div>
-      <div>
+      <div style="text-align:right;">
         <div class="cc-ltp" id="cc-ltp-${sid}">—</div>
         <div class="cc-chg neu" id="cc-chg-${sid}">—</div>
       </div>
-    </div>
+    </a>
     <div class="cc-periods">
       ${['1d','1w','1m','3m','1y'].map(p =>
         `<button class="${p===_chartPeriod?'active':''}"
@@ -2179,6 +2247,92 @@ async function loadNotifierStatus() {
       smsNote.textContent       = 'Optional — add TWILIO_* vars to enable';
     }
   } catch(e) {}
+}
+
+// ══════════════════════════════════════════════
+// Dynamic Risk Manager
+// ══════════════════════════════════════════════
+
+const _RISK_COLORS = {
+  LOW:     { dot: '#3fb950', text: 'var(--green)' },
+  MEDIUM:  { dot: '#d29922', text: '#d29922' },
+  HIGH:    { dot: '#f85149', text: 'var(--red)' },
+  EXTREME: { dot: '#ff0000', text: '#ff0000' },
+  NORMAL:  { dot: '#3fb950', text: 'var(--green)' },
+  CAUTION: { dot: '#d29922', text: '#d29922' },
+  STOP:    { dot: '#f85149', text: 'var(--red)' },
+  HALT:    { dot: '#ff0000', text: '#ff0000' },
+};
+
+async function loadRiskStatus() {
+  try {
+    const d = await fetch('/api/risk').then(r => r.json());
+    if (!d.ok) return;
+
+    const mc   = _RISK_COLORS[d.macro_label] || _RISK_COLORS.LOW;
+    const ddc  = _RISK_COLORS[d.drawdown_level] || _RISK_COLORS.NORMAL;
+
+    // Macro badge
+    const macroDot   = document.getElementById('riskMacroDot');
+    const macroLabel = document.getElementById('riskMacroLabel');
+    const macroScore = document.getElementById('riskMacroScore');
+    if (macroDot)   { macroDot.style.background = mc.dot; }
+    if (macroLabel) { macroLabel.textContent = d.macro_label; macroLabel.style.color = mc.text; }
+    if (macroScore) { macroScore.textContent = `score ${(d.macro_score*100).toFixed(0)}/100`; }
+
+    // Drawdown badge
+    const ddDot   = document.getElementById('riskDdDot');
+    const ddLabel = document.getElementById('riskDdLabel');
+    const ddPct   = document.getElementById('riskDdPct');
+    if (ddDot)   { ddDot.style.background = ddc.dot; }
+    if (ddLabel) { ddLabel.textContent = d.drawdown_level; ddLabel.style.color = ddc.text; }
+    if (ddPct)   { ddPct.textContent = `-${d.drawdown_pct.toFixed(2)}% from peak (₹${fmtN(d.peak_value)})`; }
+
+    // Max buys
+    const maxBuysEl = document.getElementById('riskMaxBuys');
+    if (maxBuysEl) {
+      maxBuysEl.textContent = d.max_new_buys;
+      maxBuysEl.style.color = d.max_new_buys === 0 ? 'var(--red)' : d.max_new_buys <= 2 ? '#d29922' : 'var(--green)';
+    }
+
+    // VIX score
+    const vixEl = document.getElementById('riskVixScore');
+    if (vixEl && d.macro_breakdown) {
+      const vixScore = d.macro_breakdown.vix_score;
+      vixEl.textContent = vixScore !== undefined ? `${(vixScore*100).toFixed(0)}/100` : '—';
+      vixEl.style.color = vixScore >= 0.5 ? 'var(--red)' : vixScore >= 0.3 ? '#d29922' : 'var(--green)';
+    }
+
+    // Upcoming events
+    const evEl = document.getElementById('riskEventsList');
+    if (evEl) {
+      if (!d.upcoming_events || d.upcoming_events.length === 0) {
+        evEl.innerHTML = '<span style="color:var(--muted)">No high-risk events in the next 7 days ✓</span>';
+      } else {
+        evEl.innerHTML = d.upcoming_events.map(ev => {
+          const urgency = ev.days_away <= 1 ? 'var(--red)' : ev.days_away <= 2 ? '#d29922' : '#d29922';
+          return `<div style="display:flex;gap:10px;align-items:center;padding:5px 0;border-bottom:1px solid var(--border)">
+            <span style="color:${urgency};font-weight:700;min-width:60px">${ev.days_away === 0 ? 'TODAY' : ev.days_away + 'd away'}</span>
+            <span>${ev.label}</span>
+            <span style="color:var(--muted);font-size:11px">${ev.date}</span>
+          </div>`;
+        }).join('');
+      }
+    }
+
+    // Breakdown detail
+    const bdEl = document.getElementById('riskBreakdown');
+    if (bdEl && d.macro_breakdown) {
+      const bd = d.macro_breakdown;
+      bdEl.innerHTML =
+        `Event multiplier: <strong>${bd.event_mult}×</strong> (${bd.event_label}) &nbsp;·&nbsp; ` +
+        `VIX risk: <strong>${(bd.vix_score*100).toFixed(0)}/100</strong> &nbsp;·&nbsp; ` +
+        `News sentiment: <strong>${(bd.news_score*100).toFixed(0)}/100</strong> &nbsp;·&nbsp; ` +
+        `Composite: <strong>${(bd.composite*100).toFixed(0)}/100</strong>`;
+    }
+  } catch(e) {
+    console.warn('[Risk]', e);
+  }
 }
 
 async function sendTestAlert() {

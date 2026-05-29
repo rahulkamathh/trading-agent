@@ -145,40 +145,67 @@ class SignalParser:
     """
     Parses raw Telegram message text into a structured signal dict.
     Returns None if no valid NSE signal is found.
+
+    Handles the broad variety of Indian channel formats:
+      • "BUY RELIANCE @ 2850 | TGT: 2950/3050 | SL: 2800"
+      • "📈 MOTHERSON BUY CMP ₹144 Target 1: ₹147 Target 2: ₹152 SL ₹141"
+      • "ACCUMULATE HDFCBANK between ₹1650-₹1700, TGT ₹1800, SL ₹1600"
+      • "INFY breakout above ₹1700 → TGT ₹1780/₹1850, SL ₹1660"
+      • Emoji-heavy, pipe-separated, colon-separated variants
     """
 
-    # Direction
+    # ── Direction ──────────────────────────────────────────────────────────── #
     _BUY_RE  = re.compile(
-        r'\b(buy|long|bullish|accumulate|entry|ce buy|call buy|go long)\b', re.I)
+        r'\b(buy|long|bullish|accumulate|add|entry|ce\s*buy|call\s*buy|go\s*long'
+        r'|btst|breakout|BO|fresh\s*buy|positional\s*buy|swing\s*buy)\b', re.I)
     _SELL_RE = re.compile(
-        r'\b(sell|short|bearish|exit|book\s*profit|put buy|pe buy|go short)\b', re.I)
+        r'\b(sell|short|bearish|exit|book\s*profit|put\s*buy|pe\s*buy|go\s*short'
+        r'|square\s*off|sl\s*hit|target\s*hit|exit\s*now)\b', re.I)
 
-    # Shared price-number fragment: optional ₹/Rs, then a number with ≥2 digits
-    # (2+ digits avoids matching the "1" or "2" in "Target 1:" / "Target 2:")
+    # ── Shared price fragment ──────────────────────────────────────────────── #
+    # Optional ₹/Rs/Rs., then 2+ digit number (prevents matching label "1"/"2")
     _P = r'[₹Rs.]*\s*(\d{2,}[\d,]*(?:\.\d+)?)'
 
-    # Entry: handles "Entry: ₹144.57", "@ 2500", "CMP ₹2500.50", "ltp 2500"
-    _ENTRY_RE  = re.compile(
-        r'(?:@|entry|cmp|ltp|price|at)[\s:]*' + _P, re.I)
+    # ── Entry price patterns ───────────────────────────────────────────────── #
+    # "@", "entry", "cmp", "ltp", "price", "at", "above", "near", "around",
+    # "between", "breakout above", "BO above"
+    _ENTRY_RE = re.compile(
+        r'(?:@\s*|(?:entry|cmp|ltp|price|at|above|near|around|between'
+        r'|buy\s*@?|add\s*@?|breakout\s*above|BO\s*above)[\s:]*)'
+        + _P, re.I)
 
-    # Target: handles "Target 1: ₹147.46", "TGT ₹150", "T1: 2800", "TP: 2900"
-    # "target\s*\d*" consumes the label number ("Target 1") before the colon
+    # Price range "₹1650-₹1700" or "1650-1700" → treat lower bound as entry
+    _RANGE_RE = re.compile(
+        r'[₹Rs.]*\s*(\d{2,}[\d,]*(?:\.\d+)?)\s*[-–to]+\s*[₹Rs.]*\s*\d{2,}[\d,]*(?:\.\d+)?'
+    )
+
+    # ── Target price patterns ──────────────────────────────────────────────── #
+    # "Target 1:", "TGT:", "T1:", "TP:", and slash-joined multiples "TGT: 2950/3050/3150"
     _TARGET_RE = re.compile(
-        r'(?:tgt\s*\d*|target\s*\d*|tp\s*\d*|t[1-4])[\s:]+' + _P, re.I)
+        r'(?:tgt\s*\d*|target\s*\d*|tp\s*\d*|t[1-4]|obj(?:ective)?\s*\d*'
+        r'|upside|potential)[\s:]+' + _P, re.I)
 
-    # Stop-loss: handles "Stop Loss: ₹137.34", "SL: 2750", "Stoploss ₹200"
-    _SL_RE     = re.compile(
-        r'(?:\bsl\b|stop\s*loss|stoploss|stop\.?loss)[\s:]*' + _P, re.I)
+    # Slash-separated targets after a target keyword: "TGT: 2950/3050/3150"
+    _TARGET_SLASH_RE = re.compile(
+        r'(?:tgt|target|tp)[\s:]*' + _P
+        + r'(?:\s*/\s*[₹Rs.]*\s*(\d{2,}[\d,]*(?:\.\d+)?))*', re.I)
 
-    # Timeline rules: (pattern, days) — days=None means extract from match groups
+    # Arrow-style: "→ ₹2950" right after the signal body (often the single target)
+    _ARROW_TARGET_RE = re.compile(r'[→➡►]\s*' + _P)
+
+    # ── Stop-loss patterns ─────────────────────────────────────────────────── #
+    _SL_RE = re.compile(
+        r'(?:\bsl\b|stop[\s-]?loss|stoploss|stop\.?loss|risk\s*below)[\s:]*' + _P, re.I)
+
+    # ── Timeline rules ─────────────────────────────────────────────────────── #
     _TIMELINE_RULES = [
-        (re.compile(r'\bintraday\b|\bbtst\b|\bsame.?day\b|\btoday\b', re.I), 1),
+        (re.compile(r'\bintraday\b|\bsame.?day\b|\btoday\b', re.I), 1),
+        (re.compile(r'\bbtst\b', re.I), 2),
         (re.compile(r'\b1\s*day\b|\bone\s*day\b', re.I), 1),
         (re.compile(r'\b2\s*days?\b|\btwo\s*days?\b', re.I), 2),
         (re.compile(r'\b3\s*days?\b|\bthree\s*days?\b', re.I), 3),
         (re.compile(r'\b4\s*days?\b|\bfour\s*days?\b', re.I), 4),
         (re.compile(r'\b5\s*days?\b|\bfive\s*days?\b', re.I), 5),
-        # "2-3 days", "3 to 5 days" — take the upper bound
         (re.compile(r'\b(\d+)\s*[-–to]+\s*(\d+)\s*days?\b', re.I), None),
         (re.compile(r'\b1\s*week\b|\bone\s*week\b|\bweekly\b', re.I), 7),
         (re.compile(r'\b2\s*weeks?\b|\btwo\s*weeks?\b', re.I), 14),
@@ -194,10 +221,12 @@ class SignalParser:
     @classmethod
     def parse(cls, text: str, group_id: int, group_title: str, message_id: int) -> dict | None:
         """Parse message. Returns None if no actionable NSE signal found."""
-        if not text or len(text.strip()) < 15:
+        if not text or len(text.strip()) < 10:
             return None
 
-        text_upper = text.upper()
+        # Strip markdown bold/italic markers so *RELIANCE* → RELIANCE
+        clean_text = re.sub(r'[*_`]', ' ', text)
+        text_upper = clean_text.upper()
 
         # 1. Find ticker
         ticker = cls._find_ticker(text_upper)
@@ -205,43 +234,98 @@ class SignalParser:
             return None
 
         # 2. Direction
-        is_buy  = bool(cls._BUY_RE.search(text))
-        is_sell = bool(cls._SELL_RE.search(text))
+        is_buy  = bool(cls._BUY_RE.search(clean_text))
+        is_sell = bool(cls._SELL_RE.search(clean_text))
         if not is_buy and not is_sell:
             return None
-        # If both found, buy takes priority (common in "buy X, sell Y at …" messages)
+        # BUY takes priority when both appear (e.g. "Buy and sell at ₹xxx")
         direction = "BUY" if is_buy else "SELL"
 
         # 3. Prices
         def clean_price(s: str) -> float:
             return float(s.replace(",", ""))
 
-        entry_m  = cls._ENTRY_RE.search(text)
-        target_m = cls._TARGET_RE.findall(text)
-        sl_m     = cls._SL_RE.search(text)
+        # Entry
+        entry_price = None
+        entry_m = cls._ENTRY_RE.search(clean_text)
+        if entry_m:
+            entry_price = clean_price(entry_m.group(1))
+        else:
+            # Fallback: price range → use lower bound as entry
+            range_m = cls._RANGE_RE.search(clean_text)
+            if range_m:
+                entry_price = clean_price(range_m.group(1))
 
-        entry_price = clean_price(entry_m.group(1)) if entry_m else None
-        targets     = [clean_price(t) for t in target_m] if target_m else []
-        stop_loss   = clean_price(sl_m.group(1)) if sl_m else None
+        # Targets — gather from multiple patterns, deduplicate
+        targets: list[float] = []
 
-        # Drop any "price" that is clearly just a label number (< 10) — e.g. the "1" in T1
+        # Pattern 1: named targets (Target 1, TGT, T1, etc.)
+        for t in cls._TARGET_RE.findall(clean_text):
+            try: targets.append(clean_price(t))
+            except Exception: pass
+
+        # Pattern 2: slash-separated "TGT: 2950/3050/3150"
+        for slash_m in cls._TARGET_SLASH_RE.finditer(clean_text):
+            for g in slash_m.groups():
+                if g:
+                    try: targets.append(clean_price(g))
+                    except Exception: pass
+
+        # Pattern 3: arrow targets "→ ₹2950"
+        for arrow_m in cls._ARROW_TARGET_RE.finditer(clean_text):
+            try: targets.append(clean_price(arrow_m.group(1)))
+            except Exception: pass
+
+        # Deduplicate (preserve order, round to 2dp for comparison)
+        seen: set[float] = set()
+        unique_targets: list[float] = []
+        for t in targets:
+            key = round(t, 1)
+            if key not in seen:
+                seen.add(key)
+                unique_targets.append(t)
+        targets = unique_targets
+
+        # Stop-loss
+        stop_loss = None
+        sl_m = cls._SL_RE.search(clean_text)
+        if sl_m:
+            stop_loss = clean_price(sl_m.group(1))
+
+        # 4. Sanity filters
+        # Drop prices that are clearly just label numbers (< 10)
         targets = [t for t in targets if t >= 10]
 
-        # Basic sanity: if we have entry + targets, targets should be > entry for BUY
+        # If we have entry + targets, filter directionally
         if entry_price and targets:
             if direction == "BUY":
-                targets = [t for t in targets if t > entry_price * 0.9]
+                targets = [t for t in targets if t > entry_price * 0.85]
             else:
-                targets = [t for t in targets if t < entry_price * 1.1]
+                targets = [t for t in targets if t < entry_price * 1.15]
 
-        # 4. Specificity score 0–1
+        # If entry wasn't found via keyword, try to infer from the first standalone
+        # price in the message (common in very terse messages like "RELIANCE BUY 2850 TGT 2950 SL 2800")
+        if entry_price is None:
+            standalone = re.findall(r'(?<![₹\d])' + cls._P, clean_text)
+            if standalone:
+                try:
+                    candidate = clean_price(standalone[0])
+                    if candidate >= 10:
+                        entry_price = candidate
+                except Exception:
+                    pass
+
+        # 5. Specificity score 0–1
         specificity = 0.3   # base: ticker + direction
         if entry_price: specificity += 0.2
         if targets:     specificity += 0.3
         if stop_loss:   specificity += 0.2
 
-        # 5. Timeline
-        timeline_raw, timeline_days = cls._find_timeline(text)
+        # 6. Trade type tag (intraday / BTST / positional / swing)
+        trade_type = cls._find_trade_type(clean_text)
+
+        # 7. Timeline
+        timeline_raw, timeline_days = cls._find_timeline(clean_text)
         evaluate_at = (datetime.now() + timedelta(days=timeline_days)).isoformat()
 
         return {
@@ -253,6 +337,7 @@ class SignalParser:
             "parsed": {
                 "ticker":        ticker,
                 "direction":     direction,
+                "trade_type":    trade_type,
                 "entry_price":   round(entry_price, 2) if entry_price else None,
                 "targets":       [round(t, 2) for t in targets],
                 "stop_loss":     round(stop_loss, 2) if stop_loss else None,
@@ -265,6 +350,16 @@ class SignalParser:
             "status":      "pending",
             "outcome":     None,
         }
+
+    @classmethod
+    def _find_trade_type(cls, text: str) -> str:
+        """Return intraday / btst / positional / swing / '' based on message keywords."""
+        t = text.lower()
+        if re.search(r'\bintraday\b', t): return "intraday"
+        if re.search(r'\bbtst\b', t):     return "btst"
+        if re.search(r'\bpositional\b', t): return "positional"
+        if re.search(r'\bswing\b', t):    return "swing"
+        return ""
 
     @classmethod
     def _find_ticker(cls, text_upper: str) -> str | None:

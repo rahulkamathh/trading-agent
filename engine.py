@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from learning_engine import get_learning_engine
 from notifier import get_notifier
+from risk_manager import get_risk_manager
 
 _IST_TZ = ZoneInfo("Asia/Kolkata")
 
@@ -1205,23 +1206,40 @@ class Portfolio:
         if self.in_cooldown(ticker):
             logger.debug(f"SKIP {ticker} — in cooldown after recent exit")
             return False
+        # Minimum cash check: need at least the floor position size
         total_val = self.get_total_value()
-        max_spend = total_val * MAX_POSITION_PCT
-        return self.state["cash"] >= max_spend and price > 0
+        min_floor = total_val * 0.005   # 0.5% floor
+        return self.state["cash"] >= min_floor and price > 0
 
     def execute_buy(self, ticker: str, price: float, strategy: str,
                     reason: str = "", strength: float = 65.0) -> dict | None:
         if not self.can_buy(ticker, price):
             return None
-        total_val = self.get_total_value()
-        spend     = min(total_val * MAX_POSITION_PCT, self.state["cash"] * 0.95)
-        qty       = int(spend / price)
-        if qty < 1:
-            return None
 
-        # Dynamic ATR-based SL/TP — respects stock volatility, scales TP with conviction
+        # ── Dynamic ATR-based SL/TP (single fetch, no duplicate download) ──────
         stop_loss, target, planned_rr = _compute_sl_tp(ticker, price, strength)
         risk_per_unit = round(price - stop_loss, 2)   # ₹ at risk per share
+
+        # Derive ATR from the stop distance _compute_sl_tp already calculated.
+        # ATR = stop_dist / ATR_SL_MULT — no extra download needed.
+        atr_val: float | None = None
+        implied_atr = risk_per_unit / ATR_SL_MULT
+        if 0 < implied_atr < price * 0.15:
+            atr_val = implied_atr
+
+        # ── Dynamic position sizing via RiskManager ──────────────────────────
+        total_val = self.get_total_value()
+        rm = get_risk_manager()
+        spend = rm.position_size(
+            portfolio_value = total_val,
+            available_cash  = self.state["cash"],
+            price           = price,
+            strength        = strength,
+            atr             = atr_val,
+        )
+        qty = int(spend / price)
+        if qty < 1:
+            return None
 
         cost = qty * price
         self.state["cash"] -= cost
@@ -1796,6 +1814,25 @@ class TradingAgent:
                 if price > 0:
                     sell_agg[ticker]["price"] = price
 
+        # ── Risk check before any new buys ────────────────────────────────────
+        rm = get_risk_manager()
+        total_val = self.portfolio.get_total_value()
+        rm.update_peak(total_val)   # keep drawdown guard fresh
+
+        macro_score, macro_label, macro_breakdown = rm.macro_risk()
+        dd_level, dd_pct = rm.drawdown_status(total_val)
+        max_new_buys = rm.max_new_buys_this_cycle(total_val)
+
+        logger.info(
+            f"📊 Risk snapshot: macro={macro_label}({macro_score:.2f}) "
+            f"drawdown={dd_level}({dd_pct*100:.1f}%) max_new_buys={max_new_buys}"
+        )
+        if macro_breakdown.get("events_soon"):
+            for ev in macro_breakdown["events_soon"]:
+                logger.warning(
+                    f"⚠️  UPCOMING EVENT in {ev['days_away']}d: {ev['label']} ({ev['date']})"
+                )
+
         # ── Execute BUY signals ────────────────────────────────────────────
         # Sort by composite strength descending (strongest conviction first)
         learning = get_learning_engine()
@@ -1812,7 +1849,17 @@ class TradingAgent:
                     f"({len([c for c in buy_candidates if c[1] >= buy_threshold])} above threshold={buy_threshold})")
 
         executed = []
+        new_buys_this_cycle = 0
+
         for ticker, composite_strength, price, strategies in buy_candidates:
+            # Guard-rail 0: macro / drawdown hard limit
+            if new_buys_this_cycle >= max_new_buys:
+                logger.info(
+                    f"🛡️  RISK HALT — max_new_buys={max_new_buys} reached "
+                    f"(macro={macro_label}, drawdown={dd_level})"
+                )
+                break
+
             strat_str = "+".join(sorted(set(strategies)))
             # Guard-rail 1: minimum strength (dynamic — set by LearningEngine)
             if composite_strength < buy_threshold:
@@ -1835,6 +1882,7 @@ class TradingAgent:
             )
             if trade:
                 executed.append(trade)
+                new_buys_this_cycle += 1
                 logger.info(f"✅ BOUGHT {ticker}  qty={trade['qty']}  @ ₹{price:.2f}  [{strat_str}]")
 
         # ── Signal-based SELL: intentionally disabled ─────────────────────

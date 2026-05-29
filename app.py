@@ -705,6 +705,20 @@ def api_notifier_test():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
+@app.route("/api/risk")
+def api_risk():
+    """Return current dynamic risk snapshot: macro score, drawdown, event calendar."""
+    try:
+        from risk_manager import get_risk_manager  # pylint: disable=import-outside-toplevel
+        from engine import get_engine              # pylint: disable=import-outside-toplevel
+        eng = get_engine()
+        port_val = eng.portfolio.get_total_value() if eng else 1_000_000
+        status = get_risk_manager().full_status(port_val)
+        return jsonify({"ok": True, **status})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 @app.route("/api/learning/reset", methods=["POST"])
 def api_learning_reset():
     """Reset all learning state to defaults (use with caution)."""
