@@ -626,7 +626,6 @@
         <input id="logSearch" type="text" placeholder="Filter…" oninput="renderLog()"
           style="padding:4px 10px;background:#0d1117;border:1px solid var(--border);color:var(--text);border-radius:5px;font-size:11px;width:140px"/>
         <button onclick="clearLog()" class="btn btn-ghost" style="font-size:11px;padding:4px 10px">Clear</button>
-        <button onclick="scrollLogBottom()" class="btn btn-ghost" style="font-size:11px;padding:4px 10px">↓ Bottom</button>
       </div>
     </div>
 
@@ -635,13 +634,58 @@
       Waiting for agent activity…
     </div>
 
-    <!-- Log terminal -->
-    <div id="logTerminal" style="
-      background:#090d12;border:1px solid var(--border);border-radius:10px;
-      padding:14px 16px;font-family:'SF Mono','Fira Code','Consolas',monospace;
-      font-size:12px;line-height:1.7;height:60vh;overflow-y:auto;
-      overflow-x:hidden;word-break:break-word;
-    "></div>
+    <!-- Row 1: Cycle Summary + System Log -->
+    <div style="display:grid;grid-template-columns:220px 1fr;gap:12px;margin-bottom:12px">
+      <div class="card" style="min-height:120px">
+        <div class="card-title">📊 Last Cycle</div>
+        <div id="logCycleSummaryBody" style="font-size:12px;color:var(--muted);line-height:1.8">No cycle data yet.</div>
+      </div>
+      <div class="card" style="max-height:160px;overflow-y:auto">
+        <div class="card-title">🖥️ System</div>
+        <div id="logSystemBody" style="font-size:12px;line-height:1.6;font-family:'SF Mono','Fira Code','Consolas',monospace"></div>
+      </div>
+    </div>
+
+    <!-- Row 2: Buys + Sells -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+      <div class="card">
+        <div class="card-title">✅ Buys &nbsp;<span id="logBuyCount" style="font-size:11px;font-weight:400;color:var(--green)"></span></div>
+        <div id="logBuysBody" style="font-size:12px;font-family:'SF Mono','Fira Code','Consolas',monospace;max-height:220px;overflow-y:auto">
+          <span style="color:var(--muted)">No buys yet.</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">🛑 Sells / Exits &nbsp;<span id="logSellCount" style="font-size:11px;font-weight:400;color:var(--red)"></span></div>
+        <div id="logSellsBody" style="font-size:12px;font-family:'SF Mono','Fira Code','Consolas',monospace;max-height:220px;overflow-y:auto">
+          <span style="color:var(--muted)">No exits yet.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 3: Evaluations (collapsed by default) -->
+    <div class="card" style="margin-bottom:12px">
+      <div style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" onclick="toggleEvals()">
+        <div class="card-title" style="margin:0">🔎 Evaluations &nbsp;<span id="logEvalCount" style="font-size:11px;font-weight:400;color:var(--muted)"></span></div>
+        <span id="logEvalToggle" style="font-size:11px;color:var(--muted);user-select:none">▼ Show</span>
+      </div>
+      <div id="logEvalsBody" style="display:none;margin-top:10px;font-size:12px;font-family:'SF Mono','Fira Code','Consolas',monospace;max-height:280px;overflow-y:auto;line-height:1.6"></div>
+    </div>
+
+    <!-- Row 4: Full Log (collapsed by default) -->
+    <div class="card">
+      <div style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" onclick="toggleFullLog()">
+        <div class="card-title" style="margin:0">📋 Full Log</div>
+        <span id="logFullToggle" style="font-size:11px;color:var(--muted);user-select:none">▼ Show</span>
+      </div>
+      <div id="logTerminalWrap" style="display:none;margin-top:10px">
+        <div id="logTerminal" style="
+          background:#090d12;border:1px solid var(--border);border-radius:8px;
+          padding:12px 14px;font-family:'SF Mono','Fira Code','Consolas',monospace;
+          font-size:11px;line-height:1.6;max-height:40vh;overflow-y:auto;
+          overflow-x:hidden;word-break:break-word;
+        "></div>
+      </div>
+    </div>
   </div>
 
   <!-- ══ Controls page ══ -->
@@ -2589,12 +2633,10 @@ function _logEmoji(msg) {
 }
 
 function renderLog() {
-  const term   = document.getElementById('logTerminal');
-  if (!term) return;
-  const filter  = (document.getElementById('logLevelFilter')?.value || '').toUpperCase();
-  const search  = (document.getElementById('logSearch')?.value || '').toLowerCase();
-  const LEVELS  = ['DEBUG','INFO','WARNING','ERROR','CRITICAL'];
-  const minIdx  = filter ? LEVELS.indexOf(filter) : 0;
+  const filter = (document.getElementById('logLevelFilter')?.value || '').toUpperCase();
+  const search = (document.getElementById('logSearch')?.value || '').toLowerCase();
+  const LEVELS = ['DEBUG','INFO','WARNING','ERROR','CRITICAL'];
+  const minIdx = filter ? LEVELS.indexOf(filter) : 0;
 
   const visible = _logEntries.filter(e => {
     if (minIdx > 0 && LEVELS.indexOf(e.level) < minIdx) return false;
@@ -2602,22 +2644,109 @@ function renderLog() {
     return true;
   });
 
-  const wasAtBottom = term.scrollHeight - term.scrollTop - term.clientHeight < 60;
+  // ── Categorise ──
+  const buys = [], sells = [], evals = [], system = [];
+  let lastCycleMsg = null;
 
-  term.innerHTML = visible.map(e => {
-    const style = _LOG_COLOURS[e.level] || _LOG_COLOURS.INFO;
-    const ts    = `<span style="color:#484f58;user-select:none">${e.t} </span>`;
-    const msg   = e.msg.replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    return `<div style="${style};padding:1px 0">${ts}${msg}</div>`;
-  }).join('');
-
-  if (wasAtBottom || _logAutoScroll) {
-    term.scrollTop = term.scrollHeight;
+  for (const e of visible) {
+    const m = e.msg;
+    if (/✅|BOUGHT|BUY.*qty=/i.test(m)) {
+      buys.push(e);
+    } else if (/🛑|🎯|STOP.LOSS|TAKE.PROFIT|\bSELL\b|\bEXIT\b/i.test(m) && !/Evaluating/i.test(m)) {
+      sells.push(e);
+    } else if (/🔎|Evaluating/i.test(m)) {
+      evals.push(e);
+    } else if (/=== Cycle done|Cycle complete|cycle stats/i.test(m)) {
+      lastCycleMsg = e;
+      system.push(e);
+    } else {
+      system.push(e);
+    }
   }
 
-  // Update activity strip with last meaningful line
+  const esc = s => s.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const tsSpan = t => `<span style="color:#484f58;font-size:10px;user-select:none">${t} </span>`;
+
+  // ── Buys card ──
+  const buysEl = document.getElementById('logBuysBody');
+  const buyCountEl = document.getElementById('logBuyCount');
+  if (buysEl) {
+    if (buys.length === 0) {
+      buysEl.innerHTML = '<span style="color:var(--muted)">No buys yet.</span>';
+    } else {
+      buysEl.innerHTML = buys.slice(-30).reverse().map(e =>
+        `<div style="padding:3px 0;border-bottom:1px solid #1a2030;color:var(--green)">${tsSpan(e.t)}${esc(e.msg)}</div>`
+      ).join('');
+    }
+    if (buyCountEl) buyCountEl.textContent = buys.length ? `${buys.length} total` : '';
+  }
+
+  // ── Sells card ──
+  const sellsEl = document.getElementById('logSellsBody');
+  const sellCountEl = document.getElementById('logSellCount');
+  if (sellsEl) {
+    if (sells.length === 0) {
+      sellsEl.innerHTML = '<span style="color:var(--muted)">No exits yet.</span>';
+    } else {
+      sellsEl.innerHTML = sells.slice(-30).reverse().map(e =>
+        `<div style="padding:3px 0;border-bottom:1px solid #1a2030;color:var(--red)">${tsSpan(e.t)}${esc(e.msg)}</div>`
+      ).join('');
+    }
+    if (sellCountEl) sellCountEl.textContent = sells.length ? `${sells.length} total` : '';
+  }
+
+  // ── Evaluations accordion ──
+  const evalsEl = document.getElementById('logEvalsBody');
+  const evalCountEl = document.getElementById('logEvalCount');
+  if (evalsEl) {
+    evalsEl.innerHTML = evals.slice(-300).reverse().map(e =>
+      `<div style="padding:1px 0;color:var(--muted)">${tsSpan(e.t)}${esc(e.msg)}</div>`
+    ).join('');
+    if (evalCountEl) evalCountEl.textContent = evals.length ? `${evals.length} stocks` : '';
+  }
+
+  // ── System card ──
+  const sysEl = document.getElementById('logSystemBody');
+  if (sysEl) {
+    sysEl.innerHTML = system.slice(-40).reverse().map(e => {
+      const col = e.level === 'ERROR' ? 'var(--red)' : e.level === 'WARNING' ? 'var(--yellow)' : 'var(--text)';
+      return `<div style="padding:1px 0;color:${col}">${tsSpan(e.t)}${esc(e.msg)}</div>`;
+    }).join('');
+  }
+
+  // ── Cycle Summary card ──
+  const cycleEl = document.getElementById('logCycleSummaryBody');
+  if (cycleEl) {
+    if (lastCycleMsg) {
+      cycleEl.innerHTML = `<div style="color:var(--text);line-height:1.7">${esc(lastCycleMsg.msg)}</div>`;
+    } else {
+      const rows = [
+        ['Buys', `<strong style="color:var(--green)">${buys.length}</strong>`],
+        ['Exits', `<strong style="color:var(--red)">${sells.length}</strong>`],
+        ['Evals', `<strong>${evals.length}</strong>`],
+      ];
+      cycleEl.innerHTML = rows.map(([k,v]) =>
+        `<div><span style="color:#484f58">${k}:</span> ${v}</div>`
+      ).join('');
+    }
+  }
+
+  // ── Full log terminal (only if expanded) ──
+  const term = document.getElementById('logTerminal');
+  const wrap = document.getElementById('logTerminalWrap');
+  if (term && wrap && wrap.style.display !== 'none') {
+    const wasAtBottom = term.scrollHeight - term.scrollTop - term.clientHeight < 60;
+    term.innerHTML = visible.map(e => {
+      const style = _LOG_COLOURS[e.level] || _LOG_COLOURS.INFO;
+      const msg = esc(e.msg);
+      return `<div style="${style};padding:1px 0">${tsSpan(e.t)}${msg}</div>`;
+    }).join('');
+    if (wasAtBottom || _logAutoScroll) term.scrollTop = term.scrollHeight;
+  }
+
+  // ── Activity strip ──
   const important = [..._logEntries].reverse().find(e =>
-    e.level !== 'DEBUG' || e.msg.includes('BUY') || e.msg.includes('SELL')
+    e.level !== 'DEBUG' || /BUY|SELL|BOUGHT/i.test(e.msg)
   );
   const actEl = document.getElementById('logActivity');
   if (actEl && important) {
@@ -2626,6 +2755,25 @@ function renderLog() {
                       : important.level === 'ERROR'   ? 'var(--red)'
                       : 'var(--text)';
   }
+}
+
+function toggleEvals() {
+  const body   = document.getElementById('logEvalsBody');
+  const toggle = document.getElementById('logEvalToggle');
+  if (!body) return;
+  const open = body.style.display !== 'none';
+  body.style.display   = open ? 'none' : 'block';
+  if (toggle) toggle.textContent = open ? '▼ Show' : '▲ Hide';
+}
+
+function toggleFullLog() {
+  const wrap   = document.getElementById('logTerminalWrap');
+  const toggle = document.getElementById('logFullToggle');
+  if (!wrap) return;
+  const open = wrap.style.display !== 'none';
+  wrap.style.display   = open ? 'none' : 'block';
+  if (toggle) toggle.textContent = open ? '▼ Show' : '▲ Hide';
+  if (!open) renderLog(); // populate terminal on first expand
 }
 
 async function _fetchLogs() {
@@ -2652,13 +2800,11 @@ function startLogPolling() {
   _fetchLogs();
   if (_logTimer) clearInterval(_logTimer);
   _logTimer = setInterval(_fetchLogs, 3000);
-  // Detect if user scrolls up → disable auto-scroll
-  const term = document.getElementById('logTerminal');
-  if (term) {
-    term.addEventListener('scroll', () => {
-      _logAutoScroll = term.scrollHeight - term.scrollTop - term.clientHeight < 60;
-    }, { passive: true });
-  }
+  // Detect if user scrolls up in full-log terminal → disable auto-scroll
+  // (listener attached lazily when the terminal is expanded)
+  document.getElementById('logTerminal')?.addEventListener('scroll', function() {
+    _logAutoScroll = this.scrollHeight - this.scrollTop - this.clientHeight < 60;
+  }, { passive: true });
 }
 
 function clearLog() {
@@ -2667,6 +2813,9 @@ function clearLog() {
 }
 
 function scrollLogBottom() {
+  // Ensure full log is expanded, then scroll to bottom
+  const wrap = document.getElementById('logTerminalWrap');
+  if (wrap && wrap.style.display === 'none') toggleFullLog();
   const term = document.getElementById('logTerminal');
   if (term) { term.scrollTop = term.scrollHeight; _logAutoScroll = true; }
 }
@@ -2929,12 +3078,12 @@ window.addEventListener('DOMContentLoaded', () => {
   loadMarketStatus();
   loadReport();
 
-  // ── Live price ticker: 1s when Angel One connected, 5s fallback ──
+  // ── Live price ticker: every 5s ──
   loadLivePrices();
+  loadMarketOverview();
   setInterval(async () => {
     await loadLivePrices();
-    // In delayed mode also refresh market overview every 5s
-    if (!_liveConnected) await loadMarketOverview();
+    await loadMarketOverview();   // always refresh — server uses live feed when connected
   }, 5000);
 
   // ── Market status chip: every 10s ──

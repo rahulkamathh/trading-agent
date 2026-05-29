@@ -106,7 +106,7 @@ NSE_CM_TOKENS:    dict[str, str] = {}
 _TOKEN_TO_TICKER: dict[str, str] = {}
 
 _BATCH_SIZE = 50          # SmartStream max tokens per subscribe call
-_MAX_STOCKS = 2000        # safety cap (covers full NSE EQ universe)
+_MAX_STOCKS = 9999        # no practical cap — subscribe to full NSE EQ universe
 
 
 def _load_scrip_master() -> dict[str, str]:
