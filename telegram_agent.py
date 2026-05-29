@@ -35,10 +35,11 @@ logger = logging.getLogger(__name__)
 # Paths
 # ---------------------------------------------------------------------------
 
-DATA_DIR     = Path(__file__).parent / "data"
-GROUPS_FILE  = DATA_DIR / "telegram_groups.json"
-SIGNALS_FILE = DATA_DIR / "telegram_signals.json"
-SESSION_FILE = str(DATA_DIR / "telegram_session")
+DATA_DIR      = Path(__file__).parent / "data"
+GROUPS_FILE   = DATA_DIR / "telegram_groups.json"
+SIGNALS_FILE  = DATA_DIR / "telegram_signals.json"
+MESSAGES_FILE = DATA_DIR / "telegram_messages.json"
+SESSION_FILE  = str(DATA_DIR / "telegram_session")
 
 DATA_DIR.mkdir(exist_ok=True)
 
@@ -412,7 +413,7 @@ class TelegramAgent:
         self._scorer   = GroupScorer()
         self._groups   = self._load_groups()
         self._signals  = self._load_signals()
-        self._messages: list = []   # in-memory ring buffer of raw messages (last 500)
+        self._messages: list = self._load_messages()   # persisted ring buffer
 
     # ── Persistence ──────────────────────────────────────────────────────── #
 
@@ -442,6 +443,29 @@ class TelegramAgent:
         # Keep only last 3000 signals
         with open(SIGNALS_FILE, "w") as f:
             json.dump(self._signals[-3000:], f, indent=2)
+
+    def _load_messages(self) -> list:
+        """Load persisted messages from disk (survives server restarts)."""
+        if MESSAGES_FILE.exists():
+            try:
+                with open(MESSAGES_FILE) as f:
+                    data = json.load(f)
+                logger.info(f"[Telegram] Loaded {len(data)} persisted messages from disk")
+                return data[-1000:]
+            except Exception:
+                pass
+        return []
+
+    def _save_messages(self):
+        """Persist messages to disk (atomic write)."""
+        try:
+            tmp = str(MESSAGES_FILE) + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(self._messages[-1000:], f)
+            import os as _os
+            _os.replace(tmp, MESSAGES_FILE)
+        except Exception as exc:
+            logger.debug(f"[Telegram] Could not save messages: {exc}")
 
     # ── Public API ───────────────────────────────────────────────────────── #
 
@@ -578,6 +602,7 @@ class TelegramAgent:
 
             # Startup tasks
             await self._discover_groups()
+            await self._backfill_history()      # load recent messages from active groups
             await self._evaluate_pending_signals()
 
             # Periodic maintenance loop
@@ -605,7 +630,7 @@ class TelegramAgent:
             gid   = str(event.chat_id)
             title = getattr(chat, "title", gid)
 
-            # Store raw message in ring buffer
+            # Store raw message in ring buffer and persist to disk
             raw_msg = {
                 "group_id":   gid,
                 "group_name": title,
@@ -614,8 +639,9 @@ class TelegramAgent:
                 "msg_id":     event.message.id,
             }
             self._messages.append(raw_msg)
-            if len(self._messages) > 500:
-                self._messages = self._messages[-500:]
+            if len(self._messages) > 1000:
+                self._messages = self._messages[-1000:]
+            self._save_messages()
 
 
             signal = self._parser.parse(text, event.chat_id, title, event.message.id)
@@ -634,6 +660,67 @@ class TelegramAgent:
                 )
         except Exception as e:
             logger.warning(f"Message handler error: {e}")
+
+    async def _backfill_history(self):
+        """
+        On startup, fetch the last 50 messages from every active group so the
+        Group Feed isn't blank after a server restart.
+
+        Skips groups whose messages are already in the persisted buffer
+        (identified by the most recent msg_id for that group).
+        """
+        active_groups = {
+            gid: g for gid, g in self._groups.get("groups", {}).items()
+            if g.get("status") == "active"
+        }
+        if not active_groups:
+            logger.info("[Telegram] No active groups for history backfill")
+            return
+
+        # Build set of already-known msg_ids to avoid duplicates
+        known_ids = {m.get("msg_id") for m in self._messages}
+
+        logger.info(f"[Telegram] Backfilling history from {len(active_groups)} active group(s)…")
+        fetched_total = 0
+        for gid, g in active_groups.items():
+            try:
+                title    = g.get("title", gid)
+                entity   = int(gid) if gid.lstrip("-").isdigit() else gid
+                messages = await self._client.get_messages(entity, limit=50)
+                new_msgs = []
+                for msg in messages:
+                    if not msg.text or len(msg.text.strip()) < 5:
+                        continue
+                    if msg.id in known_ids:
+                        continue
+                    new_msgs.append({
+                        "group_id":   gid,
+                        "group_name": title,
+                        "text":       msg.text[:1000],
+                        "time":       msg.date.isoformat() if msg.date else datetime.now().isoformat(),
+                        "msg_id":     msg.id,
+                    })
+                    known_ids.add(msg.id)
+
+                if new_msgs:
+                    # Insert in chronological order (oldest first)
+                    new_msgs.reverse()
+                    self._messages.extend(new_msgs)
+                    fetched_total += len(new_msgs)
+                    logger.info(f"[Telegram] Backfilled {len(new_msgs)} messages from {title}")
+
+                await asyncio.sleep(0.5)   # gentle rate-limiting
+            except Exception as exc:
+                logger.debug(f"[Telegram] History backfill failed for {gid}: {exc}")
+
+        if fetched_total:
+            # Keep buffer bounded and save to disk
+            self._messages = sorted(
+                self._messages[-1000:],
+                key=lambda m: m.get("time", ""),
+            )
+            self._save_messages()
+            logger.info(f"[Telegram] Backfill complete — {fetched_total} new messages loaded")
 
     async def _discover_groups(self):
         """Cold-search Telegram for NSE signal groups and auto-join public ones."""

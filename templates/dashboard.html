@@ -2604,27 +2604,58 @@ async function tgDiscover() {
 let _gfSelectedId = null;
 let _gfSelectedName = null;
 
+let _gfShowAll = false;
+
 async function loadGroupList() {
   const res = await fetch('/api/telegram/groups').then(r => r.json()).catch(() => ({}));
-  const groups = res.groups || [];
-  document.getElementById('gfGroupCount').textContent = groups.length + ' groups';
+  const allGroups = res.groups || [];
+  const activeGroups = allGroups.filter(g => (g.status || 'probation') === 'active');
+  const groups = _gfShowAll ? allGroups : activeGroups;
+
+  // Update count label and toggle button
+  const countEl = document.getElementById('gfGroupCount');
+  if (countEl) countEl.textContent = _gfShowAll
+    ? `${allGroups.length} groups`
+    : `${activeGroups.length} active`;
+
+  // Show/hide toggle button
+  let toggleEl = document.getElementById('gfShowAllBtn');
+  if (!toggleEl) {
+    // Create it once
+    const header = document.querySelector('#page-groupfeed .page-header') ||
+                   document.getElementById('gfGroupCount')?.parentElement;
+    if (header) {
+      toggleEl = document.createElement('button');
+      toggleEl.id = 'gfShowAllBtn';
+      toggleEl.className = 'btn btn-ghost';
+      toggleEl.style.cssText = 'font-size:10px;padding:3px 8px;margin-left:8px';
+      header.appendChild(toggleEl);
+    }
+  }
+  if (toggleEl) {
+    toggleEl.textContent = _gfShowAll ? 'Active only' : `+ ${allGroups.length - activeGroups.length} more`;
+    toggleEl.onclick = () => { _gfShowAll = !_gfShowAll; loadGroupList(); };
+    toggleEl.style.display = allGroups.length > activeGroups.length ? 'inline-block' : 'none';
+  }
 
   const STATUS_COLOR = { active: '#3fb950', probation: '#d29922', dropped: '#f85149' };
   const STATUS_BG    = { active: '#1e3a2e', probation: '#3a2e1e', dropped: '#3a1e1e' };
 
   const list = document.getElementById('gfGroupList');
   if (!groups.length) {
-    list.innerHTML = '<div style="padding:20px;color:var(--muted);font-size:12px;text-align:center">No groups yet — click Discover Groups on the Telegram page</div>';
+    list.innerHTML = activeGroups.length === 0 && !_gfShowAll
+      ? '<div style="padding:20px;color:var(--muted);font-size:12px;text-align:center">No active groups yet — groups move to active after their signals are validated</div>'
+      : '<div style="padding:20px;color:var(--muted);font-size:12px;text-align:center">No groups yet — click Discover Groups on the Telegram page</div>';
     return;
   }
 
   list.innerHTML = groups.map(g => {
-    const st = g.status || 'probation';
-    const color = STATUS_COLOR[st] || '#8b949e';
-    const bg    = STATUS_BG[st]    || '#21262d';
-    const score = (g.score || 0).toFixed(2);
-    const sigs  = g.signals_tracked || 0;
-    const name  = g.title || g.username || g.group_id || 'Unknown';
+    const st     = g.status || 'probation';
+    const color  = STATUS_COLOR[st] || '#8b949e';
+    const bg     = STATUS_BG[st]    || '#21262d';
+    const score  = (g.score || 0).toFixed(2);
+    const sigs   = g.signals_tracked || 0;
+    const name   = g.title || g.username || g.group_id || 'Unknown';
     const isSelected = g.group_id === _gfSelectedId;
     return `<div onclick="selectGroup('${g.group_id}','${name.replace(/'/g,"\\'")}','${st}')"
       style="padding:10px 14px;cursor:pointer;border-bottom:1px solid var(--border);
@@ -2664,18 +2695,34 @@ async function loadGroupFeed() {
   const messages = res.messages || [];
 
   if (!messages.length) {
-    msgs.innerHTML = '<div style="text-align:center;color:var(--muted);margin-top:40px">No messages yet — messages appear here in real time when the group posts</div>';
+    msgs.innerHTML = `<div style="text-align:center;color:var(--muted);margin-top:40px;font-size:13px">
+      No messages yet for <strong>${_gfSelectedName}</strong><br>
+      <span style="font-size:11px">Messages load from Telegram history on startup and stream live as they arrive</span>
+    </div>`;
     return;
   }
 
   msgs.innerHTML = messages.map(m => {
-    const t = new Date(m.time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-    const text = m.text.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+    // Format as IST datetime
+    const d = new Date(m.time);
+    const ts = d.toLocaleString('en-IN', {
+      timeZone: 'Asia/Kolkata',
+      day: '2-digit', month: 'short',
+      hour: '2-digit', minute: '2-digit',
+      hour12: false,
+    }) + ' IST';
+    const text    = (m.text || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    // Highlight potential ticker mentions (3-6 uppercase letters)
+    const textFmt = text.replace(/\b([A-Z]{2,6})\b/g,
+      '<span style="color:#58a6ff;font-weight:600">$1</span>');
     return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${t}</div>
-      <div style="font-size:13px;line-height:1.6;white-space:pre-wrap">${text}</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${ts}</div>
+      <div style="font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word">${textFmt}</div>
     </div>`;
   }).join('');
+
+  // Scroll to latest message
+  msgs.scrollTop = msgs.scrollHeight;
 }
 
 // ══════════════════════════════════════════════
@@ -3409,6 +3456,11 @@ window.addEventListener('DOMContentLoaded', () => {
   // ── Telegram status badge: every 30s (lightweight) ──
   loadTgStatus();
   setInterval(loadTgStatus, 30000);
+
+  // ── Group feed: auto-refresh every 10s when on that page ──
+  setInterval(() => {
+    if (_currentView === 'groupfeed' && _gfSelectedId) loadGroupFeed();
+  }, 10000);
 });
 </script>
 </body>
