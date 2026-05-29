@@ -560,6 +560,41 @@ def api_telegram_signals():
     return jsonify({"ok": True, "signals": signals[:limit], "total": len(signals)})
 
 
+@app.route("/api/telegram/reparse", methods=["POST"])
+def api_telegram_reparse():
+    """
+    Re-parse all stored signals from their raw_text using the current parser.
+    Call once after a parser upgrade to fix historical bad targets/entries.
+    """
+    from telegram_agent import get_telegram_agent, SignalParser  # pylint: disable=import-outside-toplevel
+    agent  = get_telegram_agent()
+    fixed  = 0
+    kept   = 0
+    parser = SignalParser()
+
+    for i, sig in enumerate(agent._signals):
+        raw = sig.get("raw_text", "")
+        if not raw:
+            kept += 1
+            continue
+        new_parsed = parser.parse(
+            raw,
+            sig.get("group_id", 0),
+            sig.get("group_title", ""),
+            sig.get("message_id", 0),
+        )
+        if new_parsed:
+            # Preserve identity fields and outcome — only update the parsed block
+            sig["parsed"] = new_parsed["parsed"]
+            fixed += 1
+        else:
+            kept += 1
+
+    agent._save_signals()
+    return jsonify({"ok": True, "reparsed": fixed, "kept": kept,
+                    "total": len(agent._signals)})
+
+
 @app.route("/api/telegram/add", methods=["POST"])
 def api_telegram_add():
     """Manually add a Telegram group/channel by @username or invite link."""
