@@ -293,6 +293,13 @@ MAX_POSITIONS    = 25          # max concurrent positions
 MIN_BUY_STRENGTH = 65   # signal strength threshold to open a position (0–100)
 COOLDOWN_DAYS    = 3    # days before re-buying a ticker that was stopped out / took profit
 MIN_HOLD_DAYS    = 1    # min days before a position can be exited (even by stop-loss signal flip)
+
+# ── Dynamic SL / TP via ATR ────────────────────────────────────────────────
+# Stop = entry − ATR_SL_MULT × ATR(14)
+# TP   = entry + stop_distance × planned_RR
+# planned_RR scales with signal strength (see _compute_sl_tp)
+ATR_PERIOD      = 14    # bars used for ATR
+ATR_SL_MULT     = 1.5   # stop distance = 1.5 × ATR
 #
 # EXIT POLICY: positions close ONLY via stop-loss (−7%) or take-profit (+20%).
 # Strategy SELL signals are generated and displayed on the dashboard but
@@ -1050,6 +1057,73 @@ class SectorRotationStrategy:
 
 
 # ---------------------------------------------------------------------------
+# Dynamic Stop-Loss / Take-Profit helper
+# ---------------------------------------------------------------------------
+
+def _compute_sl_tp(ticker: str, entry: float, strength: float) -> tuple[float, float, float]:
+    """
+    Return (stop_loss, take_profit, planned_rr) for a new position.
+
+    Stop is set 1.5× ATR(14) below entry so it respects each stock's
+    natural volatility — tight on stable stocks, wider on volatile ones.
+
+    Take-profit is set at  stop_distance × planned_rr  above entry.
+    planned_rr scales with signal conviction:
+        strength < 70  → 1:2.0   (minimum — always at least double the risk)
+        strength 70–79 → 1:2.5
+        strength 80–89 → 1:3.0
+        strength ≥ 90  → 1:4.0   (only for the highest-conviction setups)
+
+    Falls back to flat STOP_LOSS_PCT / planned_rr × STOP_LOSS_PCT if ATR
+    data is unavailable or looks wrong.
+    """
+    # Conviction-based RR target
+    if strength >= 90:
+        planned_rr = 4.0
+    elif strength >= 80:
+        planned_rr = 3.0
+    elif strength >= 70:
+        planned_rr = 2.5
+    else:
+        planned_rr = 2.0
+
+    try:
+        df = DataFetcher.fetch(ticker, period="60d", interval="1d")
+        if df is not None and not df.empty and len(df) >= ATR_PERIOD:
+            high  = df["High"]
+            low   = df["Low"]
+            close = df["Close"]
+            tr    = pd.concat([
+                high - low,
+                (high - close.shift(1)).abs(),
+                (low  - close.shift(1)).abs(),
+            ], axis=1).max(axis=1)
+            atr = tr.rolling(ATR_PERIOD).mean().iloc[-1]
+
+            # Sanity: ATR must be positive and < 15% of price
+            if pd.notna(atr) and 0 < atr < entry * 0.15:
+                sl_dist = atr * ATR_SL_MULT
+                sl  = round(max(entry - sl_dist, entry * 0.50), 2)   # floor at -50%
+                tp  = round(entry + sl_dist * planned_rr, 2)
+                logger.debug(
+                    f"[SL/TP] {ticker}  ATR={atr:.2f}  SL={sl:.2f}  "
+                    f"TP={tp:.2f}  RR=1:{planned_rr}"
+                )
+                return sl, tp, planned_rr
+    except Exception as exc:
+        logger.debug(f"[SL/TP] ATR compute failed for {ticker}: {exc}")
+
+    # Flat fallback — keep same distance from entry, honour the RR target
+    sl_dist = entry * STOP_LOSS_PCT
+    sl  = round(entry - sl_dist, 2)
+    tp  = round(entry + sl_dist * planned_rr, 2)
+    logger.debug(
+        f"[SL/TP] {ticker}  flat fallback  SL={sl:.2f}  TP={tp:.2f}  RR=1:{planned_rr}"
+    )
+    return sl, tp, planned_rr
+
+
+# ---------------------------------------------------------------------------
 # Portfolio Manager
 # ---------------------------------------------------------------------------
 
@@ -1134,7 +1208,8 @@ class Portfolio:
         max_spend = total_val * MAX_POSITION_PCT
         return self.state["cash"] >= max_spend and price > 0
 
-    def execute_buy(self, ticker: str, price: float, strategy: str, reason: str = "") -> dict | None:
+    def execute_buy(self, ticker: str, price: float, strategy: str,
+                    reason: str = "", strength: float = 65.0) -> dict | None:
         if not self.can_buy(ticker, price):
             return None
         total_val = self.get_total_value()
@@ -1142,19 +1217,34 @@ class Portfolio:
         qty       = int(spend / price)
         if qty < 1:
             return None
+
+        # Dynamic ATR-based SL/TP — respects stock volatility, scales TP with conviction
+        stop_loss, target, planned_rr = _compute_sl_tp(ticker, price, strength)
+        risk_per_unit = round(price - stop_loss, 2)   # ₹ at risk per share
+
         cost = qty * price
         self.state["cash"] -= cost
         self.state["positions"][ticker] = {
-            "qty":        qty,
-            "avg_price":  price,
-            "strategy":   strategy,
-            "entry_date": _now_ist().isoformat(),
-            "stop_loss":  round(price * (1 - STOP_LOSS_PCT), 2),
-            "target":     round(price * (1 + TAKE_PROFIT_PCT), 2),
+            "qty":           qty,
+            "avg_price":     price,
+            "strategy":      strategy,
+            "entry_date":    _now_ist().isoformat(),
+            "stop_loss":     stop_loss,
+            "target":        target,
+            "planned_rr":    planned_rr,
+            "risk_per_unit": risk_per_unit,
+            "strength":      round(strength, 1),
         }
         self._save()
-        trade = self._log_trade("BUY", ticker, qty, price, strategy, reason)
-        logger.info(f"BUY  {ticker:20s} qty={qty} @ ₹{price:.2f}  [{strategy}]")
+        trade = self._log_trade(
+            "BUY", ticker, qty, price, strategy, reason,
+            stop_loss=stop_loss, target=target,
+            planned_rr=planned_rr, risk_per_unit=risk_per_unit,
+        )
+        logger.info(
+            f"BUY  {ticker:20s} qty={qty} @ ₹{price:.2f}  "
+            f"SL=₹{stop_loss:.2f}  TP=₹{target:.2f}  RR=1:{planned_rr}  [{strategy}]"
+        )
         return trade
 
     def execute_sell(self, ticker: str, price: float, reason: str = "") -> dict | None:
@@ -1179,6 +1269,30 @@ class Portfolio:
         self.state["cash"]         += proceeds
         self.state["realised_pnl"] += pnl
         strategy = pos["strategy"]
+
+        # Compute actual RR: how many units of risk did we make/lose?
+        risk_per_unit = pos.get("risk_per_unit") or (pos["avg_price"] * STOP_LOSS_PCT)
+        actual_rr     = round((price - pos["avg_price"]) / risk_per_unit, 3) if risk_per_unit > 0 else 0.0
+        planned_rr    = pos.get("planned_rr")
+
+        # ── Trade type for Indian tax classification ───────────────────────
+        # INTRADAY  : bought & sold same calendar day  → speculative business income
+        # STCG      : held 1 day – 364 days            → Short-Term Capital Gains (20%)
+        # LTCG      : held ≥ 365 days                  → Long-Term Capital Gains (12.5% above ₹1.25L)
+        try:
+            entry_dt  = datetime.fromisoformat(pos["entry_date"])
+            exit_dt   = _now_ist()
+            hold_days = (exit_dt.date() - entry_dt.date()).days
+            if hold_days == 0:
+                trade_type = "INTRADAY"
+            elif hold_days < 365:
+                trade_type = "STCG"
+            else:
+                trade_type = "LTCG"
+        except Exception:
+            hold_days  = None
+            trade_type = "STCG"   # safe default
+
         del self.state["positions"][ticker]
 
         # Record exit time for cooldown — prevents immediate re-entry
@@ -1187,8 +1301,14 @@ class Portfolio:
         self.state["exit_log"][ticker] = _now_ist().isoformat()
 
         self._save()
-        trade = self._log_trade("SELL", ticker, qty, price, strategy, reason, pnl=pnl)
-        logger.info(f"SELL {ticker:20s} qty={qty} @ ₹{price:.2f}  pnl=₹{pnl:.2f}  [{reason}]")
+        trade = self._log_trade(
+            "SELL", ticker, qty, price, strategy, reason, pnl=pnl,
+            actual_rr=actual_rr, planned_rr=planned_rr,
+            trade_type=trade_type, hold_days=hold_days,
+        )
+        rr_str   = f"  RR={actual_rr:+.2f}(planned 1:{planned_rr})" if planned_rr else ""
+        type_str = f"  [{trade_type}/{hold_days}d]"
+        logger.info(f"SELL {ticker:20s} qty={qty} @ ₹{price:.2f}  pnl=₹{pnl:.2f}  [{reason}]{rr_str}{type_str}")
         return trade
 
     def check_stops(self) -> list:
@@ -1222,22 +1342,39 @@ class Portfolio:
                 )
         return triggered
 
-    def _log_trade(self, action, ticker, qty, price, strategy, reason, pnl=None) -> dict:
+    def _log_trade(self, action, ticker, qty, price, strategy, reason, pnl=None,
+                   stop_loss=None, target=None, planned_rr=None,
+                   actual_rr=None, risk_per_unit=None,
+                   trade_type=None, hold_days=None) -> dict:
         log = []
         if TRADE_LOG_FILE.exists():
             with open(TRADE_LOG_FILE) as f:
                 log = json.load(f)
         trade = {
-            "id":       len(log) + 1,
-            "action":   action,
-            "ticker":   ticker,
-            "qty":      qty,
-            "price":    round(price, 2),
-            "value":    round(qty * price, 2),
-            "strategy": strategy,
-            "reason":   reason,
-            "pnl":      round(pnl, 2) if pnl is not None else None,
-            "time":     _now_ist().isoformat(),
+            "id":            len(log) + 1,
+            "action":        action,
+            "ticker":        ticker,
+            "qty":           qty,
+            "price":         round(price, 2),
+            "value":         round(qty * price, 2),
+            "strategy":      strategy,
+            "reason":        reason,
+            "pnl":           round(pnl, 2) if pnl is not None else None,
+            "time":          _now_ist().isoformat(),
+            # ── RR metadata ──────────────────────────────────────────────
+            # BUY  → stop_loss, target, planned_rr, risk_per_unit
+            # SELL → actual_rr, trade_type, hold_days
+            "stop_loss":     stop_loss,
+            "target":        target,
+            "planned_rr":    planned_rr,
+            "actual_rr":     actual_rr,
+            "risk_per_unit": risk_per_unit,
+            # ── Tax classification ────────────────────────────────────────
+            # INTRADAY = same-day (speculative, taxed at slab rate)
+            # STCG     = 1–364 days (20% tax)
+            # LTCG     = 365+ days (12.5% above ₹1.25L exemption)
+            "trade_type":    trade_type,   # populated on SELL/exit
+            "hold_days":     hold_days,    # populated on SELL/exit
         }
         log.append(trade)
         with open(TRADE_LOG_FILE, "w") as f:
@@ -1658,6 +1795,7 @@ class TradingAgent:
                 ticker, price,
                 strategy=strat_str,
                 reason=f"SIGNAL strength={composite_strength:.0f}",
+                strength=composite_strength,
             )
             if trade:
                 executed.append(trade)

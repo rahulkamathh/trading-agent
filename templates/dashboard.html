@@ -600,13 +600,42 @@
     <div class="page-header">
       <span class="page-title">📝 Trade Log</span>
     </div>
+
+    <!-- Tax summary cards -->
+    <div class="grid-4" style="margin-bottom:14px">
+      <div class="card" style="text-align:center">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">🔵 Intraday</div>
+        <div id="taxIntraCount" style="font-size:20px;font-weight:700;color:#58a6ff">—</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">trades · slab rate</div>
+        <div id="taxIntraPnl" style="font-size:12px;margin-top:4px;font-weight:600">—</div>
+      </div>
+      <div class="card" style="text-align:center">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">🟡 STCG (&lt;1yr)</div>
+        <div id="taxStcgCount" style="font-size:20px;font-weight:700;color:var(--yellow)">—</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">trades · 20% tax</div>
+        <div id="taxStcgPnl" style="font-size:12px;margin-top:4px;font-weight:600">—</div>
+      </div>
+      <div class="card" style="text-align:center">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">🟢 LTCG (≥1yr)</div>
+        <div id="taxLtcgCount" style="font-size:20px;font-weight:700;color:var(--green)">—</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">trades · 12.5% above ₹1.25L</div>
+        <div id="taxLtcgPnl" style="font-size:12px;margin-top:4px;font-weight:600">—</div>
+      </div>
+      <div class="card" style="text-align:center">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Est. Tax Liability</div>
+        <div id="taxEstimate" style="font-size:20px;font-weight:700;color:var(--red)">—</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">indicative only</div>
+        <div style="font-size:9px;color:var(--muted);margin-top:2px">consult your CA</div>
+      </div>
+    </div>
+
     <div class="card">
       <div id="noTrades" class="hidden" style="text-align:center;padding:40px;color:var(--muted)">No trades yet.</div>
       <div class="table-wrap">
         <table>
           <thead><tr>
-            <th>#</th><th>Time</th><th>Action</th><th>Ticker</th>
-            <th>Qty</th><th>Price</th><th>Value</th><th>P&amp;L</th><th>Strategy</th><th>Reason</th>
+            <th>#</th><th>Time</th><th>Type</th><th>Action</th><th>Ticker</th>
+            <th>Qty</th><th>Price</th><th>Value</th><th>P&amp;L</th><th>RR</th><th>Hold</th><th>Strategy</th><th>Reason</th>
           </tr></thead>
           <tbody id="tradeBody"></tbody>
         </table>
@@ -703,7 +732,12 @@
       <div class="card" style="text-align:center">
         <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Buy Threshold</div>
         <div id="learnThreshold" style="font-size:26px;font-weight:700;color:var(--blue)">—</div>
-        <div style="font-size:10px;color:var(--muted);margin-top:2px">signal strength needed</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">min signal strength</div>
+      </div>
+      <div class="card" style="text-align:center">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Avg Actual RR</div>
+        <div id="learnAvgRR" style="font-size:26px;font-weight:700">—</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">target: ≥ 1:2.0</div>
       </div>
       <div class="card" style="text-align:center">
         <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Overall Win Rate</div>
@@ -713,20 +747,18 @@
       <div class="card" style="text-align:center">
         <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Closed Trades</div>
         <div id="learnClosedTrades" style="font-size:26px;font-weight:700;color:var(--text)">—</div>
-        <div style="font-size:10px;color:var(--muted);margin-top:2px">total processed</div>
-      </div>
-      <div class="card" style="text-align:center">
-        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Strategies Tracked</div>
-        <div id="learnStratCount" style="font-size:26px;font-weight:700;color:var(--text)">—</div>
-        <div style="font-size:10px;color:var(--muted);margin-top:2px">with weight multipliers</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">
+          <span id="learnStratCount" style="font-weight:600;color:var(--text)">—</span> strategies tracked
+        </div>
       </div>
     </div>
 
     <!-- Strategy weights table -->
     <div class="card" style="margin-bottom:16px">
-      <div class="card-title">📊 Strategy Weights &amp; Win Rates</div>
+      <div class="card-title">📊 Strategy Performance &amp; Weights</div>
       <div style="font-size:11px;color:var(--muted);margin-bottom:10px">
-        Weight range: 0.3× (underperforming) → 2.0× (excellent). Min 3 trades needed before weight adjusts.
+        Weights driven by <strong>Expected Value (EV)</strong> = win_rate × avg_RR_on_wins − loss_rate × avg_RR_on_losses.
+        Target: avg actual RR ≥ 1:2. Min 3 trades needed before weight adjusts.
       </div>
       <div id="learnWeightsTable" style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;font-size:12px">
@@ -734,15 +766,17 @@
             <tr style="color:var(--muted);border-bottom:1px solid var(--border)">
               <th style="text-align:left;padding:6px 10px">Strategy</th>
               <th style="text-align:right;padding:6px 10px">Weight</th>
+              <th style="text-align:right;padding:6px 10px">EV</th>
               <th style="text-align:right;padding:6px 10px">Win Rate</th>
-              <th style="text-align:right;padding:6px 10px">Wins</th>
-              <th style="text-align:right;padding:6px 10px">Losses</th>
+              <th style="text-align:right;padding:6px 10px">Avg RR (W)</th>
+              <th style="text-align:right;padding:6px 10px">TP Hits</th>
+              <th style="text-align:right;padding:6px 10px">SL Hits</th>
               <th style="text-align:right;padding:6px 10px">Total P&amp;L</th>
-              <th style="text-align:left;padding:6px 10px;min-width:120px">Weight Bar</th>
+              <th style="text-align:left;padding:6px 10px;min-width:100px">Weight</th>
             </tr>
           </thead>
           <tbody id="learnWeightsBody">
-            <tr><td colspan="7" style="color:var(--muted);padding:12px 10px">Loading…</td></tr>
+            <tr><td colspan="9" style="color:var(--muted);padding:12px 10px">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1743,28 +1777,89 @@ function pillFor(sig) {
 // ──────────────────────────────────────────────
 // Trade Log
 // ──────────────────────────────────────────────
+function _tradePill(type) {
+  if (!type) return '<span style="color:var(--muted)">—</span>';
+  const cfg = {
+    INTRADAY: { label: '🔵 Intraday', color: '#58a6ff' },
+    STCG:     { label: '🟡 STCG',     color: '#e3b341' },
+    LTCG:     { label: '🟢 LTCG',     color: '#3fb950' },
+  };
+  const c = cfg[type] || { label: type, color: 'var(--muted)' };
+  return `<span style="font-size:10px;padding:1px 7px;border-radius:8px;border:1px solid ${c.color}22;color:${c.color};background:${c.color}11;white-space:nowrap">${c.label}</span>`;
+}
+
+function _updateTaxSummary(trades) {
+  // Only SELL/exit trades have trade_type and pnl
+  const exits = trades.filter(t => t.pnl != null && t.trade_type);
+  const group = { INTRADAY: { count: 0, pnl: 0 }, STCG: { count: 0, pnl: 0 }, LTCG: { count: 0, pnl: 0 } };
+  exits.forEach(t => {
+    const g = group[t.trade_type];
+    if (g) { g.count++; g.pnl += t.pnl; }
+  });
+
+  const fmtPnl = (p) => {
+    const s = p >= 0 ? '+' : '';
+    const c = p >= 0 ? 'var(--green)' : 'var(--red)';
+    return `<span style="color:${c}">${s}₹${Math.abs(p).toLocaleString('en-IN',{maximumFractionDigits:0})}</span>`;
+  };
+
+  document.getElementById('taxIntraCount').textContent = group.INTRADAY.count || '—';
+  document.getElementById('taxStcgCount').textContent  = group.STCG.count     || '—';
+  document.getElementById('taxLtcgCount').textContent  = group.LTCG.count     || '—';
+  document.getElementById('taxIntraPnl').innerHTML = group.INTRADAY.count ? fmtPnl(group.INTRADAY.pnl) : '—';
+  document.getElementById('taxStcgPnl').innerHTML  = group.STCG.count     ? fmtPnl(group.STCG.pnl)     : '—';
+  document.getElementById('taxLtcgPnl').innerHTML  = group.LTCG.count     ? fmtPnl(group.LTCG.pnl)     : '—';
+
+  // Rough tax estimate (indicative only — actual tax depends on slab, other income, etc.)
+  const intraTax = Math.max(group.INTRADAY.pnl, 0) * 0.30;   // 30% slab (conservative)
+  const stcgTax  = Math.max(group.STCG.pnl,     0) * 0.20;
+  const ltcgExempt = 125000;
+  const ltcgTax  = Math.max(group.LTCG.pnl - ltcgExempt, 0) * 0.125;
+  const totalTax = intraTax + stcgTax + ltcgTax;
+  const taxEl = document.getElementById('taxEstimate');
+  if (totalTax > 0) {
+    taxEl.textContent = '₹' + Math.round(totalTax).toLocaleString('en-IN');
+  } else {
+    taxEl.textContent = '₹0';
+    taxEl.style.color = 'var(--green)';
+  }
+}
+
 function renderTrades(trades) {
-  const el = document.getElementById('tradeBody');
-  const noEl = document.getElementById('noTrades');
+  const el  = document.getElementById('tradeBody');
   if (!trades || !trades.length) {
     el.innerHTML = '';
     show('noTrades');
+    _updateTaxSummary([]);
     return;
   }
   hide('noTrades');
-  el.innerHTML = trades.map(t => `
-    <tr>
+  _updateTaxSummary(trades);
+
+  el.innerHTML = trades.slice().reverse().map(t => {
+    const isBuy  = t.action === 'BUY';
+    const rrStr  = t.actual_rr != null
+      ? `<span style="color:${t.actual_rr >= 2 ? 'var(--green)' : t.actual_rr >= 1 ? 'var(--yellow)' : 'var(--red)'}">${t.actual_rr >= 0 ? '1:' : '-1:'}${Math.abs(t.actual_rr).toFixed(2)}</span>`
+      : (t.planned_rr ? `<span style="color:var(--muted)">1:${t.planned_rr} planned</span>` : '—');
+    const holdStr = t.hold_days != null
+      ? `${t.hold_days}d`
+      : '—';
+    return `<tr>
       <td style="color:var(--muted)">${t.id}</td>
-      <td style="color:var(--muted)">${(t.time||'').replace('T',' ').slice(0,19)} IST</td>
-      <td>${t.action==='BUY'?'<span class="pill pill-buy">BUY</span>':'<span class="pill pill-sell">SELL</span>'}</td>
+      <td style="color:var(--muted);white-space:nowrap">${(t.time||'').replace('T',' ').slice(0,16)} IST</td>
+      <td>${_tradePill(t.trade_type)}</td>
+      <td>${isBuy ? '<span class="pill pill-buy">BUY</span>' : '<span class="pill pill-sell">SELL</span>'}</td>
       <td><strong>${(t.ticker||'').replace('.NS','')}</strong></td>
       <td>${t.qty}</td>
       <td>${fmt(t.price)}</td>
       <td>${fmt(t.value)}</td>
-      <td class="${cls(t.pnl)}">${t.pnl!=null?fmt(t.pnl):'—'}</td>
-      <td style="color:var(--muted)">${t.strategy||'—'}</td>
+      <td class="${cls(t.pnl)}">${t.pnl != null ? fmt(t.pnl) : '—'}</td>
+      <td>${rrStr}</td>
+      <td style="color:var(--muted)">${holdStr}</td>
+      <td style="color:var(--muted);font-size:11px">${t.strategy||'—'}</td>
       <td style="color:var(--muted)">${t.reason||'—'}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 }
 
 // ──────────────────────────────────────────────
@@ -3186,9 +3281,18 @@ async function loadLearning() {
     const d = await fetch('/api/learning').then(r => r.json());
     if (!d.ok) return;
 
-    // Summary strip
-    const thresh = d.threshold ?? 65;
-    document.getElementById('learnThreshold').textContent = thresh;
+    // ── Summary strip ──────────────────────────────────────────────────
+    document.getElementById('learnThreshold').textContent = d.threshold ?? 65;
+
+    const avgRR = d.overall_avg_rr ?? 0;
+    const rrEl  = document.getElementById('learnAvgRR');
+    if (avgRR === 0) {
+      rrEl.textContent = '—';
+      rrEl.style.color = 'var(--muted)';
+    } else {
+      rrEl.textContent = '1:' + Math.abs(avgRR).toFixed(2);
+      rrEl.style.color = avgRR >= 2.0 ? 'var(--green)' : avgRR >= 1.0 ? 'var(--yellow)' : 'var(--red)';
+    }
 
     const wr = d.overall_win_rate ?? 0;
     const wrEl = document.getElementById('learnWinRate');
@@ -3197,48 +3301,59 @@ async function loadLearning() {
 
     document.getElementById('learnClosedTrades').textContent = d.total_closed_trades ?? 0;
 
-    const strats = d.strategies ?? {};
+    const strats    = d.strategies ?? {};
     const stratKeys = Object.keys(strats);
     document.getElementById('learnStratCount').textContent = stratKeys.length;
 
-    // Strategy weights table
+    // ── Strategy weights table ─────────────────────────────────────────
     const tbody = document.getElementById('learnWeightsBody');
     if (stratKeys.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted);padding:12px 10px">No strategy data yet — weights will appear after the first closed trades.</td></tr>';
+      tbody.innerHTML = `<tr><td colspan="9" style="color:var(--muted);padding:12px 10px">
+        No strategy data yet — stats appear after first closed trades.</td></tr>`;
     } else {
-      // Sort by weight descending
-      const sorted = stratKeys.sort((a, b) => (strats[b].weight ?? 1) - (strats[a].weight ?? 1));
+      // Sort by EV descending (best performing first)
+      const sorted = stratKeys.sort((a, b) =>
+        (strats[b].expected_value ?? 0) - (strats[a].expected_value ?? 0)
+      );
       tbody.innerHTML = sorted.map(name => {
-        const s = strats[name];
-        const w = (s.weight ?? 1).toFixed(2);
+        const s      = strats[name];
+        const w      = (s.weight ?? 1).toFixed(2);
+        const ev     = (s.expected_value ?? 0);
+        const evStr  = (ev >= 0 ? '+' : '') + ev.toFixed(2);
+        const evCol  = ev >= 1.5 ? 'var(--green)' : ev >= 0.5 ? '#7ec8e3' : ev >= 0 ? 'var(--yellow)' : 'var(--red)';
         const winRate = ((s.win_rate ?? 0) * 100).toFixed(1) + '%';
-        const pnl = s.total_pnl ?? 0;
+        const avgWR  = s.avg_win_rr ? '1:' + s.avg_win_rr.toFixed(2) : '—';
+        const avgWRC = (s.avg_win_rr ?? 0) >= 2.0 ? 'var(--green)' : (s.avg_win_rr ?? 0) >= 1.0 ? 'var(--yellow)' : 'var(--muted)';
+        const pnl    = s.total_pnl ?? 0;
         const pnlStr = (pnl >= 0 ? '+' : '') + '₹' + Math.abs(pnl).toLocaleString('en-IN', {maximumFractionDigits: 0});
-        const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
-        const wColor   = _weightColor(parseFloat(w));
+        const pnlCol = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+        const wColor = _weightColor(parseFloat(w));
         return `<tr style="border-bottom:1px solid var(--border)">
           <td style="padding:7px 10px;font-weight:500">${name}</td>
           <td style="text-align:right;padding:7px 10px;color:${wColor};font-weight:700">${w}×</td>
+          <td style="text-align:right;padding:7px 10px;color:${evCol};font-weight:600">${evStr}</td>
           <td style="text-align:right;padding:7px 10px">${winRate}</td>
-          <td style="text-align:right;padding:7px 10px;color:var(--green)">${s.wins ?? 0}</td>
-          <td style="text-align:right;padding:7px 10px;color:var(--red)">${s.losses ?? 0}</td>
-          <td style="text-align:right;padding:7px 10px;color:${pnlColor}">${pnlStr}</td>
-          <td style="padding:7px 10px;width:120px">${_weightBar(parseFloat(w))}</td>
+          <td style="text-align:right;padding:7px 10px;color:${avgWRC}">${avgWR}</td>
+          <td style="text-align:right;padding:7px 10px;color:var(--green)">${s.tp_hits ?? 0}</td>
+          <td style="text-align:right;padding:7px 10px;color:var(--red)">${s.sl_hits ?? 0}</td>
+          <td style="text-align:right;padding:7px 10px;color:${pnlCol}">${pnlStr}</td>
+          <td style="padding:7px 10px;width:100px">${_weightBar(parseFloat(w))}</td>
         </tr>`;
       }).join('');
     }
 
-    // Adjustment log
-    const log = (d.adjustment_log ?? []).slice().reverse(); // newest first
+    // ── Adjustment log ─────────────────────────────────────────────────
+    const log = (d.adjustment_log ?? []).slice().reverse();
     document.getElementById('learnLogCount').textContent = log.length ? `(${log.length})` : '';
     const logBody = document.getElementById('learnLogBody');
     if (log.length === 0) {
       logBody.innerHTML = '<tr><td colspan="6" style="color:var(--muted);padding:8px">No adjustments yet.</td></tr>';
     } else {
       logBody.innerHTML = log.map(e => {
-        const dir   = e.new_weight > e.old_weight ? '↑' : '↓';
-        const dCol  = e.new_weight > e.old_weight ? 'var(--green)' : 'var(--red)';
-        const wr    = ((e.win_rate ?? 0) * 100).toFixed(1) + '%';
+        const dir  = e.new_weight > e.old_weight ? '↑' : '↓';
+        const dCol = e.new_weight > e.old_weight ? 'var(--green)' : 'var(--red)';
+        const wr   = ((e.win_rate ?? 0) * 100).toFixed(1) + '%';
+        const evStr = e.ev != null ? (e.ev >= 0 ? '+' : '') + e.ev.toFixed(2) : '—';
         return `<tr style="border-bottom:1px solid var(--border)">
           <td style="padding:4px 8px;color:var(--muted);white-space:nowrap">${e.time}</td>
           <td style="padding:4px 8px;font-weight:500">${e.strategy}</td>
