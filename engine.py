@@ -64,12 +64,12 @@ NIFTY50_TICKERS = [
     "SUNPHARMA.NS","DRREDDY.NS","CIPLA.NS","DIVISLAB.NS","BIOCON.NS",
     "AUROPHARMA.NS","LUPIN.NS","TORNTPHARM.NS","ALKEM.NS","IPCALAB.NS",
     "GLENMARK.NS","NATCOPHARM.NS","ZYDUSLIFE.NS","ABBOTINDIA.NS",
-    "PFIZER.NS","SANOFI.NS","LAURUS.NS","GRANULES.NS","SYNGENE.NS",
-    "AJANTPHARM.NS","SOLARA.NS","MARKSANS.NS","SUVEN.NS","NEULANDLAB.NS",
+    "PFIZER.NS","SANOFI.NS","LAURUSLABS.NS","GRANULES.NS","SYNGENE.NS",
+    "AJANTPHARM.NS","MARKSANS.NS","SUVENPHAR.NS","NEULANDLAB.NS",
 
     # ══ HEALTHCARE / DIAGNOSTICS ══════════════════════════════════════════
     "APOLLOHOSP.NS","MAXHEALTH.NS","FORTIS.NS","NARAYANA.NS","ASTER.NS",
-    "METROPOLIS.NS","LALPATHLAB.NS","THYROCARE.NS","KRSNAA.NS","VIJAYA.NS",
+    "METROPOLIS.NS","LALPATHLAB.NS","THYROCARE.NS","KRSNAA.NS","VIJAYADIAG.NS",
 
     # ══ FMCG / CONSUMER STAPLES ════════════════════════════════════════════
     "HINDUNILVR.NS","ITC.NS","NESTLEIND.NS","BRITANNIA.NS","DABUR.NS",
@@ -128,12 +128,12 @@ NIFTY50_TICKERS = [
     "POLYCAB.NS","KEIINDS.NS","FINOLEX.NS","HAVELLS.NS","VGUARD.NS",
 
     # ══ DEFENCE & AEROSPACE ════════════════════════════════════════════════
-    "HAL.NS","COCHINSHIP.NS","MAZAGON.NS","GRSE.NS","MTAR.NS",
-    "DATAPATTNS.NS","PARAS.NS","IDEAFORGE.NS",
+    "HAL.NS","COCHINSHIP.NS","MAZDOCK.NS","GRSE.NS","MTAR.NS",
+    "DATAPATTNS.NS","IDEAFORGE.NS",
 
     # ══ INFRASTRUCTURE / CONSTRUCTION ══════════════════════════════════════
-    "ADANIPORTS.NS","ADANIENT.NS","GMRINFRA.NS","IRB.NS","SADBHAV.NS",
-    "NCC.NS","KPITL.NS","PNCINFRA.NS","HG-INFRA.NS","RVNL.NS","IRCON.NS",
+    "ADANIPORTS.NS","ADANIENT.NS","GMRAIRPORT.NS","IRB.NS",
+    "NCC.NS","KPITL.NS","PNCINFRA.NS","HGINFRA.NS","RVNL.NS","IRCON.NS",
 
     # ══ REAL ESTATE ════════════════════════════════════════════════════════
     "DLF.NS","GODREJPROP.NS","OBEROIRLTY.NS","PRESTIGE.NS","SOBHA.NS",
@@ -150,7 +150,7 @@ NIFTY50_TICKERS = [
     "ZEEL.NS","SUNTV.NS","PVRINOX.NS","SAREGAMA.NS","TIPS.NS","NAVNETEDUL.NS",
 
     # ══ HOTELS & HOSPITALITY ════════════════════════════════════════════════
-    "EIHOTEL.NS","INDHOTEL.NS","CHALET.NS","LEMON.NS","MAHINDRAHOLIDAYS.NS",
+    "EIHOTEL.NS","INDHOTEL.NS","CHALET.NS","LEMON.NS","MHRIL.NS",
 
     # ══ TEXTILES & APPAREL ══════════════════════════════════════════════════
     "RAYMOND.NS","ARVIND.NS","WELSPUN.NS","TRIDENT.NS","VARDHMAN.NS",
@@ -158,7 +158,7 @@ NIFTY50_TICKERS = [
 
     # ══ AGRICULTURE & FOOD PROCESSING ══════════════════════════════════════
     "KRBL.NS","LTFOODS.NS","AVANTIFEED.NS","WATERBASE.NS","GODREJAGRO.NS",
-    "RUCHI.NS","PATANJALIFOODS.NS","KSEEDS.NS","DHANUKA.NS","PIIND.NS",
+    "PATANJALIFOODS.NS","DHANUKA.NS","PIIND.NS",
 
     # ══ PSU / DIVERSIFIED ════════════════════════════════════════════════
     "HUDCO.NS","IRFC.NS","RECLTD.NS","IDBI.NS","IFCI.NS",
@@ -251,15 +251,15 @@ PENNY_UNIVERSE = [
     # Metals & Mining
     "SAIL.NS", "NMDC.NS", "NATIONALUM.NS", "MOIL.NS", "HINDZINC.NS",
     # Defence & Aerospace
-    "HAL.NS", "COCHINSHIP.NS", "MAZAGON.NS", "GRSE.NS",
+    "HAL.NS", "COCHINSHIP.NS", "MAZDOCK.NS", "GRSE.NS",
     # Banking & Finance (turnaround plays)
     "YESBANK.NS", "IDFCFIRSTB.NS", "FEDERALBNK.NS", "BANDHANBNK.NS",
     # Chemicals & Pharma
-    "LAURUS.NS", "GRANULES.NS", "SYNGENE.NS", "PCBL.NS",
+    "LAURUSLABS.NS", "GRANULES.NS", "SYNGENE.NS", "PCBL.NS",
     # Telecom
     "IDEA.NS",
     # Others
-    "GMRINFRA.NS", "ADANIGREEN.NS",
+    "GMRAIRPORT.NS", "ADANIGREEN.NS",
 ]
 
 INDEX_TICKERS = {
@@ -298,17 +298,47 @@ class DataFetcher:
 
     _cache: dict = {}
 
+    # ── Bad-ticker skip cache ─────────────────────────────────────────────────
+    # Tickers that return empty data are tracked. After _FAIL_THRESHOLD consecutive
+    # failures the ticker is added to _skip_set and silently skipped on future
+    # calls (avoiding wasted HTTP round-trips for dead / delisted symbols).
+    # The skip set is cleared every _SKIP_RESET_CALLS to retry periodically.
+    _fail_counts:      dict[str, int] = {}
+    _skip_set:         set[str]       = set()
+    _fetch_call_count: int            = 0
+    _FAIL_THRESHOLD   = 3
+    _SKIP_RESET_CALLS = 500   # ~once per trading day at normal cycle frequency
+
     @classmethod
     def fetch(cls, ticker: str, period: str = "5y", interval: str = "1d") -> pd.DataFrame:
+        # Periodically reset the skip set so tickers get a second chance
+        cls._fetch_call_count += 1
+        if cls._fetch_call_count % cls._SKIP_RESET_CALLS == 0:
+            if cls._skip_set:
+                logger.info(f"[DataFetcher] Clearing skip set ({len(cls._skip_set)} tickers) — will retry")
+            cls._skip_set.clear()
+            cls._fail_counts.clear()
+
+        # Skip tickers that have consistently failed this session
+        if ticker in cls._skip_set:
+            return pd.DataFrame()
+
         key = f"{ticker}_{period}_{interval}"
         if key in cls._cache:
             return cls._cache[key]
         try:
             df = yf.download(ticker, period=period, interval=interval, auto_adjust=True, progress=False)
             if df.empty:
-                logger.warning(f"No data for {ticker}")
+                count = cls._fail_counts.get(ticker, 0) + 1
+                cls._fail_counts[ticker] = count
+                if count >= cls._FAIL_THRESHOLD:
+                    cls._skip_set.add(ticker)
+                    logger.info(f"[DataFetcher] Skipping {ticker} — no data after {count} attempts")
+                else:
+                    logger.warning(f"No data for {ticker} (attempt {count}/{cls._FAIL_THRESHOLD})")
                 return pd.DataFrame()
-            # Flatten MultiIndex columns if present
+            # Success — reset fail count and cache
+            cls._fail_counts.pop(ticker, None)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             df.dropna(inplace=True)
