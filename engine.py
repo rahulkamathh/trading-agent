@@ -15,6 +15,7 @@ import requests
 import io
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from learning_engine import get_learning_engine
 
 _IST_TZ = ZoneInfo("Asia/Kolkata")
 
@@ -1624,25 +1625,26 @@ class TradingAgent:
 
         # ── Execute BUY signals ────────────────────────────────────────────
         # Sort by composite strength descending (strongest conviction first)
+        learning = get_learning_engine()
+        buy_threshold = learning.get_threshold()
+
         buy_candidates = []
         for ticker, agg in buy_agg.items():
-            composite = sum(agg["strengths"]) / len(agg["strengths"])
-            strat_cnt = len(set(agg["strategies"]))
-            # Bonus: +5 strength per additional confirming strategy
-            boosted   = min(composite + (strat_cnt - 1) * 5, 100)
+            # Use learning-weighted composite strength (accounts for strategy win rates)
+            boosted = learning.weighted_strength(agg["strengths"], agg["strategies"])
             buy_candidates.append((ticker, boosted, agg["price"], agg["strategies"]))
 
         buy_candidates.sort(key=lambda x: x[1], reverse=True)
         logger.info(f"📋 {len(buy_candidates)} BUY candidates after aggregation "
-                    f"({len([c for c in buy_candidates if c[1] >= MIN_BUY_STRENGTH])} above threshold)")
+                    f"({len([c for c in buy_candidates if c[1] >= buy_threshold])} above threshold={buy_threshold})")
 
         executed = []
         for ticker, composite_strength, price, strategies in buy_candidates:
             strat_str = "+".join(sorted(set(strategies)))
-            # Guard-rail 1: minimum strength
-            if composite_strength < MIN_BUY_STRENGTH:
+            # Guard-rail 1: minimum strength (dynamic — set by LearningEngine)
+            if composite_strength < buy_threshold:
                 logger.debug(
-                    f"⏭  SKIP {ticker} — strength {composite_strength:.0f} < {MIN_BUY_STRENGTH} [{strat_str}]"
+                    f"⏭  SKIP {ticker} — strength {composite_strength:.0f} < {buy_threshold} [{strat_str}]"
                 )
                 continue
             if self.portfolio.in_cooldown(ticker):
@@ -1670,6 +1672,26 @@ class TradingAgent:
         # dashboard display ("strategies saying sell on X that we hold").
         _ = sell_agg  # suppress unused-variable warnings
 
+        # ── Self-learning: update strategy weights from closed trades ─────────
+        try:
+            learn_summary = learning.learn_from_trades()
+            if learn_summary["new_trades_processed"] > 0:
+                logger.info(
+                    f"🧠 Learning: processed {learn_summary['new_trades_processed']} trade(s) | "
+                    f"overall_win_rate={learn_summary['overall_win_rate']:.1%} | "
+                    f"threshold={learning.get_threshold()}"
+                )
+                for wc in learn_summary["weight_changes"]:
+                    logger.info(
+                        f"   ↕ {wc['strategy']} weight {wc['old']:.2f}→{wc['new']:.2f} "
+                        f"(win_rate={wc['win_rate']:.1%})"
+                    )
+                if learn_summary["threshold_change"]:
+                    tc = learn_summary["threshold_change"]
+                    logger.info(f"   ↕ Buy threshold {tc['old']}→{tc['new']}")
+        except Exception as exc:
+            logger.warning(f"[Learning] learn_from_trades error: {exc}")
+
         elapsed = round(time.time() - t0, 1)
         summary = {
             "cycle_time_s":    elapsed,
@@ -1679,6 +1701,7 @@ class TradingAgent:
             "stops_triggered": len(stops),
             "portfolio_value": round(self.portfolio.get_total_value(), 2),
             "timestamp":       _now_ist().isoformat(),
+            "buy_threshold":   learning.get_threshold(),
         }
         logger.info(f"=== Cycle done in {elapsed}s | {summary} ===")
         return summary

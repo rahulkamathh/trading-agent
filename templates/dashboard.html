@@ -425,7 +425,10 @@
   <div class="nav-group">
     <div class="nav-group-title">Tools</div>
     <div class="nav-item" data-view="agentlog" onclick="showView('agentlog')">
-      <span class="nav-icon">🧠</span> Agent Log
+      <span class="nav-icon">📋</span> Agent Log
+    </div>
+    <div class="nav-item" data-view="learning" onclick="showView('learning')">
+      <span class="nav-icon">🧠</span> Self-Learning
     </div>
     <div class="nav-item" data-view="controls" onclick="showView('controls')">
       <span class="nav-icon">⚙️</span> Controls
@@ -684,6 +687,89 @@
           font-size:11px;line-height:1.6;max-height:40vh;overflow-y:auto;
           overflow-x:hidden;word-break:break-word;
         "></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ Self-Learning page ══ -->
+  <div id="page-learning" class="page-section hidden">
+    <div class="page-header">
+      <span class="page-title">🧠 Self-Learning Engine</span>
+      <button class="btn btn-ghost" onclick="loadLearning()" style="font-size:11px">↻ Refresh</button>
+    </div>
+
+    <!-- Summary strip -->
+    <div class="grid-4" style="margin-bottom:16px">
+      <div class="card" style="text-align:center">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Buy Threshold</div>
+        <div id="learnThreshold" style="font-size:26px;font-weight:700;color:var(--blue)">—</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">signal strength needed</div>
+      </div>
+      <div class="card" style="text-align:center">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Overall Win Rate</div>
+        <div id="learnWinRate" style="font-size:26px;font-weight:700">—</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">last 200 closed trades</div>
+      </div>
+      <div class="card" style="text-align:center">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Closed Trades</div>
+        <div id="learnClosedTrades" style="font-size:26px;font-weight:700;color:var(--text)">—</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">total processed</div>
+      </div>
+      <div class="card" style="text-align:center">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Strategies Tracked</div>
+        <div id="learnStratCount" style="font-size:26px;font-weight:700;color:var(--text)">—</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">with weight multipliers</div>
+      </div>
+    </div>
+
+    <!-- Strategy weights table -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">📊 Strategy Weights &amp; Win Rates</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px">
+        Weight range: 0.3× (underperforming) → 2.0× (excellent). Min 3 trades needed before weight adjusts.
+      </div>
+      <div id="learnWeightsTable" style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead>
+            <tr style="color:var(--muted);border-bottom:1px solid var(--border)">
+              <th style="text-align:left;padding:6px 10px">Strategy</th>
+              <th style="text-align:right;padding:6px 10px">Weight</th>
+              <th style="text-align:right;padding:6px 10px">Win Rate</th>
+              <th style="text-align:right;padding:6px 10px">Wins</th>
+              <th style="text-align:right;padding:6px 10px">Losses</th>
+              <th style="text-align:right;padding:6px 10px">Total P&amp;L</th>
+              <th style="text-align:left;padding:6px 10px;min-width:120px">Weight Bar</th>
+            </tr>
+          </thead>
+          <tbody id="learnWeightsBody">
+            <tr><td colspan="7" style="color:var(--muted);padding:12px 10px">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Adjustment log -->
+    <div class="card">
+      <div style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" onclick="toggleLearnLog()">
+        <div class="card-title" style="margin:0">📝 Adjustment Log <span id="learnLogCount" style="font-size:11px;font-weight:400;color:var(--muted)"></span></div>
+        <span id="learnLogToggle" style="font-size:11px;color:var(--muted);user-select:none">▼ Show</span>
+      </div>
+      <div id="learnLogWrap" style="display:none;margin-top:10px;max-height:320px;overflow-y:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead>
+            <tr style="color:var(--muted);border-bottom:1px solid var(--border)">
+              <th style="text-align:left;padding:4px 8px">Time</th>
+              <th style="text-align:left;padding:4px 8px">Strategy</th>
+              <th style="text-align:right;padding:4px 8px">Old</th>
+              <th style="text-align:right;padding:4px 8px">New</th>
+              <th style="text-align:right;padding:4px 8px">Win Rate</th>
+              <th style="text-align:left;padding:4px 8px">Reason</th>
+            </tr>
+          </thead>
+          <tbody id="learnLogBody">
+            <tr><td colspan="6" style="color:var(--muted);padding:8px">No adjustments yet.</td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
   </div>
@@ -1117,7 +1203,7 @@ function closeSidebar() {
 // ══════════════════════════════════════════════
 let _currentView = 'overview';
 
-const _ALL_PAGES = ['overview','positions','signals','trades','controls','report','telegram','groupfeed','news','penny','screener','agentlog'];
+const _ALL_PAGES = ['overview','positions','signals','trades','controls','report','telegram','groupfeed','news','penny','screener','agentlog','learning'];
 const _lazyLoaded = new Set();
 
 function showView(view) {
@@ -1154,6 +1240,8 @@ function showView(view) {
         // Nothing to preload — user initiates search
       } else if (view === 'agentlog') {
         startLogPolling();
+      } else if (view === 'learning') {
+        loadLearning();
       }
     }
   }
@@ -3070,6 +3158,108 @@ async function tgAddManual() {
   } catch(e) {
     if (res) { res.textContent = '✗ Network error'; res.style.color = 'var(--red)'; }
   }
+}
+
+// ══════════════════════════════════════════════
+// Self-Learning Engine
+// ══════════════════════════════════════════════
+
+function _weightColor(w) {
+  if (w >= 1.5) return 'var(--green)';
+  if (w >= 1.1) return '#7ec8e3';
+  if (w <= 0.5) return 'var(--red)';
+  if (w <= 0.8) return 'var(--yellow)';
+  return 'var(--muted)';
+}
+
+function _weightBar(w) {
+  // bar fills from 0.3→2.0, centred at 1.0
+  const pct = Math.round(((w - 0.3) / 1.7) * 100);
+  const col  = _weightColor(w);
+  return `<div style="background:var(--border);border-radius:4px;height:8px;width:100%;overflow:hidden">
+    <div style="width:${pct}%;height:100%;background:${col};border-radius:4px;transition:width .4s"></div>
+  </div>`;
+}
+
+async function loadLearning() {
+  try {
+    const d = await fetch('/api/learning').then(r => r.json());
+    if (!d.ok) return;
+
+    // Summary strip
+    const thresh = d.threshold ?? 65;
+    document.getElementById('learnThreshold').textContent = thresh;
+
+    const wr = d.overall_win_rate ?? 0;
+    const wrEl = document.getElementById('learnWinRate');
+    wrEl.textContent = (wr * 100).toFixed(1) + '%';
+    wrEl.style.color = wr >= 0.55 ? 'var(--green)' : wr >= 0.45 ? 'var(--yellow)' : 'var(--red)';
+
+    document.getElementById('learnClosedTrades').textContent = d.total_closed_trades ?? 0;
+
+    const strats = d.strategies ?? {};
+    const stratKeys = Object.keys(strats);
+    document.getElementById('learnStratCount').textContent = stratKeys.length;
+
+    // Strategy weights table
+    const tbody = document.getElementById('learnWeightsBody');
+    if (stratKeys.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted);padding:12px 10px">No strategy data yet — weights will appear after the first closed trades.</td></tr>';
+    } else {
+      // Sort by weight descending
+      const sorted = stratKeys.sort((a, b) => (strats[b].weight ?? 1) - (strats[a].weight ?? 1));
+      tbody.innerHTML = sorted.map(name => {
+        const s = strats[name];
+        const w = (s.weight ?? 1).toFixed(2);
+        const winRate = ((s.win_rate ?? 0) * 100).toFixed(1) + '%';
+        const pnl = s.total_pnl ?? 0;
+        const pnlStr = (pnl >= 0 ? '+' : '') + '₹' + Math.abs(pnl).toLocaleString('en-IN', {maximumFractionDigits: 0});
+        const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+        const wColor   = _weightColor(parseFloat(w));
+        return `<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:7px 10px;font-weight:500">${name}</td>
+          <td style="text-align:right;padding:7px 10px;color:${wColor};font-weight:700">${w}×</td>
+          <td style="text-align:right;padding:7px 10px">${winRate}</td>
+          <td style="text-align:right;padding:7px 10px;color:var(--green)">${s.wins ?? 0}</td>
+          <td style="text-align:right;padding:7px 10px;color:var(--red)">${s.losses ?? 0}</td>
+          <td style="text-align:right;padding:7px 10px;color:${pnlColor}">${pnlStr}</td>
+          <td style="padding:7px 10px;width:120px">${_weightBar(parseFloat(w))}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    // Adjustment log
+    const log = (d.adjustment_log ?? []).slice().reverse(); // newest first
+    document.getElementById('learnLogCount').textContent = log.length ? `(${log.length})` : '';
+    const logBody = document.getElementById('learnLogBody');
+    if (log.length === 0) {
+      logBody.innerHTML = '<tr><td colspan="6" style="color:var(--muted);padding:8px">No adjustments yet.</td></tr>';
+    } else {
+      logBody.innerHTML = log.map(e => {
+        const dir   = e.new_weight > e.old_weight ? '↑' : '↓';
+        const dCol  = e.new_weight > e.old_weight ? 'var(--green)' : 'var(--red)';
+        const wr    = ((e.win_rate ?? 0) * 100).toFixed(1) + '%';
+        return `<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:4px 8px;color:var(--muted);white-space:nowrap">${e.time}</td>
+          <td style="padding:4px 8px;font-weight:500">${e.strategy}</td>
+          <td style="padding:4px 8px;text-align:right">${e.old_weight.toFixed(2)}</td>
+          <td style="padding:4px 8px;text-align:right;color:${dCol}">${dir} ${e.new_weight.toFixed(2)}</td>
+          <td style="padding:4px 8px;text-align:right">${wr}</td>
+          <td style="padding:4px 8px;color:var(--muted);font-size:10px">${e.reason ?? ''}</td>
+        </tr>`;
+      }).join('');
+    }
+  } catch(e) {
+    console.error('loadLearning error:', e);
+  }
+}
+
+function toggleLearnLog() {
+  const wrap   = document.getElementById('learnLogWrap');
+  const toggle = document.getElementById('learnLogToggle');
+  const hidden = wrap.style.display === 'none';
+  wrap.style.display   = hidden ? 'block' : 'none';
+  toggle.textContent   = hidden ? '▲ Hide' : '▼ Show';
 }
 
 // ──────────────────────────────────────────────

@@ -673,6 +673,28 @@ def api_logs():
     return jsonify({"ok": True, "logs": entries[-n:], "total": len(entries)})
 
 
+@app.route("/api/learning")
+def api_learning():
+    """Return the current learning engine state: strategy weights, threshold, adjustment log."""
+    try:
+        from learning_engine import get_learning_engine  # pylint: disable=import-outside-toplevel
+        state = get_learning_engine().get_state_snapshot()
+        return jsonify({"ok": True, **state})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/learning/reset", methods=["POST"])
+def api_learning_reset():
+    """Reset all learning state to defaults (use with caution)."""
+    try:
+        from learning_engine import get_learning_engine  # pylint: disable=import-outside-toplevel
+        get_learning_engine().reset()
+        return jsonify({"ok": True, "message": "Learning state reset to defaults"})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 @app.route("/api/universe")
 def api_universe():
     """Return the current full NSE trading universe (or force-refresh it)."""
