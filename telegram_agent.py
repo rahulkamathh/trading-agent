@@ -657,7 +657,8 @@ class TelegramAgent:
 
     async def _handle_message(self, event, gid: str = None):
         try:
-            text = event.message.text or ""
+            # Prefer raw_text (no HTML entities) over text which may contain &amp; etc.
+            text = (event.message.raw_text or event.message.text or "")
             if len(text.strip()) < 5:
                 return
             chat  = await event.get_chat()
@@ -745,7 +746,9 @@ class TelegramAgent:
                 messages = await self._client.get_messages(entity, limit=100)
                 new_msgs = []
                 for msg in messages:
-                    if not msg.text or len(msg.text.strip()) < 5:
+                    # Use raw_text (plain, no HTML entities) when available
+                    raw = getattr(msg, "raw_text", None) or msg.text or ""
+                    if not raw or len(raw.strip()) < 5:
                         continue
                     if msg.id in known_ids:
                         continue
@@ -755,7 +758,7 @@ class TelegramAgent:
                         "group_id":   gid,
                         "group_name": title,
                         "sender":     sender_name,
-                        "text":       msg.text[:1000],
+                        "text":       raw[:1000],
                         "time":       msg.date.isoformat() if msg.date else datetime.now().isoformat(),
                         "msg_id":     msg.id,
                     })

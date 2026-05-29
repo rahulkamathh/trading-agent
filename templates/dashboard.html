@@ -874,13 +874,17 @@
         </button>
         <span id="notifTestResult" style="font-size:12px;color:var(--muted)"></span>
       </div>
-      <div style="margin-top:14px;padding:12px;background:#0d1117;border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--muted);line-height:1.8">
-        <strong style="color:var(--text)">Setup guide:</strong><br>
-        1. Create a bot via <code>@BotFather</code> on Telegram → copy the token<br>
-        2. Add bot to your group (or start a DM with it) and send any message<br>
-        3. Visit <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code> to find your chat ID<br>
-        4. Add to Railway Variables: <code>TELEGRAM_BOT_TOKEN</code> and <code>TELEGRAM_NOTIFY_CHAT_ID</code><br>
-        5. <em>Optional SMS:</em> add <code>TWILIO_ACCOUNT_SID</code>, <code>TWILIO_AUTH_TOKEN</code>, <code>TWILIO_FROM_NUMBER</code>, <code>TWILIO_TO_NUMBER</code>
+      <div style="margin-top:14px;padding:12px;background:#0d1117;border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--muted);line-height:1.9">
+        <strong style="color:var(--text)">Setup — send to a group chat or personal DM:</strong><br>
+        <strong style="color:#58a6ff">1. Create a bot:</strong> Message <code>@BotFather</code> on Telegram → <code>/newbot</code> → copy the token<br>
+        <strong style="color:#58a6ff">2. Add bot to your group:</strong> Invite the bot into the Telegram group you want alerts in (or DM it directly)<br>
+        <strong style="color:#58a6ff">3. Get the chat ID:</strong> Send any message in the group, then open:<br>
+        &nbsp;&nbsp;&nbsp;<code style="font-size:11px">https://api.telegram.org/bot&lt;YOUR_TOKEN&gt;/getUpdates</code><br>
+        &nbsp;&nbsp;&nbsp;Look for <code>"chat":{"id":-100XXXXXXXXX}</code> — group IDs are <em>negative</em> numbers<br>
+        <strong style="color:#58a6ff">4. Add to Railway Variables:</strong><br>
+        &nbsp;&nbsp;&nbsp;<code>TELEGRAM_BOT_TOKEN</code> = your bot token<br>
+        &nbsp;&nbsp;&nbsp;<code>TELEGRAM_NOTIFY_CHAT_ID</code> = the group/DM chat ID<br>
+        <strong style="color:#d29922">Optional SMS:</strong> add <code>TWILIO_ACCOUNT_SID</code>, <code>TWILIO_AUTH_TOKEN</code>, <code>TWILIO_FROM_NUMBER</code>, <code>TWILIO_TO_NUMBER</code>
       </div>
     </div>
   </div>
@@ -2810,9 +2814,18 @@ function _senderColor(name) {
   return _senderColors[name];
 }
 
+// Decode any HTML entities already in the text (Telethon may return &amp; etc.)
+function _htmlDecode(str) {
+  const el = document.createElement('textarea');
+  el.innerHTML = str;
+  return el.value;
+}
+
 function _formatMsgText(raw) {
-  // Escape HTML
-  let t = raw.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  // First decode existing HTML entities (Telegram/Telethon sometimes returns &amp; etc.)
+  // then re-encode cleanly for our own HTML template
+  let t = _htmlDecode(raw || '');
+  t = t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   // Highlight NSE tickers (2-10 uppercase letters not part of common words)
   t = t.replace(/\b([A-Z][A-Z0-9&]{1,9})\b/g, (match) => {
     // Skip common all-caps words that aren't tickers
