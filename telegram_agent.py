@@ -153,13 +153,22 @@ class SignalParser:
     _SELL_RE = re.compile(
         r'\b(sell|short|bearish|exit|book\s*profit|put buy|pe buy|go short)\b', re.I)
 
-    # Prices  — handles "@ 2500", "entry: 2,500", "CMP 2500.50", "ltp 2500"
+    # Shared price-number fragment: optional ₹/Rs, then a number with ≥2 digits
+    # (2+ digits avoids matching the "1" or "2" in "Target 1:" / "Target 2:")
+    _P = r'[₹Rs.]*\s*(\d{2,}[\d,]*(?:\.\d+)?)'
+
+    # Entry: handles "Entry: ₹144.57", "@ 2500", "CMP ₹2500.50", "ltp 2500"
     _ENTRY_RE  = re.compile(
-        r'(?:@|entry|cmp|ltp|price|at)[:\s]*(\d[\d,]*(?:\.\d+)?)', re.I)
+        r'(?:@|entry|cmp|ltp|price|at)[\s:]*' + _P, re.I)
+
+    # Target: handles "Target 1: ₹147.46", "TGT ₹150", "T1: 2800", "TP: 2900"
+    # "target\s*\d*" consumes the label number ("Target 1") before the colon
     _TARGET_RE = re.compile(
-        r'(?:tgt|target|tp|t1|t2|t3|t4)[:\s]*(\d[\d,]*(?:\.\d+)?)', re.I)
+        r'(?:tgt\s*\d*|target\s*\d*|tp\s*\d*|t[1-4])[\s:]+' + _P, re.I)
+
+    # Stop-loss: handles "Stop Loss: ₹137.34", "SL: 2750", "Stoploss ₹200"
     _SL_RE     = re.compile(
-        r'(?:\bsl\b|stop|stoploss|stop.?loss)[:\s]*(\d[\d,]*(?:\.\d+)?)', re.I)
+        r'(?:\bsl\b|stop\s*loss|stoploss|stop\.?loss)[\s:]*' + _P, re.I)
 
     # Timeline rules: (pattern, days) — days=None means extract from match groups
     _TIMELINE_RULES = [
@@ -214,6 +223,9 @@ class SignalParser:
         entry_price = clean_price(entry_m.group(1)) if entry_m else None
         targets     = [clean_price(t) for t in target_m] if target_m else []
         stop_loss   = clean_price(sl_m.group(1)) if sl_m else None
+
+        # Drop any "price" that is clearly just a label number (< 10) — e.g. the "1" in T1
+        targets = [t for t in targets if t >= 10]
 
         # Basic sanity: if we have entry + targets, targets should be > entry for BUY
         if entry_price and targets:
