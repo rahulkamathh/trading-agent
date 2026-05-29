@@ -1024,11 +1024,12 @@
     <div class="card">
       <div class="section-header">
         <span class="section-title">📡 Signal Feed</span>
-        <div style="display:flex;gap:6px">
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
           <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="loadTgSignals('pending')">Pending</button>
           <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="loadTgSignals('hit_target')">Hit Target</button>
           <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="loadTgSignals('hit_sl')">Hit SL</button>
           <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="loadTgSignals('')">All</button>
+          <button class="btn btn-ghost" id="reparseBtn" style="font-size:11px;padding:4px 10px;color:#d29922;border-color:#d29922" onclick="reparseSignals()" title="Re-parse all stored signals with the latest parser to fix wrong targets/prices">🔄 Fix Targets</button>
         </div>
       </div>
       <div class="table-wrap">
@@ -2811,6 +2812,23 @@ async function loadTgGroups(statusFilter = 'active') {
       </tr>`;
     }).join('');
   } catch(e) { console.warn('TG groups error:', e); }
+}
+
+async function reparseSignals() {
+  const btn = document.getElementById('reparseBtn');
+  if (btn) { btn.textContent = '⏳ Fixing…'; btn.disabled = true; }
+  try {
+    const d = await fetch('/api/telegram/reparse', {method:'POST'}).then(r=>r.json());
+    if (d.ok) {
+      toast(`✅ Fixed ${d.reparsed} signals (${d.kept} unchanged)`, 'success');
+      await loadTgSignals('pending');
+    } else {
+      toast('Reparse failed: ' + (d.error || 'unknown'), 'error');
+    }
+  } catch(e) {
+    toast('Network error: ' + e.message, 'error');
+  }
+  if (btn) { btn.textContent = '🔄 Fix Targets'; btn.disabled = false; }
 }
 
 async function loadTgSignals(statusFilter = '') {

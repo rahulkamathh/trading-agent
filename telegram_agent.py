@@ -806,6 +806,12 @@ class TelegramAgent:
             if signal:
                 self._signals.append(signal)
                 self._save_signals()
+                # ── Analyze signal and send verdict to personal Telegram group ──
+                try:
+                    from signal_analyzer import analyze_and_reply  # pylint: disable=import-outside-toplevel
+                    analyze_and_reply(signal, group_title=title, async_send=True)
+                except Exception as _ae:
+                    logger.debug(f"[Telegram] Signal analyzer error: {_ae}")
                 # Update group's last_signal_at and signal count
                 if gid in self._groups.get("groups", {}):
                     g = self._groups["groups"][gid]
