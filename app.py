@@ -154,9 +154,32 @@ class _AgentState:
 
 _state = _AgentState()
 
-# ── Dashboard response cache (30s TTL) — avoids repeated yfinance calls ──────
-_dashboard_cache: dict = {"ts": 0, "data": None}
-_DASHBOARD_CACHE_TTL = 30   # seconds
+# ── Dashboard cache — stale-while-revalidate pattern ─────────────────────────
+# The API ALWAYS returns instantly. If cache is warm (even stale), return it
+# immediately and kick off a background refresh. If cold, build synchronously
+# once, then all future calls are instant.
+_dashboard_cache: dict = {"ts": 0, "data": None, "refreshing": False}
+_DASHBOARD_CACHE_TTL = 45   # seconds before background refresh kicks in
+
+
+def _refresh_dashboard_cache():
+    """Rebuild dashboard data in a background thread — never blocks requests."""
+    if _dashboard_cache["refreshing"]:
+        return
+    _dashboard_cache["refreshing"] = True
+    def _do():
+        try:
+            data = get_agent().get_dashboard_data()
+            data["agent_running"]    = _state.running
+            data["last_cycle"]       = _state.last_cycle
+            data["auto_interval_s"]  = _state.auto_interval
+            _dashboard_cache["data"] = data
+            _dashboard_cache["ts"]   = time.time()
+        except Exception as exc:
+            logger.debug(f"Dashboard cache refresh error: {exc}")
+        finally:
+            _dashboard_cache["refreshing"] = False
+    threading.Thread(target=_do, daemon=True, name="dash-cache-refresh").start()
 
 
 # ── Dashboard ────────────────────────────────────────────────────────────────
@@ -171,19 +194,29 @@ def index():
 
 @app.route("/api/dashboard")
 def api_dashboard():
-    """Return all data needed to render the dashboard in one call.
-    Response is cached for 30 s so live-price fetches don't block every reload.
+    """
+    Stale-while-revalidate: always returns instantly.
+    • Cache hit (fresh): return immediately
+    • Cache hit (stale): return stale data + trigger background refresh
+    • Cache cold (first request): build synchronously once, cache it
     """
     try:
-        now = time.time()
-        if _dashboard_cache["data"] and now - _dashboard_cache["ts"] < _DASHBOARD_CACHE_TTL:
-            cached = dict(_dashboard_cache["data"])
-            cached["agent_running"]  = _state.running
-            cached["last_cycle"]     = _state.last_cycle
-            cached["auto_interval_s"] = _state.auto_interval
-            cached["_cached"] = True
-            return jsonify({"ok": True, "data": cached})
+        now  = time.time()
+        data = _dashboard_cache["data"]
 
+        if data is not None:
+            # Always return cached data immediately
+            resp = dict(data)
+            resp["agent_running"]   = _state.running
+            resp["last_cycle"]      = _state.last_cycle
+            resp["auto_interval_s"] = _state.auto_interval
+            resp["_cached"] = True
+            # Trigger background refresh if stale
+            if now - _dashboard_cache["ts"] > _DASHBOARD_CACHE_TTL:
+                _refresh_dashboard_cache()
+            return jsonify({"ok": True, "data": resp})
+
+        # Cold start — build once synchronously, then all future calls are cached
         data = get_agent().get_dashboard_data()
         data["agent_running"]   = _state.running
         data["last_cycle"]      = _state.last_cycle
@@ -191,7 +224,8 @@ def api_dashboard():
         _dashboard_cache["data"] = data
         _dashboard_cache["ts"]   = now
         return jsonify({"ok": True, "data": data})
-    except (ValueError, RuntimeError, KeyError) as exc:
+
+    except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
@@ -226,6 +260,64 @@ def api_trades():
         with open(TRADE_LOG_FILE, encoding="utf-8") as fh:
             trades = json.load(fh)
     return jsonify({"ok": True, "trades": list(reversed(trades))})
+
+
+@app.route("/api/pnl_calendar")
+def api_pnl_calendar():
+    """
+    Returns daily P&L aggregated by date for the calendar view.
+    Response: { days: { "2026-05-27": { pnl, trades, wins, win_rate } } }
+    """
+    from engine import TRADE_LOG_FILE  # pylint: disable=import-outside-toplevel
+    from collections import defaultdict
+
+    trades = []
+    if TRADE_LOG_FILE.exists():
+        with open(TRADE_LOG_FILE, encoding="utf-8") as fh:
+            trades = json.load(fh)
+
+    # Only look at SELL trades (realised P&L)
+    days: dict = defaultdict(lambda: {"pnl": 0.0, "trades": 0, "wins": 0})
+    for t in trades:
+        if t.get("action") != "SELL" or t.get("pnl") is None:
+            continue
+        day = (t.get("time") or "")[:10]   # "2026-05-27"
+        if not day:
+            continue
+        pnl = float(t["pnl"])
+        days[day]["pnl"]    = round(days[day]["pnl"] + pnl, 2)
+        days[day]["trades"] += 1
+        if pnl > 0:
+            days[day]["wins"] += 1
+
+    # Compute win rate per day
+    result = {}
+    for day, d in days.items():
+        result[day] = {
+            "pnl":      d["pnl"],
+            "trades":   d["trades"],
+            "wins":     d["wins"],
+            "win_rate": round(d["wins"] / d["trades"] * 100) if d["trades"] else 0,
+        }
+
+    # Summary stats
+    all_pnl = [v["pnl"] for v in result.values()]
+    total_days = len(result)
+    green_days = sum(1 for p in all_pnl if p > 0)
+    red_days   = sum(1 for p in all_pnl if p < 0)
+
+    return jsonify({
+        "ok":         True,
+        "days":       result,
+        "summary": {
+            "total_days":  total_days,
+            "green_days":  green_days,
+            "red_days":    red_days,
+            "best_day":    max(all_pnl) if all_pnl else 0,
+            "worst_day":   min(all_pnl) if all_pnl else 0,
+            "total_pnl":   round(sum(all_pnl), 2),
+        },
+    })
 
 
 @app.route("/api/signals")
