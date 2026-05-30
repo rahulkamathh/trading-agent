@@ -162,6 +162,8 @@ _dashboard_cache: dict = {"ts": 0, "data": None, "refreshing": False}
 _DASHBOARD_CACHE_TTL = 45   # seconds before background refresh kicks in
 
 
+_dash_logger = logging.getLogger("app")
+
 def _refresh_dashboard_cache():
     """Rebuild dashboard data in a background thread — never blocks requests."""
     if _dashboard_cache["refreshing"]:
@@ -176,7 +178,7 @@ def _refresh_dashboard_cache():
             _dashboard_cache["data"] = data
             _dashboard_cache["ts"]   = time.time()
         except Exception as exc:
-            logger.debug(f"Dashboard cache refresh error: {exc}")
+            _dash_logger.debug(f"Dashboard cache refresh error: {exc}")
         finally:
             _dashboard_cache["refreshing"] = False
     threading.Thread(target=_do, daemon=True, name="dash-cache-refresh").start()
