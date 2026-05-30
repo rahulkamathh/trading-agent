@@ -437,6 +437,9 @@
     <div class="nav-item" data-view="report" onclick="showView('report')">
       <span class="nav-icon">📋</span> Daily Report
     </div>
+    <div class="nav-item" data-view="calendar" onclick="showView('calendar')">
+      <span class="nav-icon">📅</span> P&amp;L Calendar
+    </div>
   </div>
 </nav>
 
@@ -1261,6 +1264,36 @@
     </div>
   </div>
 
+  <!-- P&L Calendar page -->
+  <div id="page-calendar" class="page-section hidden">
+    <div class="page-header">
+      <span class="page-title">📅 P&amp;L Calendar</span>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <div style="display:flex;background:#161b22;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+          <button id="calTabPnl" onclick="calTab('pnl')" style="padding:5px 16px;font-size:12px;font-weight:600;border:none;cursor:pointer;background:var(--accent);color:#fff;transition:all .13s">PNL</button>
+          <button id="calTabEvents" onclick="calTab('events')" style="padding:5px 16px;font-size:12px;font-weight:600;border:none;cursor:pointer;background:transparent;color:var(--muted);transition:all .13s">Events</button>
+        </div>
+        <button onclick="calNav(-1)" style="padding:5px 10px;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-size:13px;">←</button>
+        <span id="calMonthLabel" style="font-size:13px;font-weight:600;min-width:110px;text-align:center;"></span>
+        <button onclick="calNav(1)" style="padding:5px 10px;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-size:13px;">→</button>
+      </div>
+    </div>
+    <div id="calSummary" style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;"></div>
+    <div class="card" style="padding:16px;">
+      <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-bottom:6px;">
+        <div style="text-align:center;font-size:11px;color:var(--muted);font-weight:600;padding:4px 0;">MON</div>
+        <div style="text-align:center;font-size:11px;color:var(--muted);font-weight:600;padding:4px 0;">TUE</div>
+        <div style="text-align:center;font-size:11px;color:var(--muted);font-weight:600;padding:4px 0;">WED</div>
+        <div style="text-align:center;font-size:11px;color:var(--muted);font-weight:600;padding:4px 0;">THU</div>
+        <div style="text-align:center;font-size:11px;color:var(--muted);font-weight:600;padding:4px 0;">FRI</div>
+        <div style="text-align:center;font-size:11px;color:var(--muted);font-weight:600;padding:4px 0;">SAT</div>
+        <div style="text-align:center;font-size:11px;color:var(--muted);font-weight:600;padding:4px 0;">SUN</div>
+      </div>
+      <div id="calGrid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;"></div>
+    </div>
+  </div>
+
+
 </div><!-- /container -->
 
 <!-- ══════════════════════════════════════════════════
@@ -1342,7 +1375,7 @@ function closeSidebar() {
 // ══════════════════════════════════════════════
 let _currentView = 'overview';
 
-const _ALL_PAGES = ['overview','positions','signals','trades','controls','report','telegram','groupfeed','news','penny','screener','agentlog','learning'];
+const _ALL_PAGES = ['overview','positions','signals','trades','controls','report','telegram','groupfeed','news','penny','screener','agentlog','learning','calendar'];
 const _lazyLoaded = new Set();
 
 function showView(view) {
@@ -1384,6 +1417,8 @@ function showView(view) {
       } else if (view === 'controls') {
         loadNotifierStatus();
         loadRiskStatus();
+      } else if (view === 'calendar') {
+        loadPnlCalendar();
       }
     }
   }
@@ -3794,6 +3829,160 @@ function toggleLearnLog() {
 // ──────────────────────────────────────────────
 // Init
 // ──────────────────────────────────────────────
+// ══════════════════════════════════════════════
+// P&L Calendar
+// ══════════════════════════════════════════════
+let _calYear  = new Date().getFullYear();
+let _calMonth = new Date().getMonth() + 1;   // 1-based
+let _calMode  = 'pnl';
+let _calData  = {};   // { "2026-05-27": { pnl, trades, wins, win_rate } }
+
+function calTab(mode) {
+  _calMode = mode;
+  document.getElementById('calTabPnl').style.background    = mode === 'pnl'    ? 'var(--accent)' : 'transparent';
+  document.getElementById('calTabPnl').style.color         = mode === 'pnl'    ? '#fff'          : 'var(--muted)';
+  document.getElementById('calTabEvents').style.background = mode === 'events' ? 'var(--accent)' : 'transparent';
+  document.getElementById('calTabEvents').style.color      = mode === 'events' ? '#fff'          : 'var(--muted)';
+  renderCalendar();
+}
+
+function calNav(dir) {
+  _calMonth += dir;
+  if (_calMonth > 12) { _calMonth = 1;  _calYear++; }
+  if (_calMonth < 1)  { _calMonth = 12; _calYear--; }
+  renderCalendar();
+}
+
+async function loadPnlCalendar() {
+  try {
+    const r = await fetch('/api/pnl_calendar');
+    const j = await r.json();
+    _calData = j.days || {};
+    renderCalendar();
+  } catch(e) {
+    console.error('calendar fetch error', e);
+  }
+}
+
+function renderCalendar() {
+  const MONTHS = ['January','February','March','April','May','June',
+                  'July','August','September','October','November','December'];
+  document.getElementById('calMonthLabel').textContent = MONTHS[_calMonth-1] + ' ' + _calYear;
+
+  const grid = document.getElementById('calGrid');
+  grid.innerHTML = '';
+
+  // First day of month (0=Sun..6=Sat), convert to Mon-based offset
+  const firstDate = new Date(_calYear, _calMonth - 1, 1);
+  let offset = firstDate.getDay();   // 0=Sun
+  offset = (offset === 0) ? 6 : offset - 1;   // Mon=0 … Sun=6
+
+  const daysInMonth = new Date(_calYear, _calMonth, 0).getDate();
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Empty cells before month start
+  for (let i = 0; i < offset; i++) {
+    grid.insertAdjacentHTML('beforeend', '<div></div>');
+  }
+
+  // Day cells
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${_calYear}-${String(_calMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const dayData = _calData[dateStr];
+    const isToday = dateStr === today;
+
+    if (_calMode === 'pnl') {
+      let cellHtml;
+      if (dayData && dayData.trades > 0) {
+        const isGreen = dayData.pnl >= 0;
+        const bg      = isGreen ? '#1a3d2a' : '#3d1a1a';
+        const border  = isGreen ? '#3fb950' : '#f85149';
+        const color   = isGreen ? '#3fb950' : '#f85149';
+        const pnlFmt  = (isGreen ? '+' : '') + '₹' + Math.abs(dayData.pnl).toLocaleString('en-IN', {maximumFractionDigits:0});
+        cellHtml = `<div style="background:${bg};border:1px solid ${border};border-radius:8px;padding:8px 6px;min-height:80px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;${isToday?'box-shadow:0 0 0 2px var(--blue);':''}">
+          <div style="font-size:13px;font-weight:700;color:var(--text)">${d}</div>
+          <div style="font-size:12px;font-weight:700;color:${color}">${pnlFmt}</div>
+          <div style="font-size:10px;color:${color};opacity:.8">${dayData.win_rate}%</div>
+        </div>`;
+      } else {
+        cellHtml = `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 6px;min-height:80px;display:flex;align-items:center;justify-content:center;${isToday?'border-color:var(--blue);':''}">
+          <span style="font-size:13px;color:var(--muted)">${d}</span>
+        </div>`;
+      }
+      grid.insertAdjacentHTML('beforeend', cellHtml);
+    } else {
+      // Events mode — show market events if any
+      const events = getCalendarEvents(dateStr);
+      const hasEvent = events.length > 0;
+      let cellHtml = `<div style="background:var(--card);border:1px solid ${hasEvent?'var(--yellow)':'var(--border)'};border-radius:8px;padding:8px 6px;min-height:80px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:3px;${isToday?'border-color:var(--blue);':''}">
+        <div style="font-size:13px;font-weight:${hasEvent?700:400};color:${hasEvent?'var(--text)':'var(--muted)'}">${d}</div>`;
+      events.forEach(ev => {
+        cellHtml += `<div style="font-size:9px;color:var(--yellow);text-align:center;line-height:1.2">${ev}</div>`;
+      });
+      cellHtml += '</div>';
+      grid.insertAdjacentHTML('beforeend', cellHtml);
+    }
+  }
+
+  // Summary strip
+  renderCalSummary();
+}
+
+function renderCalSummary() {
+  const summary = document.getElementById('calSummary');
+  const prefix  = `${_calYear}-${String(_calMonth).padStart(2,'0')}-`;
+  const monthDays = Object.entries(_calData).filter(([k]) => k.startsWith(prefix));
+
+  if (monthDays.length === 0) {
+    summary.innerHTML = '<span style="font-size:12px;color:var(--muted)">No trades this month yet.</span>';
+    return;
+  }
+
+  const totalPnl  = monthDays.reduce((s,[,v]) => s + v.pnl, 0);
+  const greenDays = monthDays.filter(([,v]) => v.pnl > 0).length;
+  const redDays   = monthDays.filter(([,v]) => v.pnl < 0).length;
+  const tradeDays = monthDays.length;
+  const totalTrades = monthDays.reduce((s,[,v]) => s + v.trades, 0);
+  const totalWins   = monthDays.reduce((s,[,v]) => s + v.wins,   0);
+  const winRate     = totalTrades ? Math.round(totalWins/totalTrades*100) : 0;
+
+  const pnlColor  = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
+  const pnlSign   = totalPnl >= 0 ? '+' : '';
+
+  const chips = [
+    { label: 'Month P&L',   val: pnlSign + '₹' + Math.abs(totalPnl).toLocaleString('en-IN',{maximumFractionDigits:0}), color: pnlColor },
+    { label: 'Green Days',  val: greenDays, color: 'var(--green)' },
+    { label: 'Red Days',    val: redDays,   color: 'var(--red)' },
+    { label: 'Trade Days',  val: tradeDays, color: 'var(--text)' },
+    { label: 'Win Rate',    val: winRate + '%', color: winRate >= 50 ? 'var(--green)' : 'var(--red)' },
+    { label: 'Total Trades',val: totalTrades, color: 'var(--text)' },
+  ];
+
+  summary.innerHTML = chips.map(c => `
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 14px;min-width:100px;text-align:center;">
+      <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">${c.label}</div>
+      <div style="font-size:16px;font-weight:700;color:${c.color};margin-top:2px">${c.val}</div>
+    </div>
+  `).join('');
+}
+
+function getCalendarEvents(dateStr) {
+  // Basic market events — expand as needed
+  const events = [];
+  const d = new Date(dateStr + 'T00:00:00');
+  const weekday = d.getDay();  // 0=Sun, 6=Sat
+  if (weekday === 0 || weekday === 6) return ['Weekend'];
+
+  // F&O expiry: last Thursday of month
+  const month = d.getMonth(), year = d.getFullYear();
+  let lastThu = new Date(year, month + 1, 0);
+  while (lastThu.getDay() !== 4) lastThu.setDate(lastThu.getDate() - 1);
+  if (d.toDateString() === lastThu.toDateString()) events.push('F&O Expiry');
+
+  return events;
+}
+
+
 window.addEventListener('DOMContentLoaded', () => {
   // Start on overview, hide all other pages
   showView('overview');
