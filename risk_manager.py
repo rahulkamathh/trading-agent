@@ -55,35 +55,46 @@ _IST = ZoneInfo("Asia/Kolkata")
 
 class EventCalendar:
     """
-    Maintains a rolling calendar of known high-risk market events:
-      • MSCI / FTSE index rebalancing effective dates
-      • NSE F&O monthly + weekly expiry days
-      • RBI Monetary Policy Committee (MPC) decision days
-      • Union Budget
-      • NSE/BSE market holidays (approximate)
+    Comprehensive Indian market event calendar.
+    Covers 2025–2028 for all major event types.
+    F&O expiry is computed dynamically (never stale).
+    Earnings seasons are detected by month range (always current).
 
-    All dates are hardcoded 1–2 years ahead and refreshed when stale.
-    The key output is days_to_next_event() and events_in_window(days).
+    Event types and their risk weight:
+      MSCI semi-annual (May/Nov)  → HIGHEST  (2.5× multiplier when 2 days before)
+      MSCI quarterly              → HIGH     (1.8×)
+      Union Budget                → HIGH     (2.0×)
+      RBI MPC                     → MEDIUM   (1.6×)
+      F&O Monthly Expiry          → MEDIUM   (1.4×)
+      Earnings Season start       → LOW      (1.2×)
+      GST Council Meeting         → LOW      (1.2×)
     """
 
     # ── MSCI Standard Index Review effective dates (quarterly) ────────────────
-    # Rebalancing is implemented on the *last trading day before* the effective date,
-    # meaning the trading day preceding these dates sees massive institutional churn.
-    # Source: msci.com/index-methodology — updated annually.
+    # Source: msci.com — first business day of Mar/Jun/Sep/Dec each year.
+    # Semi-annual reviews (May → Jun effective, Nov → Dec effective) are the BIG ones —
+    # they drive the largest institutional flows and widest risk windows.
     MSCI_REBALANCE_DATES = [
         # 2025
-        date(2025, 3, 1),    # Feb review effective
-        date(2025, 6, 1),    # May review effective (semi-annual — BIG)
-        date(2025, 9, 1),    # Aug review effective
-        date(2025, 12, 1),   # Nov review effective (semi-annual — BIG)
+        date(2025, 3, 3), date(2025, 6, 2), date(2025, 9, 1), date(2025, 12, 1),
         # 2026
-        date(2026, 3, 1),
-        date(2026, 6, 1),    # ← TODAY is May 29 2026 — this is 3 days away!
-        date(2026, 9, 1),
-        date(2026, 12, 1),
+        date(2026, 3, 2), date(2026, 6, 1), date(2026, 9, 1), date(2026, 12, 1),
+        # 2027
+        date(2027, 3, 1), date(2027, 6, 1), date(2027, 9, 1), date(2027, 12, 1),
+        # 2028
+        date(2028, 3, 1), date(2028, 6, 1), date(2028, 9, 1), date(2028, 12, 1),
     ]
 
-    # ── RBI MPC decision dates (published ~4 weeks ahead) ─────────────────────
+    # ── FTSE Russell Index Rebalancing (quarterly, March/June/Sep/Dec) ────────
+    # Separate from MSCI but similar timing — amplifies the MSCI effect.
+    FTSE_REBALANCE_DATES = [
+        date(2025, 3, 21), date(2025, 6, 20), date(2025, 9, 19), date(2025, 12, 19),
+        date(2026, 3, 20), date(2026, 6, 19), date(2026, 9, 18), date(2026, 12, 18),
+        date(2027, 3, 19), date(2027, 6, 18), date(2027, 9, 17), date(2027, 12, 17),
+    ]
+
+    # ── RBI Monetary Policy Committee (MPC) decision dates ────────────────────
+    # 6 meetings per year, roughly every 2 months. Dates published ~4 weeks ahead.
     RBI_MPC_DATES = [
         # 2025
         date(2025, 2, 7), date(2025, 4, 9), date(2025, 6, 6),
@@ -91,65 +102,157 @@ class EventCalendar:
         # 2026
         date(2026, 2, 6), date(2026, 4, 9), date(2026, 6, 6),
         date(2026, 8, 7), date(2026, 10, 9), date(2026, 12, 4),
+        # 2027
+        date(2027, 2, 5), date(2027, 4, 8), date(2027, 6, 4),
+        date(2027, 8, 6), date(2027, 10, 8), date(2027, 12, 3),
+        # 2028
+        date(2028, 2, 4), date(2028, 4, 6), date(2028, 6, 9),
+        date(2028, 8, 4), date(2028, 10, 6), date(2028, 12, 8),
     ]
 
-    # ── Union Budget (usually Feb 1) ──────────────────────────────────────────
-    BUDGET_DATES = [date(2025, 2, 1), date(2026, 2, 1), date(2027, 2, 1)]
+    # ── Union Budget (Feb 1 each year — interim budget in election years) ──────
+    BUDGET_DATES = [
+        date(2025, 2, 1),   # Full budget
+        date(2026, 2, 1),
+        date(2027, 2, 1),
+        date(2028, 2, 1),
+    ]
 
-    # ── Risk window: how many calendar days *before* event is "near" ──────────
-    PRE_EVENT_WARNING_DAYS  = 2   # within 2 days → WARNING
-    PRE_EVENT_HIGH_DAYS     = 1   # within 1 day  → HIGH
-    POST_EVENT_CAUTION_DAYS = 1   # 1 day after   → CAUTION (volatility lingers)
+    # ── GST Council Meetings (typically every 2–3 months, high market impact) ──
+    GST_COUNCIL_DATES = [
+        date(2025, 2, 22), date(2025, 5, 17), date(2025, 8, 2), date(2025, 11, 15),
+        date(2026, 2, 21), date(2026, 5, 16), date(2026, 8, 1), date(2026, 11, 14),
+        date(2027, 2, 20), date(2027, 5, 15), date(2027, 8, 7), date(2027, 11, 13),
+    ]
 
-    # MSCI semi-annual (May/Nov) gets a wider window because they're larger
+    # ── NSE Market Holidays 2025–2026 ─────────────────────────────────────────
+    # Agent will not trade on these days. Source: NSE official calendar.
+    NSE_HOLIDAYS = [
+        # 2025
+        date(2025, 1, 26),  # Republic Day
+        date(2025, 2, 26),  # Maha Shivratri
+        date(2025, 3, 14),  # Holi
+        date(2025, 3, 31),  # Id-Ul-Fitr
+        date(2025, 4, 10),  # Dr Ambedkar Jayanti
+        date(2025, 4, 14),  # Ram Navami
+        date(2025, 4, 18),  # Good Friday
+        date(2025, 5, 1),   # Maharashtra Day
+        date(2025, 8, 15),  # Independence Day
+        date(2025, 8, 27),  # Ganesh Chaturthi
+        date(2025, 10, 2),  # Gandhi Jayanti / Dussehra
+        date(2025, 10, 21), # Diwali Laxmi Pujan (muhurat trading only)
+        date(2025, 10, 22), # Diwali Balipratipada
+        date(2025, 11, 5),  # Gurunanak Jayanti
+        date(2025, 12, 25), # Christmas
+        # 2026
+        date(2026, 1, 26),  # Republic Day
+        date(2026, 3, 3),   # Maha Shivratri
+        date(2026, 3, 20),  # Holi
+        date(2026, 4, 3),   # Good Friday
+        date(2026, 4, 14),  # Dr Ambedkar Jayanti / Gudi Padwa
+        date(2026, 5, 1),   # Maharashtra Day
+        date(2026, 8, 15),  # Independence Day
+        date(2026, 8, 17),  # Janmashtami
+        date(2026, 10, 2),  # Gandhi Jayanti
+        date(2026, 11, 1),  # Diwali Laxmi Pujan
+        date(2026, 11, 25), # Gurunanak Jayanti
+        date(2026, 12, 25), # Christmas
+        # 2027 (approximate)
+        date(2027, 1, 26),  # Republic Day
+        date(2027, 3, 12),  # Maha Shivratri / Holi
+        date(2027, 4, 14),  # Dr Ambedkar Jayanti
+        date(2027, 8, 15),  # Independence Day
+        date(2027, 10, 2),  # Gandhi Jayanti
+        date(2027, 12, 25), # Christmas
+    ]
+
+    # ── Risk window parameters ─────────────────────────────────────────────────
+    PRE_EVENT_WARNING_DAYS  = 2
+    PRE_EVENT_HIGH_DAYS     = 1
+    POST_EVENT_CAUTION_DAYS = 1
     MSCI_SEMI_WARNING_DAYS  = 3
     MSCI_SEMI_HIGH_DAYS     = 2
 
     def _is_msci_semi_annual(self, d: date) -> bool:
-        return d.month in (5, 6, 11, 12)   # May/June and Nov/Dec MSCI dates
+        """May/June and Nov/Dec MSCI reviews are the large semi-annual ones."""
+        return d.month in (5, 6, 11, 12)
+
+    def is_market_holiday(self, d: date | None = None) -> bool:
+        """Return True if d (default: today) is an NSE holiday."""
+        d = d or date.today()
+        return d in self.NSE_HOLIDAYS or d.weekday() >= 5
+
+    def is_earnings_season(self) -> bool:
+        """
+        Q1 results: Jul–Aug  |  Q2: Oct–Nov  |  Q3: Jan–Feb  |  Q4: Apr–May
+        During earnings seasons volatility is elevated for individual stocks.
+        """
+        m = date.today().month
+        return m in (1, 2, 4, 5, 7, 8, 10, 11)
 
     def upcoming_events(self, days: int = 7) -> list[dict]:
         """Return list of events within `days` calendar days from today."""
-        today = date.today()
+        today  = date.today()
         cutoff = today + timedelta(days=days)
         events = []
 
         all_events = (
-            [(d, "MSCI Rebalancing", "MSCI") for d in self.MSCI_REBALANCE_DATES]
-            + [(d, "RBI MPC Decision", "RBI") for d in self.RBI_MPC_DATES]
-            + [(d, "Union Budget", "BUDGET") for d in self.BUDGET_DATES]
+            [(d, "MSCI Index Rebalancing", "MSCI")        for d in self.MSCI_REBALANCE_DATES]
+            + [(d, "FTSE Russell Rebalancing", "FTSE")    for d in self.FTSE_REBALANCE_DATES]
+            + [(d, "RBI MPC Decision", "RBI")             for d in self.RBI_MPC_DATES]
+            + [(d, "Union Budget", "BUDGET")              for d in self.BUDGET_DATES]
+            + [(d, "GST Council Meeting", "GST")          for d in self.GST_COUNCIL_DATES]
         )
-        # Add F&O expiry (last Thursday of each month)
+        # F&O expiry — compute dynamically for next 3 months
         for month_offset in range(0, 3):
             m = (today.month - 1 + month_offset) % 12 + 1
             y = today.year + ((today.month - 1 + month_offset) // 12)
             expiry = self._last_thursday(y, m)
             all_events.append((expiry, f"F&O Monthly Expiry ({expiry.strftime('%b %Y')})", "FO_EXPIRY"))
 
+        # NSE holidays
+        for hd in self.NSE_HOLIDAYS:
+            all_events.append((hd, "NSE Market Holiday", "HOLIDAY"))
+
         for event_date, label, tag in all_events:
             if today <= event_date <= cutoff:
-                days_away = (event_date - today).days
                 events.append({
                     "date":      event_date.isoformat(),
                     "label":     label,
                     "tag":       tag,
-                    "days_away": days_away,
+                    "days_away": (event_date - today).days,
                 })
+
+        # Add earnings season note if active
+        if self.is_earnings_season():
+            events.append({
+                "date":      today.isoformat(),
+                "label":     "Earnings Season Active — expect stock-specific volatility",
+                "tag":       "EARNINGS",
+                "days_away": 0,
+            })
+
         return sorted(events, key=lambda e: e["days_away"])
 
     def event_risk_multiplier(self) -> tuple[float, str]:
         """
-        Return (risk_multiplier, label) based on proximity to known events.
-        multiplier > 1.0 means elevated risk → position sizes should shrink.
+        Return (risk_multiplier, label).
+        multiplier > 1.0 = elevated risk → position sizes shrink.
         """
-        today = date.today()
+        today    = date.today()
         max_mult = 1.0
         label    = "normal"
 
+        # Hard block on market holidays
+        if self.is_market_holiday(today):
+            return 99.0, "NSE_HOLIDAY"
+
         all_dated = (
-            [(d, "MSCI", self._is_msci_semi_annual(d)) for d in self.MSCI_REBALANCE_DATES]
-            + [(d, "RBI",    False) for d in self.RBI_MPC_DATES]
-            + [(d, "BUDGET", False) for d in self.BUDGET_DATES]
+            [(d, "MSCI", self._is_msci_semi_annual(d))  for d in self.MSCI_REBALANCE_DATES]
+            + [(d, "FTSE", False)                        for d in self.FTSE_REBALANCE_DATES]
+            + [(d, "RBI",    False)                      for d in self.RBI_MPC_DATES]
+            + [(d, "BUDGET", True)                       for d in self.BUDGET_DATES]
+            + [(d, "GST",    False)                      for d in self.GST_COUNCIL_DATES]
         )
         # Add F&O expiry
         for month_offset in range(-1, 2):

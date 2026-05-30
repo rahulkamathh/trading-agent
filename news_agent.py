@@ -180,25 +180,31 @@ COMMODITY_SECTOR_MAP: dict[str, dict] = {
 # ---------------------------------------------------------------------------
 
 RSS_FEEDS = [
-    # Economic Times – Markets
-    "https://economictimes.indiatimes.com/markets/stocks/rss.cms",
-    # Economic Times – Economy
-    "https://economictimes.indiatimes.com/news/economy/rss.cms",
-    # Moneycontrol – Markets
-    "https://www.moneycontrol.com/rss/marketsnews.xml",
-    # Business Standard – Markets
-    "https://www.business-standard.com/rss/markets-106.rss",
-    # Livemint – Markets
-    "https://www.livemint.com/rss/markets",
+    # ── Google News RSS (no auth, reliable from any server) ───────────────
+    # Indian stock market general
+    "https://news.google.com/rss/search?q=india+stock+market+NSE+BSE&hl=en-IN&gl=IN&ceid=IN:en",
+    # Nifty specific
+    "https://news.google.com/rss/search?q=nifty+sensex+today&hl=en-IN&gl=IN&ceid=IN:en",
+    # FII/DII and macro
+    "https://news.google.com/rss/search?q=FII+DII+india+market+inflow+outflow&hl=en-IN&gl=IN&ceid=IN:en",
+    # RBI and economy
+    "https://news.google.com/rss/search?q=RBI+india+economy+inflation+rate&hl=en-IN&gl=IN&ceid=IN:en",
+    # Earnings and corporate results
+    "https://news.google.com/rss/search?q=india+quarterly+results+earnings+NSE&hl=en-IN&gl=IN&ceid=IN:en",
+    # Sector specific: banking, IT, pharma
+    "https://news.google.com/rss/search?q=india+banking+IT+pharma+sector+stocks&hl=en-IN&gl=IN&ceid=IN:en",
+    # Global macro that impacts India
+    "https://news.google.com/rss/search?q=US+fed+dollar+crude+oil+india+market&hl=en-IN&gl=IN&ceid=IN:en",
+    # NSE official announcements via Google News
+    "https://news.google.com/rss/search?q=NSE+BSE+SEBI+announcement+circular&hl=en-IN&gl=IN&ceid=IN:en",
 ]
 
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
     ),
-    "Accept": "application/rss+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": "application/rss+xml,application/xml,text/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-IN,en;q=0.9",
 }
 
 POSITIVE_WORDS = [
@@ -370,7 +376,63 @@ class NewsAgent:
     def get_news_items(self) -> list[dict]:
         """Return cached news items (refreshes if stale)."""
         self._refresh_news()
-        return list(self._news_cache)
+        # Merge yfinance ticker news for held positions
+        try:
+            yf_items = self._fetch_yfinance_news()
+            # Prepend yfinance news (most relevant to holdings) before RSS items
+            combined = yf_items + list(self._news_cache)
+            # Deduplicate by title
+            seen, out = set(), []
+            for it in combined:
+                key = (it.get("title") or "")[:80].lower()
+                if key and key not in seen:
+                    seen.add(key)
+                    out.append(it)
+            return out
+        except Exception:
+            return list(self._news_cache)
+
+    def _fetch_yfinance_news(self) -> list[dict]:
+        """Fetch news from yfinance for Nifty + key tickers. Free, always works."""
+        items = []
+        # Always fetch index + top blue chips
+        watchlist = ["^NSEI", "RELIANCE.NS", "HDFCBANK.NS", "INFY.NS", "TCS.NS",
+                     "SBIN.NS", "ICICIBANK.NS", "BAJFINANCE.NS", "MARUTI.NS"]
+        # Also add any tickers we currently hold
+        try:
+            from engine import get_agent  # pylint: disable=import-outside-toplevel
+            agent = get_agent()
+            watchlist += list(agent.portfolio.state.get("positions", {}).keys())
+        except Exception:
+            pass
+
+        seen_titles: set = set()
+        for ticker in watchlist[:15]:   # cap to avoid slow startup
+            try:
+                news = yf.Ticker(ticker).news or []
+                for n in news[:5]:
+                    title = (n.get("title") or "").strip()
+                    if not title or title.lower() in seen_titles:
+                        continue
+                    seen_titles.add(title.lower())
+                    # Sentiment
+                    desc = n.get("summary") or n.get("description") or ""
+                    sentiment = _sentiment_score(title + " " + desc)
+                    tickers_mentioned = _extract_tickers(title + " " + desc)
+                    items.append({
+                        "title":       title,
+                        "description": desc[:300],
+                        "link":        n.get("link") or n.get("url") or "",
+                        "published":   datetime.fromtimestamp(
+                            n.get("providerPublishTime", time.time())
+                        ).isoformat(),
+                        "source":      n.get("publisher") or "yfinance",
+                        "sentiment":   round(sentiment, 3),
+                        "tickers":     tickers_mentioned,
+                    })
+            except Exception:
+                pass
+        return items
 
     # ------------------------------------------------------------ Commodity layer
 
@@ -562,6 +624,158 @@ class NewsAgent:
                 "tickers":   _extract_tickers(text),
             })
         return result
+
+
+# ---------------------------------------------------------------------------
+# Pre-market Briefing  (sent to Telegram at 8:45 AM IST before market open)
+# ---------------------------------------------------------------------------
+
+def send_premarket_briefing() -> None:
+    """
+    Runs in a daemon thread. Fetches fresh news + event calendar + commodities
+    and sends a structured pre-market briefing to TELEGRAM_NOTIFY_CHAT_ID.
+
+    Covers:
+      • Upcoming high-risk events today / this week
+      • Top market headlines (last 12 hours) with sentiment
+      • Key commodity moves (crude, gold, SGX Nifty)
+      • FII/DII sentiment from headlines
+      • Agent recommendation: cautious / normal / aggressive
+    """
+    import threading as _t
+    _t.Thread(target=_do_premarket_briefing, daemon=True, name="premarket-briefing").start()
+
+
+def _do_premarket_briefing() -> None:
+    import os as _os, requests as _req
+    logger.info("[PreMarket] Building pre-market briefing…")
+
+    bot_token = _os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id   = _os.environ.get("TELEGRAM_NOTIFY_CHAT_ID", "").strip()
+    if not bot_token or not chat_id:
+        logger.warning("[PreMarket] Bot credentials not set — skipping briefing")
+        return
+
+    try:
+        agent = get_news_agent()
+        # Force-refresh news right now
+        agent._news_ts = 0
+        agent._refresh_news()
+        news  = agent.get_news_items()
+        comms = agent.get_commodity_data()
+
+        from datetime import date as _date
+        today_str = _date.today().strftime("%d %b %Y, %a")
+
+        # ── Section 1: Event calendar ──────────────────────────────────────
+        try:
+            from risk_manager import get_risk_manager
+            rm = get_risk_manager()
+            events_today = rm.upcoming_events(days=2)
+            macro_score, macro_label, _ = rm.macro_risk(force_refresh=True)
+        except Exception:
+            events_today, macro_score, macro_label = [], 0, "LOW"
+
+        event_lines = ""
+        if events_today:
+            event_lines = "\n".join(
+                f"  ⚠️ <b>{e['label']}</b> — {e['days_away'] == 0 and 'TODAY' or 'tomorrow'}"
+                for e in events_today
+            )
+        else:
+            event_lines = "  ✅ No major market events today"
+
+        risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴", "EXTREME": "🚨"}.get(macro_label, "🟢")
+
+        # ── Section 2: Top headlines (last 12 hours) ───────────────────────
+        from datetime import datetime as _dt
+        cutoff = _dt.now().timestamp() - 12 * 3600
+        recent_news = []
+        for item in news[:60]:
+            try:
+                pub = _dt.fromisoformat(item.get("published", "")[:19]).timestamp()
+            except Exception:
+                pub = cutoff + 1
+            if pub >= cutoff:
+                recent_news.append(item)
+
+        # Sort by absolute sentiment (most impactful first)
+        recent_news.sort(key=lambda x: abs(x.get("sentiment", 0)), reverse=True)
+
+        bullish_headlines = [n for n in recent_news if n.get("sentiment", 0) > 0.1][:4]
+        bearish_headlines = [n for n in recent_news if n.get("sentiment", 0) < -0.1][:4]
+        neutral_headlines = [n for n in recent_news if abs(n.get("sentiment", 0)) <= 0.1][:2]
+
+        def _fmt_headline(n: dict) -> str:
+            title = n.get("title", "")[:90]
+            src   = n.get("source") or n.get("publisher") or ""
+            link  = n.get("link", "")
+            if link:
+                return f'  • <a href="{link}">{title}</a>'
+            return f"  • {title}"
+
+        bull_section = "\n".join(_fmt_headline(n) for n in bullish_headlines) or "  • No clearly bullish headlines"
+        bear_section = "\n".join(_fmt_headline(n) for n in bearish_headlines) or "  • No clearly bearish headlines"
+
+        # FII sentiment detection from headlines
+        fii_text = " ".join(n.get("title","") for n in recent_news).lower()
+        if "fii buying" in fii_text or "foreign inflow" in fii_text or "fii net buy" in fii_text:
+            fii_line = "📥 FII: Buying (bullish signal)"
+        elif "fii selling" in fii_text or "foreign outflow" in fii_text or "fii net sell" in fii_text:
+            fii_line = "📤 FII: Selling (bearish signal)"
+        else:
+            fii_line = "📊 FII: No strong signal in headlines"
+
+        # ── Section 3: Commodities ─────────────────────────────────────────
+        comm_lines = []
+        priority = ["Crude Oil WTI", "Gold", "Silver", "SGX Nifty", "Copper"]
+        for name in priority:
+            c = comms.get(name)
+            if not c:
+                continue
+            pct = c.get("pct_chg", 0)
+            arrow = "▲" if pct > 0 else "▼" if pct < 0 else "—"
+            color_note = " ⚠️" if abs(pct) > 1.5 else ""
+            comm_lines.append(f"  {arrow} {name}: {pct:+.2f}%{color_note}")
+
+        comm_section = "\n".join(comm_lines) or "  • Commodity data unavailable"
+
+        # ── Section 4: Agent recommendation ────────────────────────────────
+        if macro_label == "EXTREME":
+            rec = "🚨 <b>EXTREME CAUTION</b> — high-risk event. Agent will limit new trades."
+        elif macro_label == "HIGH":
+            rec = "🔴 <b>CAUTIOUS DAY</b> — risk elevated. Position sizes reduced."
+        elif len(bearish_headlines) > len(bullish_headlines) + 1:
+            rec = "🟡 <b>DEFENSIVE</b> — more bearish than bullish headlines. Watch carefully."
+        elif len(bullish_headlines) > len(bearish_headlines) + 1:
+            rec = "🟢 <b>CONSTRUCTIVE</b> — sentiment leaning positive. Normal position sizing."
+        else:
+            rec = "⚪ <b>NEUTRAL</b> — mixed signals. Standard risk management applies."
+
+        # ── Assemble message ───────────────────────────────────────────────
+        msg = (
+            f"🌅 <b>Pre-Market Briefing — {today_str}</b>\n"
+            f"Market opens in ~30 minutes\n"
+            f"─────────────────────────\n\n"
+            f"📅 <b>Events &amp; Risk</b>  {risk_emoji} {macro_label} ({macro_score*100:.0f}/100)\n"
+            f"{event_lines}\n\n"
+            f"📰 <b>Bullish Headlines</b>\n{bull_section}\n\n"
+            f"📰 <b>Bearish Headlines</b>\n{bear_section}\n\n"
+            f"🛢 <b>Commodities</b>\n{comm_section}\n\n"
+            f"{fii_line}\n\n"
+            f"🤖 <b>Agent Today:</b> {rec}"
+        )
+
+        _req.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json={"chat_id": chat_id, "text": msg,
+                  "parse_mode": "HTML", "disable_web_page_preview": True},
+            timeout=15,
+        )
+        logger.info("[PreMarket] Briefing sent successfully")
+
+    except Exception as exc:
+        logger.error(f"[PreMarket] Briefing failed: {exc}", exc_info=True)
 
 
 # ---------------------------------------------------------------------------

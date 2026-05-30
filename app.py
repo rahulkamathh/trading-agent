@@ -154,6 +154,10 @@ class _AgentState:
 
 _state = _AgentState()
 
+# ── Dashboard response cache (30s TTL) — avoids repeated yfinance calls ──────
+_dashboard_cache: dict = {"ts": 0, "data": None}
+_DASHBOARD_CACHE_TTL = 30   # seconds
+
 
 # ── Dashboard ────────────────────────────────────────────────────────────────
 
@@ -167,12 +171,25 @@ def index():
 
 @app.route("/api/dashboard")
 def api_dashboard():
-    """Return all data needed to render the dashboard in one call."""
+    """Return all data needed to render the dashboard in one call.
+    Response is cached for 30 s so live-price fetches don't block every reload.
+    """
     try:
+        now = time.time()
+        if _dashboard_cache["data"] and now - _dashboard_cache["ts"] < _DASHBOARD_CACHE_TTL:
+            cached = dict(_dashboard_cache["data"])
+            cached["agent_running"]  = _state.running
+            cached["last_cycle"]     = _state.last_cycle
+            cached["auto_interval_s"] = _state.auto_interval
+            cached["_cached"] = True
+            return jsonify({"ok": True, "data": cached})
+
         data = get_agent().get_dashboard_data()
-        data["agent_running"] = _state.running
-        data["last_cycle"] = _state.last_cycle
+        data["agent_running"]   = _state.running
+        data["last_cycle"]      = _state.last_cycle
         data["auto_interval_s"] = _state.auto_interval
+        _dashboard_cache["data"] = data
+        _dashboard_cache["ts"]   = now
         return jsonify({"ok": True, "data": data})
     except (ValueError, RuntimeError, KeyError) as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
@@ -901,6 +918,251 @@ def _generate_closing_report() -> None:
         print(f"[CLOSE] Notifier closing report error: {_ne}")
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# FOREX API ROUTES  (/api/forex/*)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/news/premarket", methods=["POST"])
+def api_news_premarket():
+    """Manually trigger the pre-market briefing (news + events + commodities)."""
+    try:
+        from news_agent import send_premarket_briefing  # pylint: disable=import-outside-toplevel
+        send_premarket_briefing()
+        return jsonify({"ok": True, "message": "Pre-market briefing triggered — check Telegram in ~15 seconds"})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/digest/send", methods=["POST"])
+def api_digest_send():
+    """Manually trigger the morning digest (for testing or on-demand use)."""
+    try:
+        from notifier import send_morning_digest  # pylint: disable=import-outside-toplevel
+        send_morning_digest()
+        return jsonify({"ok": True, "message": "Morning digest triggered — check your Telegram group in ~30 seconds"})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/forex/dashboard")
+def api_forex_dashboard():
+    """Portfolio summary for the forex agent."""
+    try:
+        from forex_engine import get_forex_agent, is_forex_market_open, current_session  # noqa
+        agent   = get_forex_agent()
+        summary = agent.portfolio.get_summary()
+        session = current_session()
+        return jsonify({"ok": True, "market_open": is_forex_market_open(),
+                        "session": session, **summary})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/forex/positions")
+def api_forex_positions():
+    try:
+        from forex_engine import get_forex_agent  # noqa
+        positions = get_forex_agent().portfolio.get_positions()
+        return jsonify({"ok": True, "positions": positions})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/forex/signals")
+def api_forex_signals():
+    limit = int(request.args.get("limit", 50))
+    try:
+        from forex_engine import get_forex_agent  # noqa
+        signals = get_forex_agent().get_signals(limit=limit)
+        return jsonify({"ok": True, "signals": signals})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/forex/trades")
+def api_forex_trades():
+    limit = int(request.args.get("limit", 100))
+    try:
+        from forex_engine import get_forex_agent  # noqa
+        trades = list(reversed(get_forex_agent().portfolio._load_trades()[-limit:]))
+        return jsonify({"ok": True, "trades": trades})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/forex/pairs")
+def api_forex_pairs():
+    """Live prices for all tracked forex pairs."""
+    try:
+        from forex_engine import FOREX_PAIRS, get_price  # noqa
+        out = []
+        for pair, meta in FOREX_PAIRS.items():
+            price = get_price(pair)
+            out.append({"pair": pair, "name": meta["name"],
+                        "group": meta["group"], "price": price})
+        return jsonify({"ok": True, "pairs": out})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/forex/run", methods=["POST"])
+def api_forex_run():
+    """Manually trigger a forex agent cycle."""
+    try:
+        from forex_engine import get_forex_agent  # noqa
+        result = get_forex_agent().run_cycle()
+        return jsonify({"ok": True, **result})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/forex/close", methods=["POST"])
+def api_forex_close():
+    """Manually close a forex position."""
+    try:
+        from forex_engine import get_forex_agent, get_price  # noqa
+        data = request.get_json(force=True)
+        pair = data.get("pair", "").strip()
+        if not pair:
+            return jsonify({"ok": False, "error": "pair required"}), 400
+        price = get_price(pair)
+        if not price:
+            return jsonify({"ok": False, "error": "Could not fetch current price"}), 400
+        trade = get_forex_agent().portfolio.execute_close(pair, price, reason="MANUAL")
+        return jsonify({"ok": bool(trade), "trade": trade})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/forex/reset", methods=["POST"])
+def api_forex_reset():
+    """Reset forex portfolio to initial capital."""
+    try:
+        from forex_engine import FOREX_PORTFOLIO_FILE, FOREX_TRADES_FILE, FOREX_INITIAL_CAPITAL  # noqa
+        import json as _j
+        state = {"cash": FOREX_INITIAL_CAPITAL, "initial": FOREX_INITIAL_CAPITAL,
+                 "positions": {}, "cooldowns": {}}
+        with open(FOREX_PORTFOLIO_FILE, "w") as f:
+            _j.dump(state, f)
+        with open(FOREX_TRADES_FILE, "w") as f:
+            _j.dump([], f)
+        # Reset singleton
+        import forex_engine as _fe  # noqa
+        _fe._forex_agent = None
+        return jsonify({"ok": True, "message": f"Forex portfolio reset to ${FOREX_INITIAL_CAPITAL:,.0f}"})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/forex/strategy_weights")
+def api_forex_strategy_weights():
+    try:
+        from forex_engine import get_forex_agent  # noqa
+        return jsonify({"ok": True, "weights": get_forex_agent().aggregator.get_weights()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/forex/chart/<path:pair>")
+def api_forex_chart(pair: str):
+    """OHLCV chart data for a forex pair."""
+    try:
+        from forex_engine import _fetch  # noqa
+        period   = request.args.get("period", "1w")
+        interval_map = {"1d": ("2d", "15m"), "1w": ("7d", "1h"),
+                        "1m": ("30d", "4h"), "3m": ("90d", "1d"), "1y": ("1y", "1d")}
+        yf_period, yf_interval = interval_map.get(period, ("7d", "1h"))
+        df = _fetch(pair, period=yf_period, interval=yf_interval)
+        if df is None:
+            return jsonify({"ok": False, "data": []})
+        data = [{"date": str(idx), "open": round(float(r["Open"]), 6),
+                 "high": round(float(r["High"]), 6), "low": round(float(r["Low"]), 6),
+                 "close": round(float(r["Close"]), 6)}
+                for idx, r in df.iterrows()]
+        change = round((data[-1]["close"] - data[0]["close"]) / data[0]["close"] * 100, 3) if data else 0
+        return jsonify({"ok": True, "data": data, "change_pct": change})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/master")
+def api_master():
+    """Combined overview of NSE stocks + Forex agents."""
+    try:
+        from engine import get_agent  # noqa
+        from forex_engine import get_forex_agent, is_forex_market_open, current_session  # noqa
+
+        # NSE stats
+        nse_agent = get_agent()
+        nse_state  = nse_agent.portfolio.state
+        nse_total  = nse_agent.portfolio.get_total_value()
+        nse_initial = nse_state.get("initial", 1_000_000)
+        nse_pnl    = nse_total - nse_initial
+        nse_trades = nse_agent.portfolio._load_trades() if hasattr(nse_agent.portfolio, '_load_trades') else []
+        nse_closes = [t for t in nse_trades if t.get("action") == "SELL"]
+        nse_wins   = [t for t in nse_closes if t.get("pnl", t.get("pnl_inr", 0)) > 0]
+
+        # Forex stats
+        fx_agent  = get_forex_agent()
+        fx_summary = fx_agent.portfolio.get_summary()
+
+        return jsonify({
+            "ok": True,
+            "nse": {
+                "total_value": round(nse_total, 2),
+                "initial":     nse_initial,
+                "pnl":         round(nse_pnl, 2),
+                "pnl_pct":     round(nse_pnl / nse_initial * 100, 2),
+                "positions":   len(nse_state.get("positions", {})),
+                "cash":        round(nse_state.get("cash", 0), 2),
+                "win_rate":    round(len(nse_wins) / len(nse_closes) * 100, 1) if nse_closes else 0,
+                "total_trades": len(nse_closes),
+                "currency":    "INR",
+                "market_open": _market_open(),
+            },
+            "forex": fx_summary | {
+                "market_open": is_forex_market_open(),
+                "session":     current_session(),
+            },
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FOREX BACKGROUND LOOP — independent scheduler, runs 24/5
+# ═══════════════════════════════════════════════════════════════════════════
+
+_FOREX_INTERVAL = int(os.environ.get("FOREX_CYCLE_INTERVAL", "3600"))  # default 1 hour
+
+def _forex_background_loop() -> None:
+    """
+    Forex agent runs independently of the NSE scheduler.
+    Waits 90s on startup so the main app finishes booting before we hit yfinance.
+    """
+    _bg_logger = logging.getLogger("app")
+    _bg_logger.info("[Forex Scheduler] Forex agent loop starting in 90s…")
+    time.sleep(90)   # let main app fully boot first
+
+    from forex_engine import get_forex_agent, is_forex_market_open, current_session  # noqa
+    _bg_logger.info("[Forex Scheduler] Forex agent loop started")
+
+    while True:
+        try:
+            if is_forex_market_open():
+                session = current_session()
+                get_forex_agent().run_cycle()
+                sleep_s = 900 if session["in_kill_zone"] else _FOREX_INTERVAL
+            else:
+                sleep_s = 3600
+                _bg_logger.info("[Forex Scheduler] Forex market closed (weekend)")
+        except Exception as exc:
+            _bg_logger.warning(f"[Forex Scheduler] Cycle error: {exc}")
+            sleep_s = 600
+
+        time.sleep(sleep_s)
+
+
 _bg_logger = logging.getLogger("app")
 
 def _background_loop() -> None:
@@ -912,12 +1174,32 @@ def _background_loop() -> None:
     Holiday/weekend → sleep until next trading day open
     """
     _bg_logger.info("[Scheduler] Market-aware agent loop started")
-    opening_done_dates: set = set()
+    opening_done_dates:  set = set()
     _holiday_logged_dates: set = set()
+    _digest_done_dates:  set = set()   # track 9 AM digest
 
     while True:
         now   = _ist_now()
         today = now.date()
+
+        # ── 8:45 AM Pre-Market Briefing (news + events + commodities) ────────
+        if now.hour == 8 and now.minute >= 44 and now.minute < 50 and today not in _digest_done_dates:
+            _bg_logger.info("🌅 8:45 AM — sending pre-market briefing")
+            try:
+                from news_agent import send_premarket_briefing  # pylint: disable=import-outside-toplevel
+                send_premarket_briefing()
+            except Exception as _pe:
+                _bg_logger.warning(f"Pre-market briefing error: {_pe}")
+
+        # ── 9 AM Morning Digest — graded signals (runs regardless of market open/close) ──
+        if now.hour == 9 and now.minute < 5 and today not in _digest_done_dates:
+            _bg_logger.info("☀️ 9 AM — sending morning digest")
+            try:
+                from notifier import send_morning_digest  # pylint: disable=import-outside-toplevel
+                send_morning_digest()
+            except Exception as _de:
+                _bg_logger.warning(f"Morning digest error: {_de}")
+            _digest_done_dates.add(today)
 
         if _market_open():
             # ── Opening bell: run immediately on first entry ──────────────
@@ -972,14 +1254,27 @@ if __name__ == "__main__":
     else:
         print("  ⚠️   Telegram credentials not set — add TELEGRAM_API_ID / HASH / PHONE to .env")
 
-    # ── Start market-aware background agent loop ──────────────────────────────
-    threading.Thread(target=_background_loop, daemon=True).start()
+    # ── Start Telegram bot command listener (ticker analysis on demand) ───────
+    try:
+        from bot_listener import start_bot_listener  # pylint: disable=import-outside-toplevel
+        start_bot_listener()
+        print("  🤖  Bot command listener started (type any NSE ticker in your group)")
+    except Exception as _ble:
+        print(f"  ⚠️   Bot listener failed to start: {_ble}")
+
+    # ── Start NSE market-aware background agent loop ─────────────────────────
+    threading.Thread(target=_background_loop, daemon=True, name="nse-scheduler").start()
+
+    # ── Start Forex 24/5 background agent loop ────────────────────────────────
+    threading.Thread(target=_forex_background_loop, daemon=True, name="forex-scheduler").start()
 
     print("\n" + "=" * 60)
-    print("  🇮🇳  Indian Institutional Trading Agent  —  Paper Mode")
+    print("  🌐  Multi-Market Trading Agent  —  Paper Mode")
     print("=" * 60)
     print("  Dashboard → http://localhost:5001")
-    print(f"  Capital   → ₹{INITIAL_CAPITAL:,.0f}")
+    print(f"  NSE Capital  → ₹{INITIAL_CAPITAL:,.0f}")
+    from forex_engine import FOREX_INITIAL_CAPITAL  # noqa
+    print(f"  Forex Capital → ${FOREX_INITIAL_CAPITAL:,.0f}")
     print("  Strategies: Momentum | Mean Rev | Multi-Factor | Sector Rot | SMA | Fibonacci")
     print("              RSI Divergence | Bollinger Squeeze | Volume Breakout | Telegram")
     print("              News Sentiment | Commodity | Fundamental Rescoring")
