@@ -163,34 +163,49 @@ class SignalParser:
         r'|square\s*off|sl\s*hit|target\s*hit|exit\s*now)\b', re.I)
 
     # ── Shared price fragment ──────────────────────────────────────────────── #
-    # Optional ₹/Rs/Rs., then 2+ digit number (prevents matching label "1"/"2")
+    # Optional ₹/Rs/Rs., then 3+ digit number. Require 3 digits min to avoid
+    # catching small counts/percentages/lot numbers.
     _P = r'[₹Rs.]*\s*(\d{2,}[\d,]*(?:\.\d+)?)'
 
-    # ── Entry price patterns ───────────────────────────────────────────────── #
-    # "@", "entry", "cmp", "ltp", "price", "at", "above", "near", "around",
-    # "between", "breakout above", "BO above"
-    _ENTRY_RE = re.compile(
-        r'(?:@\s*|(?:entry|cmp|ltp|price|at|above|near|around|between'
-        r'|buy\s*@?|add\s*@?|breakout\s*above|BO\s*above)[\s:]*)'
+    # ── Entry price patterns (HIGH CONFIDENCE — strong keywords only) ───────── #
+    # Strong signals: @, CMP, LTP, entry:, buy @, add @
+    _ENTRY_STRONG_RE = re.compile(
+        r'(?:@\s*|(?:cmp|ltp|entry|buy\s*@?|add\s*@?|accumulate\s*@?)[\s:]*)'
         + _P, re.I)
 
-    # Price range "₹1650-₹1700" or "1650-1700" → treat lower bound as entry
+    # Medium confidence: "price", "above ₹", "near ₹", "around ₹", "at ₹"
+    # Require ₹ symbol to avoid "above 52 week" false positives
+    _ENTRY_MEDIUM_RE = re.compile(
+        r'(?:price|above|near|around|at|breakout\s*above|BO\s*above)[\s:]*₹\s*'
+        r'(\d{2,}[\d,]*(?:\.\d+)?)', re.I)
+
+    # Price range "₹1650-₹1700" or "between ₹1650-₹1700" → lower bound as entry
     _RANGE_RE = re.compile(
-        r'[₹Rs.]*\s*(\d{2,}[\d,]*(?:\.\d+)?)\s*[-–to]+\s*[₹Rs.]*\s*\d{2,}[\d,]*(?:\.\d+)?'
+        r'(?:between\s*)?₹\s*(\d{2,}[\d,]*(?:\.\d+)?)\s*[-–to]+\s*₹?\s*\d{2,}[\d,]*(?:\.\d+)?'
+    )
+
+    # Numbers to SKIP — these appear in messages but are NOT prices:
+    # "52 week", "52w", percentages like "5%", quantities like "100 shares/lots/qty/units"
+    _NOISE_RE = re.compile(
+        r'\b52\s*(?:week|w)\b'                          # 52-week high/low
+        r'|\d+\s*(?:%|percent|rs\.?\s*gain|x\s*return)'# percentages / gain multiples
+        r'|\d+\s*(?:shares?|lots?|qty|units?|lakh|cr)'  # quantities
+        r'|\b(?:pe|p/e|eps)\s*\d+'                      # PE ratio numbers
+        r'|\bq[1-4]\b|\bfy\d{2,4}\b',                   # quarterly labels
+        re.I
     )
 
     # ── Target price patterns ──────────────────────────────────────────────── #
-    # "Target 1:", "TGT:", "T1:", "TP:", and slash-joined multiples "TGT: 2950/3050/3150"
     _TARGET_RE = re.compile(
         r'(?:tgt\s*\d*|target\s*\d*|tp\s*\d*|t[1-4]|obj(?:ective)?\s*\d*'
         r'|upside|potential)[\s:]+' + _P, re.I)
 
-    # Slash-separated targets after a target keyword: "TGT: 2950/3050/3150"
+    # Slash-separated targets: "TGT: 2950/3050/3150"
+    # Captures the entire number sequence after the keyword, parsed separately below
     _TARGET_SLASH_RE = re.compile(
-        r'(?:tgt|target|tp)[\s:]*' + _P
-        + r'(?:\s*/\s*[₹Rs.]*\s*(\d{2,}[\d,]*(?:\.\d+)?))*', re.I)
+        r'(?:tgt|target|tp)[\s:]*([₹\d/\s,\.]+)', re.I)
 
-    # Arrow-style: "→ ₹2950" right after the signal body (often the single target)
+    # Arrow-style: "→ ₹2950"
     _ARROW_TARGET_RE = re.compile(r'[→➡►]\s*' + _P)
 
     # ── Stop-loss patterns ─────────────────────────────────────────────────── #
@@ -219,6 +234,55 @@ class SignalParser:
     ]
 
     @classmethod
+    def _mask_noise(cls, text: str) -> str:
+        """Replace noise patterns (52-week, percentages, quantities) with spaces
+        so they can't be accidentally matched as prices."""
+        return cls._NOISE_RE.sub(lambda m: ' ' * len(m.group()), text)
+
+    @classmethod
+    def _extract_standalone_prices(cls, text: str, min_price: float = 50.0) -> list[float]:
+        """
+        Extract all standalone price candidates from text, filtering out
+        numbers that are clearly not stock prices (too small, followed by
+        noise words, or preceded by label-like context).
+        """
+        # Mask noise first so "52 week" → spaces, etc.
+        masked = cls._mask_noise(text)
+
+        # Skip numbers immediately followed by noise suffixes
+        _SUFFIX_SKIP = re.compile(
+            r'\d[\d,]*(?:\.\d+)?\s*(?:%|percent|x\b|shares?|lots?|qty|units?'
+            r'|lakh|cr\b|days?\b|weeks?\b|months?\b|yrs?\b|years?\b)', re.I)
+        skip_spans = {m.start() for m in _SUFFIX_SKIP.finditer(masked)}
+
+        results = []
+        for m in re.finditer(r'[₹Rs.]*\s*(\d{2,}[\d,]*(?:\.\d+)?)', masked):
+            if m.start() in skip_spans:
+                continue
+            try:
+                val = float(m.group(1).replace(',', ''))
+                if val >= min_price:
+                    results.append(val)
+            except Exception:
+                pass
+        return results
+
+    @classmethod
+    def _is_plausible_entry(cls, entry: float, targets: list[float], direction: str) -> bool:
+        """Return False if entry is clearly inconsistent with the targets."""
+        if not targets:
+            return True
+        min_tgt = min(targets)
+        max_tgt = max(targets)
+        if direction == "BUY":
+            # Entry should be at most 40% below the lowest target
+            # (very wide to handle penny stocks and multi-bagger calls)
+            return entry >= min_tgt * 0.60
+        else:  # SELL
+            # Entry should be at most 40% above the highest target
+            return entry <= max_tgt * 1.40
+
+    @classmethod
     def parse(cls, text: str, group_id: int, group_title: str, message_id: int) -> dict | None:
         """Parse message. Returns None if no actionable NSE signal found."""
         if not text or len(text.strip()) < 10:
@@ -238,45 +302,29 @@ class SignalParser:
         is_sell = bool(cls._SELL_RE.search(clean_text))
         if not is_buy and not is_sell:
             return None
-        # BUY takes priority when both appear (e.g. "Buy and sell at ₹xxx")
         direction = "BUY" if is_buy else "SELL"
 
-        # 3. Prices
         def clean_price(s: str) -> float:
             return float(s.replace(",", ""))
 
-        # Entry
-        entry_price = None
-        entry_m = cls._ENTRY_RE.search(clean_text)
-        if entry_m:
-            entry_price = clean_price(entry_m.group(1))
-        else:
-            # Fallback: price range → use lower bound as entry
-            range_m = cls._RANGE_RE.search(clean_text)
-            if range_m:
-                entry_price = clean_price(range_m.group(1))
-
-        # Targets — gather from multiple patterns, deduplicate
+        # ── 3. Targets first (they anchor the price range) ──────────────────── #
         targets: list[float] = []
 
-        # Pattern 1: named targets (Target 1, TGT, T1, etc.)
         for t in cls._TARGET_RE.findall(clean_text):
             try: targets.append(clean_price(t))
             except Exception: pass
 
-        # Pattern 2: slash-separated "TGT: 2950/3050/3150"
         for slash_m in cls._TARGET_SLASH_RE.finditer(clean_text):
-            for g in slash_m.groups():
-                if g:
-                    try: targets.append(clean_price(g))
-                    except Exception: pass
+            # Extract every number from the captured sequence (handles 2950/3050/3150)
+            for n in re.findall(r'(\d{2,}[\d,]*(?:\.\d+)?)', slash_m.group(1)):
+                try: targets.append(clean_price(n))
+                except Exception: pass
 
-        # Pattern 3: arrow targets "→ ₹2950"
         for arrow_m in cls._ARROW_TARGET_RE.finditer(clean_text):
             try: targets.append(clean_price(arrow_m.group(1)))
             except Exception: pass
 
-        # Deduplicate (preserve order, round to 2dp for comparison)
+        # Deduplicate targets
         seen: set[float] = set()
         unique_targets: list[float] = []
         for t in targets:
@@ -286,45 +334,91 @@ class SignalParser:
                 unique_targets.append(t)
         targets = unique_targets
 
-        # Stop-loss
+        # Drop targets < 10 (label artefacts)
+        targets = [t for t in targets if t >= 10]
+
+        # ── 4. Stop-loss ──────────────────────────────────────────────────────── #
         stop_loss = None
         sl_m = cls._SL_RE.search(clean_text)
         if sl_m:
             stop_loss = clean_price(sl_m.group(1))
 
-        # 4. Sanity filters
-        # Drop prices that are clearly just label numbers (< 10)
-        targets = [t for t in targets if t >= 10]
+        # ── 5. Entry price — tiered extraction ──────────────────────────────── #
+        entry_price = None
 
-        # If we have entry + targets, filter directionally
+        # Tier 1: Strong keywords (@, CMP, LTP, entry:, buy @)
+        entry_m = cls._ENTRY_STRONG_RE.search(clean_text)
+        if entry_m:
+            candidate = clean_price(entry_m.group(1))
+            if cls._is_plausible_entry(candidate, targets, direction):
+                entry_price = candidate
+
+        # Tier 2: Medium keywords (above ₹, near ₹, at ₹ — ₹ required)
+        if entry_price is None:
+            entry_m2 = cls._ENTRY_MEDIUM_RE.search(clean_text)
+            if entry_m2:
+                candidate = clean_price(entry_m2.group(1))
+                if cls._is_plausible_entry(candidate, targets, direction):
+                    entry_price = candidate
+
+        # Tier 3: Price range "₹1650-₹1700" → lower bound
+        if entry_price is None:
+            range_m = cls._RANGE_RE.search(clean_text)
+            if range_m:
+                candidate = clean_price(range_m.group(1))
+                if cls._is_plausible_entry(candidate, targets, direction):
+                    entry_price = candidate
+
+        # Tier 4: Standalone price inference
+        # Terse format: "RELIANCE BUY 2850 TGT 2950 SL 2800"
+        # Strategy: collect all plausible standalone prices, then pick the one
+        # closest to what the entry *should* be (just below min target for BUY).
+        if entry_price is None:
+            all_standalone = cls._extract_standalone_prices(clean_text, min_price=50.0)
+            # Remove prices already claimed by targets and stop-loss
+            claimed = set(round(t, 1) for t in targets)
+            if stop_loss:
+                claimed.add(round(stop_loss, 1))
+            candidates = [p for p in all_standalone if round(p, 1) not in claimed]
+
+            if candidates:
+                if targets:
+                    # For BUY: ideal entry is just below min(targets)
+                    # For SELL: ideal entry is just above max(targets)
+                    anchor = min(targets) if direction == "BUY" else max(targets)
+                    # Pick the candidate closest to anchor that is also plausible
+                    plausible = [p for p in candidates
+                                 if cls._is_plausible_entry(p, targets, direction)]
+                    if plausible:
+                        entry_price = min(plausible, key=lambda p: abs(p - anchor))
+                else:
+                    # No targets — just take the first plausible standalone price
+                    for p in candidates:
+                        if p >= 50:
+                            entry_price = p
+                            break
+
+        # ── 6. Final target directional filter (now that entry is settled) ──── #
         if entry_price and targets:
             if direction == "BUY":
                 targets = [t for t in targets if t > entry_price * 0.85]
             else:
                 targets = [t for t in targets if t < entry_price * 1.15]
 
-        # If entry wasn't found via keyword, try to infer from the first standalone
-        # price in the message (common in very terse messages like "RELIANCE BUY 2850 TGT 2950 SL 2800")
-        if entry_price is None:
-            standalone = re.findall(r'(?<![₹\d])' + cls._P, clean_text)
-            if standalone:
-                try:
-                    candidate = clean_price(standalone[0])
-                    if candidate >= 10:
-                        entry_price = candidate
-                except Exception:
-                    pass
+        # ── 7. Clean up stop-loss plausibility ──────────────────────────────── #
+        if stop_loss and entry_price:
+            if direction == "BUY" and stop_loss >= entry_price * 1.1:
+                stop_loss = None   # SL above entry for a BUY — clearly wrong
+            if direction == "SELL" and stop_loss <= entry_price * 0.9:
+                stop_loss = None
 
-        # 5. Specificity score 0–1
-        specificity = 0.3   # base: ticker + direction
+        # ── 8. Specificity score 0–1 ─────────────────────────────────────────── #
+        specificity = 0.3
         if entry_price: specificity += 0.2
         if targets:     specificity += 0.3
         if stop_loss:   specificity += 0.2
 
-        # 6. Trade type tag (intraday / BTST / positional / swing)
         trade_type = cls._find_trade_type(clean_text)
-
-        # 7. Timeline
         timeline_raw, timeline_days = cls._find_timeline(clean_text)
         evaluate_at = (datetime.now() + timedelta(days=timeline_days)).isoformat()
 
@@ -360,6 +454,33 @@ class SignalParser:
         if re.search(r'\bpositional\b', t): return "positional"
         if re.search(r'\bswing\b', t):    return "swing"
         return ""
+
+    @classmethod
+    def _find_ticker(cls, text_upper: str) -> str | None:
+        """Return the first NSE ticker found in the message, or None."""
+        best = None
+        best_len = 0
+        for short, full in _NSE_SHORT.items():
+            if len(short) < 2:
+                continue
+            pattern = rf'(?<![A-Z]){re.escape(short)}(?![A-Z])'
+            if re.search(pattern, text_upper):
+                if len(short) > best_len:
+                    best = full
+                    best_len = len(short)
+        return best
+
+    @classmethod
+    def _find_timeline(cls, text: str) -> tuple[str, int]:
+        """Return (raw_text, days). Falls back to DEFAULT_TIMELINE_DAYS."""
+        for pattern, days in cls._TIMELINE_RULES:
+            m = pattern.search(text)
+            if m:
+                if days is None:
+                    nums = [int(x) for x in m.groups() if x and x.isdigit()]
+                    days = max(nums) if nums else DEFAULT_TIMELINE_DAYS
+                return m.group(0).strip(), int(days)
+        return "unspecified", DEFAULT_TIMELINE_DAYS
 
     @classmethod
     def _find_ticker(cls, text_upper: str) -> str | None:
