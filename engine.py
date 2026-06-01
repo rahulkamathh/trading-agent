@@ -1373,25 +1373,58 @@ class Portfolio:
         return trade
 
     def check_stops(self) -> list:
-        """Check stop-loss and take-profit for all open positions."""
+        """
+        Check stop-loss and take-profit for all open positions.
+        Trailing stop ratchets up as positions gain — locks in intraday profits:
+          ≥ 5%  gain  → stop moves to breakeven (entry + 0.5%)
+          ≥ 10% gain  → stop trails at 5% below current price
+          ≥ 15% gain  → stop trails at 7% below current price (let winners run)
+        Stop only ever moves UP — never down.
+        """
         triggered = []
+        state_dirty = False
+
         for ticker, pos in list(self.state["positions"].items()):
             price = DataFetcher.get_current_price(ticker)
             if price <= 0:
                 continue
-            pnl_pct = (price / pos["avg_price"] - 1) * 100
-            if price <= pos["stop_loss"]:
-                logger.warning(
-                    f"🛑 STOP-LOSS {ticker} @ ₹{price:.2f}  "
-                    f"entry=₹{pos['avg_price']:.2f}  loss={pnl_pct:.1f}%"
+
+            entry   = pos["avg_price"]
+            pnl_pct = (price / entry - 1) * 100
+
+            # ── Trailing stop ratchet ────────────────────────────────────── #
+            current_sl = pos["stop_loss"]
+            if pnl_pct >= 15:
+                new_sl = round(price * 0.93, 2)   # trail 7% below current
+            elif pnl_pct >= 10:
+                new_sl = round(price * 0.95, 2)   # trail 5% below current
+            elif pnl_pct >= 5:
+                new_sl = round(entry * 1.005, 2)  # move to breakeven + 0.5%
+            else:
+                new_sl = current_sl               # keep original stop
+
+            if new_sl > current_sl:
+                pos["stop_loss"] = new_sl
+                state_dirty = True
+                logger.info(
+                    f"📈 TRAIL-STOP {ticker}  SL ₹{current_sl:.2f} → ₹{new_sl:.2f}"
+                    f"  (position +{pnl_pct:.1f}%)"
                 )
-                trade = self.execute_sell(ticker, price, reason="STOP_LOSS")
+
+            # ── Trigger checks ───────────────────────────────────────────── #
+            if price <= pos["stop_loss"]:
+                reason = "TRAILING_STOP" if pos["stop_loss"] > entry else "STOP_LOSS"
+                logger.warning(
+                    f"🛑 {reason} {ticker} @ ₹{price:.2f}  "
+                    f"entry=₹{entry:.2f}  sl=₹{pos['stop_loss']:.2f}  {pnl_pct:+.1f}%"
+                )
+                trade = self.execute_sell(ticker, price, reason=reason)
                 if trade:
                     triggered.append(trade)
             elif price >= pos["target"]:
                 logger.info(
                     f"🎯 TAKE-PROFIT {ticker} @ ₹{price:.2f}  "
-                    f"entry=₹{pos['avg_price']:.2f}  gain={pnl_pct:.1f}%"
+                    f"entry=₹{entry:.2f}  gain={pnl_pct:.1f}%"
                 )
                 trade = self.execute_sell(ticker, price, reason="TAKE_PROFIT")
                 if trade:
@@ -1401,6 +1434,10 @@ class Portfolio:
                     f"📊 HOLD {ticker} @ ₹{price:.2f}  "
                     f"SL=₹{pos['stop_loss']:.2f}  TP=₹{pos['target']:.2f}  {pnl_pct:+.1f}%"
                 )
+
+        if state_dirty:
+            self._save()   # persist updated stop levels
+
         return triggered
 
     def _log_trade(self, action, ticker, qty, price, strategy, reason, pnl=None,
