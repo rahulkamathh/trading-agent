@@ -470,7 +470,7 @@
   <div class="sb-group">
     <span class="sb-label">Portfolio</span>
     <span class="sb-val" id="kpiTotal">₹—</span>
-    <span class="sb-sub" id="kpiPnlPct">vs ₹10,00,000</span>
+    <span class="sb-sub" id="kpiPnlPct"></span>
   </div>
   <div class="sb-sep"></div>
   <div class="sb-group">
@@ -514,7 +514,7 @@
       <div class="card">
         <div class="card-title">Portfolio Value</div>
         <div class="card-value" id="dash-total">₹—</div>
-        <div class="card-sub" id="dash-pnlpct" style="margin-top:6px">vs ₹10,00,000</div>
+        <div class="card-sub" id="dash-pnlpct" style="margin-top:6px"></div>
       </div>
       <div class="card">
         <div class="card-title">Total P&amp;L</div>
@@ -1806,7 +1806,7 @@ function renderKPIs(p) {
   }
   const dp = document.getElementById('dash-pnlpct');
   if (dp) {
-    dp.textContent = fmtPct(p.total_pnl_pct) + ' vs ₹10,00,000';
+    dp.textContent = fmtPct(p.total_pnl_pct);
     dp.className   = 'card-sub ' + cls(p.total_pnl_pct);
   }
   const dpnl = document.getElementById('dash-pnl');

@@ -378,9 +378,34 @@ def _do_analyze_and_reply(signal: dict, group_title: str) -> None:
     # ── Decision ─────────────────────────────────────────────────────────── #
     THRESHOLD = 60
     will_trade = composite >= THRESHOLD and direction == "BUY"
-    action_str = "✅ <b>EXECUTING paper trade</b>" if will_trade else \
-                 ("⏭ <b>SKIPPING</b> — below conviction threshold" if composite < THRESHOLD
-                  else "📋 <b>SELL signal noted</b> — monitoring positions")
+
+    # ── Actually execute the trade if conviction is high enough ──────────── #
+    trade_result = None
+    if will_trade:
+        try:
+            from engine import get_agent, DataFetcher  # pylint: disable=import-outside-toplevel
+            agent = get_agent()
+            price = entry or DataFetcher.get_current_price(ticker)
+            if price:
+                trade_result = agent.portfolio.execute_buy(
+                    ticker, price,
+                    strategy="TelegramSignal",
+                    reason=f"Telegram signal from {group_title} | conviction {composite}/100"
+                )
+        except Exception as _te:
+            logger.warning(f"[Analyzer] Trade execution error for {ticker}: {_te}")
+
+    if will_trade:
+        if trade_result:
+            qty   = trade_result.get("qty", 0)
+            price = trade_result.get("price", 0)
+            action_str = f"✅ <b>EXECUTED</b> — Bought {qty} × ₹{price:,.2f}"
+        else:
+            action_str = "⚠️ <b>SKIPPED execution</b> — insufficient cash or max positions reached"
+    elif composite < THRESHOLD:
+        action_str = "⏭ <b>SKIPPING</b> — below conviction threshold"
+    else:
+        action_str = "📋 <b>SELL signal noted</b> — monitoring positions"
 
     # ── Format message ────────────────────────────────────────────────────── #
     # Price levels block
