@@ -1158,6 +1158,13 @@ class Portfolio:
         if state:
             self.state = state
         self.state["last_updated"] = _now_ist().isoformat()
+
+        # ── Daily baseline: snapshot portfolio value at start of each new day ──
+        today_str = _now_ist().strftime("%Y-%m-%d")
+        if self.state.get("day_start_date") != today_str:
+            self.state["day_start_date"]  = today_str
+            self.state["day_start_value"] = round(self.get_total_value(), 2)
+
         with open(PORTFOLIO_FILE, "w") as f:
             json.dump(self.state, f, indent=2)
 
@@ -1982,7 +1989,7 @@ class TradingAgent:
             "signals_updated": signals_updated,
             "equity_curve":   equity_curve,
             "strategy_perf":  strat_perf,
-            "today_pnl":      _calc_today_pnl(trades, total_val, equity_curve, INITIAL_CAPITAL),
+            "today_pnl":      _calc_today_pnl(trades, total_val, equity_curve, INITIAL_CAPITAL, port.state),
         }
 
 
@@ -1990,10 +1997,15 @@ class TradingAgent:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _calc_today_pnl(trades: list, current_value: float, equity_curve: list, initial: float) -> dict:
+def _calc_today_pnl(trades: list, current_value: float, equity_curve: list,
+                    initial: float, portfolio_state: dict = None) -> dict:
     """
-    Today's P&L = current portfolio value minus yesterday's closing value.
-    Falls back to realised-only if equity curve has only one point.
+    Today's P&L = current value minus today's opening baseline.
+
+    Priority:
+      1. portfolio_state["day_start_value"] — snapshotted at midnight/first save of the day
+      2. Last equity-curve point before today
+      3. Initial capital (first-ever day)
     """
     today_str = _now_ist().strftime("%Y-%m-%d")
 
@@ -2004,29 +2016,31 @@ def _calc_today_pnl(trades: list, current_value: float, equity_curve: list, init
         if t.get("action") == "SELL" and (t.get("time") or "").startswith(today_str)
     )
 
-    # Total day P&L: yesterday's curve value → today's value
-    prev_value = None
-    for pt in reversed(equity_curve):
-        if pt["date"] < today_str:
-            prev_value = pt["value"]
-            break
-    if prev_value is None and len(equity_curve) >= 2:
-        prev_value = equity_curve[-2]["value"]
+    # Best baseline: portfolio's own daily snapshot
+    baseline = None
+    if portfolio_state and portfolio_state.get("day_start_date") == today_str:
+        baseline = portfolio_state.get("day_start_value")
 
-    if prev_value:
-        day_pnl     = round(current_value - prev_value, 2)
-        day_pnl_pct = round((day_pnl / prev_value) * 100, 2)
-    else:
-        # First day — compare to initial capital
-        day_pnl     = round(today_realised, 2)
-        day_pnl_pct = round((day_pnl / initial) * 100, 2) if initial else 0.0
+    # Fallback: last equity-curve point before today
+    if baseline is None:
+        for pt in reversed(equity_curve):
+            if pt["date"] < today_str:
+                baseline = pt["value"]
+                break
+
+    # Last resort: initial capital
+    if baseline is None:
+        baseline = initial
+
+    day_pnl     = round(current_value - baseline, 2)
+    day_pnl_pct = round((day_pnl / baseline) * 100, 2) if baseline else 0.0
 
     return {
-        "day_pnl":          day_pnl,
-        "day_pnl_pct":      day_pnl_pct,
-        "day_realised":     round(today_realised, 2),
-        "day_trade_count":  sum(1 for t in trades if t.get("action") == "SELL"
-                                and (t.get("time") or "").startswith(today_str)),
+        "day_pnl":         day_pnl,
+        "day_pnl_pct":     day_pnl_pct,
+        "day_realised":    round(today_realised, 2),
+        "day_trade_count": sum(1 for t in trades if t.get("action") == "SELL"
+                               and (t.get("time") or "").startswith(today_str)),
     }
 
 
