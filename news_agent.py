@@ -360,18 +360,22 @@ class NewsAgent:
             time.sleep(0.2)
 
         if all_items:
-            # De-duplicate by title
+            # De-duplicate by title; score sentiment + extract tickers for each item
             seen  = set()
             dedup = []
             for it in all_items:
                 key = it["title"].lower()[:80]
                 if key not in seen:
                     seen.add(key)
+                    combined = it["title"] + " " + it.get("description", "")
+                    it["sentiment"] = round(_sentiment_score(combined), 3)
+                    it["tickers"]   = _extract_tickers(combined)
+                    it.setdefault("source", "RSS")
                     dedup.append(it)
             self._news_cache = dedup
             self._news_ts    = time.time()
             self._save_news()
-            logger.info(f"NewsAgent: fetched {len(dedup)} unique news items")
+            logger.info(f"NewsAgent: fetched {len(dedup)} unique items, scored sentiment")
 
     def get_news_items(self) -> list[dict]:
         """Return cached news items (refreshes if stale)."""
@@ -441,25 +445,54 @@ class NewsAgent:
         if age_min < COMMOD_TTL_MIN:
             return
 
+        # Friendly display names for the briefing
+        DISPLAY_NAMES = {
+            "copper":      "Copper",
+            "crude_oil":   "Crude Oil WTI",
+            "gold":        "Gold",
+            "silver":      "Silver",
+            "natural_gas": "Natural Gas",
+            "aluminium":   "Aluminium",
+        }
+
         data = {}
-        for name, ticker in COMMODITY_FUTURES.items():
+        for key, ticker in COMMODITY_FUTURES.items():
+            name = DISPLAY_NAMES.get(key, key)
             try:
-                df = yf.download(ticker, period="5d", interval="1d", progress=False)
+                # Try 1h interval first (more current pre-market)
+                df = yf.download(ticker, period="2d", interval="1h",
+                                 auto_adjust=True, progress=False)
+                if isinstance(df.columns, __import__("pandas").MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
                 if df.empty or len(df) < 2:
-                    continue
+                    raise ValueError("empty 1h data")
                 closes = df["Close"].dropna()
                 latest = float(closes.iloc[-1])
                 prev   = float(closes.iloc[-2])
-                pct    = (latest - prev) / prev * 100 if prev != 0 else 0.0
-                data[name] = {
-                    "ticker":  ticker,
-                    "price":   round(latest, 4),
-                    "prev":    round(prev, 4),
-                    "pct_chg": round(pct, 3),
-                    "ts":      datetime.now().isoformat(),
-                }
-            except Exception as e:
-                logger.debug(f"Commodity fetch failed {name} ({ticker}): {e}")
+            except Exception:
+                try:
+                    # Fallback: daily data
+                    df = yf.download(ticker, period="5d", interval="1d",
+                                     auto_adjust=True, progress=False)
+                    if isinstance(df.columns, __import__("pandas").MultiIndex):
+                        df.columns = df.columns.get_level_values(0)
+                    if df.empty or len(df) < 2:
+                        continue
+                    closes = df["Close"].dropna()
+                    latest = float(closes.iloc[-1])
+                    prev   = float(closes.iloc[-2])
+                except Exception as e:
+                    logger.debug(f"Commodity fetch failed {name} ({ticker}): {e}")
+                    continue
+
+            pct = (latest - prev) / prev * 100 if prev != 0 else 0.0
+            data[name] = {
+                "ticker":  ticker,
+                "price":   round(latest, 4),
+                "prev":    round(prev, 4),
+                "pct_chg": round(pct, 3),
+                "ts":      datetime.now().isoformat(),
+            }
 
         if data:
             self._commod_cache = data
@@ -687,9 +720,9 @@ def _do_premarket_briefing() -> None:
 
         risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴", "EXTREME": "🚨"}.get(macro_label, "🟢")
 
-        # ── Section 2: Top headlines (last 12 hours) ───────────────────────
+        # ── Section 2: Top headlines (last 24 hours) ───────────────────────
         from datetime import datetime as _dt
-        cutoff = _dt.now().timestamp() - 12 * 3600
+        cutoff = _dt.now().timestamp() - 24 * 3600
         recent_news = []
         for item in news[:60]:
             try:
