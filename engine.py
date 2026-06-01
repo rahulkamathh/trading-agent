@@ -1982,12 +1982,53 @@ class TradingAgent:
             "signals_updated": signals_updated,
             "equity_curve":   equity_curve,
             "strategy_perf":  strat_perf,
+            "today_pnl":      _calc_today_pnl(trades, total_val, equity_curve, INITIAL_CAPITAL),
         }
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _calc_today_pnl(trades: list, current_value: float, equity_curve: list, initial: float) -> dict:
+    """
+    Today's P&L = current portfolio value minus yesterday's closing value.
+    Falls back to realised-only if equity curve has only one point.
+    """
+    today_str = _now_ist().strftime("%Y-%m-%d")
+
+    # Realised P&L from today's SELL trades
+    today_realised = sum(
+        float(t.get("pnl") or 0)
+        for t in trades
+        if t.get("action") == "SELL" and (t.get("time") or "").startswith(today_str)
+    )
+
+    # Total day P&L: yesterday's curve value → today's value
+    prev_value = None
+    for pt in reversed(equity_curve):
+        if pt["date"] < today_str:
+            prev_value = pt["value"]
+            break
+    if prev_value is None and len(equity_curve) >= 2:
+        prev_value = equity_curve[-2]["value"]
+
+    if prev_value:
+        day_pnl     = round(current_value - prev_value, 2)
+        day_pnl_pct = round((day_pnl / prev_value) * 100, 2)
+    else:
+        # First day — compare to initial capital
+        day_pnl     = round(today_realised, 2)
+        day_pnl_pct = round((day_pnl / initial) * 100, 2) if initial else 0.0
+
+    return {
+        "day_pnl":          day_pnl,
+        "day_pnl_pct":      day_pnl_pct,
+        "day_realised":     round(today_realised, 2),
+        "day_trade_count":  sum(1 for t in trades if t.get("action") == "SELL"
+                                and (t.get("time") or "").startswith(today_str)),
+    }
+
 
 def _build_equity_curve(trades: list, current_value: float = None, created_at: str = None) -> list:
     """

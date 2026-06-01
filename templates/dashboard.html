@@ -474,6 +474,12 @@
   </div>
   <div class="sb-sep"></div>
   <div class="sb-group">
+    <span class="sb-label">Today</span>
+    <span class="sb-val" id="kpiDayPnl">₹—</span>
+    <span class="sb-sub" id="kpiDayPct">—</span>
+  </div>
+  <div class="sb-sep"></div>
+  <div class="sb-group">
     <span class="sb-label">Total P&amp;L</span>
     <span class="sb-val" id="kpiPnl">₹—</span>
   </div>
@@ -1764,6 +1770,7 @@ async function loadDashboard() {
     renderTrades(d.data.trades);
     renderEquityChart(d.data.equity_curve);
     renderStratChart(d.data.strategy_perf);
+    renderTodayPnl(d.data.today_pnl);
     updateAgentStatus(d.data.agent_running, d.data.last_cycle);
     if (d.data.auto_interval_s) {
       document.getElementById('intervalInput').value = d.data.auto_interval_s;
@@ -1824,6 +1831,20 @@ function renderKPIs(p) {
   if (dcb) dcb.style.width = cashPct + '%';
   const dcp = document.getElementById('dash-cashpct');
   if (dcp) dcp.textContent = cashPct.toFixed(1) + '% of portfolio in cash';
+}
+
+// ──────────────────────────────────────────────
+// Today's P&L
+// ──────────────────────────────────────────────
+function renderTodayPnl(t) {
+  if (!t) return;
+  const valEl = document.getElementById('kpiDayPnl');
+  const pctEl = document.getElementById('kpiDayPct');
+  if (!valEl || !pctEl) return;
+  valEl.textContent = fmt(t.day_pnl);
+  valEl.className   = 'sb-val ' + cls(t.day_pnl);
+  pctEl.textContent = fmtPct(t.day_pnl_pct);
+  pctEl.className   = 'sb-sub ' + cls(t.day_pnl_pct);
 }
 
 // ──────────────────────────────────────────────
@@ -2160,7 +2181,17 @@ function updateAgentStatus(running, cycle) {
   if (label) {
     const textNode = label.lastChild;
     if (textNode && textNode.nodeType === Node.TEXT_NODE) {
-      textNode.textContent = running ? 'Running…' : 'Idle';
+      if (running) {
+        textNode.textContent = 'Running…';
+      } else if (cycle && cycle.timestamp) {
+        // Show time since last cycle so user knows agent is alive
+        const secsAgo = Math.round((Date.now() - new Date(cycle.timestamp + (cycle.timestamp.includes('+') ? '' : '+05:30')).getTime()) / 1000);
+        const minsAgo = Math.floor(secsAgo / 60);
+        const nextIn  = Math.max(0, 15 - minsAgo);
+        textNode.textContent = nextIn <= 0 ? 'Next cycle soon…' : `Next cycle ~${nextIn}m`;
+      } else {
+        textNode.textContent = 'Idle';
+      }
     }
   }
   if (cycle && cycle.timestamp) {
