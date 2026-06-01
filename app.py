@@ -1,1142 +1,833 @@
-"""Flask API server for the Indian Institutional Trading Agent.
+"""
+News & Commodity Intelligence Agent
+=====================================
+Layers:
+  1. RSS Feed Scraping  – Economic Times, Moneycontrol, Business Standard
+  2. Stock Mention Extraction + Sentiment scoring
+  3. Commodity Price Tracking – copper, crude oil, gold, silver, steel
+  4. Commodity → Sector mapping → BUY/SELL signals
+  5. NewsSignalStrategy – surface for engine.py integration
 
-Run:  python app.py
-Open: http://localhost:5001
+Signals are cached for 2 hours to avoid hammering RSS endpoints.
 """
 
 import json
 import logging
-import os
-import threading
+import re
 import time
-from collections import deque
-from dataclasses import dataclass, field
-from datetime import datetime, time as dt_time, date as dt_date
-from zoneinfo import ZoneInfo
+import html
+from datetime import datetime, timedelta
+from pathlib import Path
+from urllib.request import urlopen, Request
+from urllib.error import URLError
 
-from dotenv import load_dotenv  # type: ignore[import-untyped]
-load_dotenv()  # Load .env before anything else
+import numpy as np
+import yfinance as yf
 
-from flask import Flask, jsonify, request, send_from_directory
+logger = logging.getLogger(__name__)
 
-from engine import INITIAL_CAPITAL, INDEX_TICKERS, DataFetcher, get_agent
-from angelone_feed import get_feed
+DATA_DIR      = Path(__file__).parent / "data"
+DATA_DIR.mkdir(exist_ok=True)
+NEWS_CACHE    = DATA_DIR / "news_cache.json"
+COMMOD_CACHE  = DATA_DIR / "commodity_cache.json"
+NEWS_TTL_MIN  = 30          # RSS re-fetch interval
+COMMOD_TTL_MIN = 60         # Commodity price re-fetch interval
 
-app = Flask(__name__, template_folder="templates", static_folder="static")
+# ---------------------------------------------------------------------------
+# Stock universe lookup  (company name / partial → NSE ticker)
+# ---------------------------------------------------------------------------
 
-# ── In-memory agent log (ring buffer, last 500 lines) ────────────────────────
-_agent_log: deque = deque(maxlen=500)
-_log_lock   = threading.Lock()
-
-# Level → colour tag used by the dashboard
-_LEVEL_TAG = {
-    "DEBUG":    "muted",
-    "INFO":     "text",
-    "WARNING":  "yellow",
-    "ERROR":    "red",
-    "CRITICAL": "red",
+COMPANY_TO_TICKER: dict[str, str] = {
+    # Large caps
+    "reliance": "RELIANCE.NS", "ril": "RELIANCE.NS",
+    "tcs": "TCS.NS", "tata consultancy": "TCS.NS",
+    "infosys": "INFY.NS", "infy": "INFY.NS",
+    "hdfc bank": "HDFCBANK.NS", "hdfcbank": "HDFCBANK.NS",
+    "icici bank": "ICICIBANK.NS", "icicibank": "ICICIBANK.NS",
+    "wipro": "WIPRO.NS",
+    "hcl tech": "HCLTECH.NS", "hcltech": "HCLTECH.NS",
+    "bajaj finance": "BAJFINANCE.NS",
+    "asian paints": "ASIANPAINT.NS",
+    "maruti": "MARUTI.NS", "maruti suzuki": "MARUTI.NS",
+    "sun pharma": "SUNPHARMA.NS", "sunpharma": "SUNPHARMA.NS",
+    "dr reddy": "DRREDDY.NS", "dr. reddy": "DRREDDY.NS",
+    "cipla": "CIPLA.NS",
+    "divis": "DIVISLAB.NS", "divi": "DIVISLAB.NS",
+    "titan": "TITAN.NS",
+    "ltimindtree": "LTIM.NS", "lti": "LTIM.NS",
+    "sbi": "SBIN.NS", "state bank": "SBIN.NS",
+    "axis bank": "AXISBANK.NS", "axisbank": "AXISBANK.NS",
+    "kotak": "KOTAKBANK.NS", "kotak bank": "KOTAKBANK.NS",
+    "ongc": "ONGC.NS",
+    "bpcl": "BPCL.NS",
+    "ioc": "IOC.NS", "indian oil": "IOC.NS",
+    "ntpc": "NTPC.NS",
+    "power grid": "POWERGRID.NS", "powergrid": "POWERGRID.NS",
+    "coal india": "COALINDIA.NS", "coalindia": "COALINDIA.NS",
+    "hindalco": "HINDALCO.NS",
+    "vedanta": "VEDL.NS", "vedl": "VEDL.NS",
+    "tata steel": "TATASTEEL.NS", "tatasteel": "TATASTEEL.NS",
+    "jsw steel": "JSWSTEEL.NS", "jswsteel": "JSWSTEEL.NS",
+    "sail": "SAIL.NS", "steel authority": "SAIL.NS",
+    "nmdc": "NMDC.NS",
+    "l&t": "LT.NS", "larsen": "LT.NS",
+    "adani ports": "ADANIPORTS.NS",
+    "adani green": "ADANIGREEN.NS",
+    "adani enterprises": "ADANIENT.NS",
+    "itc": "ITC.NS",
+    "britannia": "BRITANNIA.NS",
+    "nestle": "NESTLEIND.NS",
+    "tata motors": "TATAMOTORS.NS",
+    "m&m": "M&M.NS", "mahindra": "M&M.NS",
+    "bajaj auto": "BAJAJ-AUTO.NS",
+    "hero motocorp": "HEROMOTOCO.NS", "hero": "HEROMOTOCO.NS",
+    "eicher motors": "EICHERMOT.NS", "royal enfield": "EICHERMOT.NS",
+    "upl": "UPL.NS",
+    "grasim": "GRASIM.NS",
+    "ultracemco": "ULTRACEMCO.NS", "ultratech": "ULTRACEMCO.NS",
+    "bharti airtel": "BHARTIARTL.NS", "airtel": "BHARTIARTL.NS",
+    "indusind": "INDUSINDBK.NS", "indusind bank": "INDUSINDBK.NS",
+    # Mid caps / penny universe
+    "suzlon": "SUZLON.NS",
+    "nhpc": "NHPC.NS",
+    "sjvn": "SJVN.NS",
+    "tata power": "TATAPOWER.NS",
+    "rvnl": "RVNL.NS",
+    "irfc": "IRFC.NS",
+    "ircon": "IRCON.NS",
+    "hudco": "HUDCO.NS",
+    "rec": "RECLTD.NS", "recltd": "RECLTD.NS",
+    "pfc": "PFC.NS",
+    "beml": "BEML.NS",
+    "bel": "BEL.NS",
+    "hal": "HAL.NS", "hindustan aeronautics": "HAL.NS",
+    "cochin shipyard": "COCHINSHIP.NS",
+    "mazagon dock": "MAZAGON.NS",
+    "yes bank": "YESBANK.NS", "yesbank": "YESBANK.NS",
+    "idfc first": "IDFCFIRSTB.NS",
+    "federal bank": "FEDERALBNK.NS",
+    "bandhan": "BANDHANBNK.NS",
+    "laurus": "LAURUS.NS", "laurus labs": "LAURUS.NS",
+    "granules": "GRANULES.NS",
+    "syngene": "SYNGENE.NS",
+    "nationalum": "NATIONALUM.NS", "national aluminium": "NATIONALUM.NS",
+    "moil": "MOIL.NS",
+    "hind zinc": "HINDZINC.NS", "hindustan zinc": "HINDZINC.NS",
+    "gmr": "GMRINFRA.NS",
 }
 
-# Only capture logs from our own modules — silence library internals
-_OUR_MODULES = {
-    "engine", "app", "telegram_agent", "news_agent",
-    "fundamental_analyzer", "angelone_feed", "__main__",
+# ---------------------------------------------------------------------------
+# Commodity → sector / stock mapping
+# ---------------------------------------------------------------------------
+
+COMMODITY_FUTURES = {
+    "copper":    "HG=F",    # USD/lb
+    "crude_oil": "CL=F",    # USD/bbl
+    "gold":      "GC=F",    # USD/oz
+    "silver":    "SI=F",    # USD/oz
+    "natural_gas": "NG=F",  # USD/mmBtu
+    "aluminium": "ALI=F",   # USD/ton (CME)
 }
 
-class _AgentLogHandler(logging.Handler):
-    """Captures agent log records into the ring buffer, ignoring library noise."""
-    def emit(self, record: logging.LogRecord):
-        # Drop anything from yfinance, peewee, urllib, requests, etc.
-        top = record.name.split(".")[0]
-        if top not in _OUR_MODULES:
+COMMODITY_SECTOR_MAP: dict[str, dict] = {
+    "copper": {
+        "description": "Copper price rising → benefit base metal companies",
+        "tickers":     ["HINDALCO.NS", "VEDL.NS", "NATIONALUM.NS", "MOIL.NS"],
+        "etf":         None,
+        "threshold_pct": 2.0,    # % daily move to trigger a signal
+        "strength":      0.65,
+    },
+    "crude_oil": {
+        "description": "Crude rising → benefit upstream; hurts OMCs",
+        "tickers":     ["ONGC.NS", "RELIANCE.NS"],
+        "adverse":     ["BPCL.NS", "IOC.NS"],   # these get SELL signals when crude spikes
+        "etf":         None,
+        "threshold_pct": 2.5,
+        "strength":      0.60,
+    },
+    "gold": {
+        "description": "Gold rising → benefit gold ETF / gold financiers",
+        "tickers":     ["GOLDBEES.NS"],
+        "etf":         "GOLDBEES.NS",
+        "threshold_pct": 1.5,
+        "strength":      0.55,
+    },
+    "silver": {
+        "description": "Silver rising → benefit silver / industrial metals",
+        "tickers":     ["HINDALCO.NS", "VEDL.NS"],
+        "etf":         None,
+        "threshold_pct": 2.0,
+        "strength":      0.50,
+    },
+    "natural_gas": {
+        "description": "Natural gas rising → benefit gas distribution companies",
+        "tickers":     ["GAIL.NS", "IGL.NS", "MGL.NS"],
+        "etf":         None,
+        "threshold_pct": 3.0,
+        "strength":      0.55,
+    },
+    "aluminium": {
+        "description": "Aluminium rising → benefit aluminium producers",
+        "tickers":     ["NATIONALUM.NS", "HINDALCO.NS", "VEDL.NS"],
+        "etf":         None,
+        "threshold_pct": 2.0,
+        "strength":      0.55,
+    },
+}
+
+# ---------------------------------------------------------------------------
+# RSS Feeds
+# ---------------------------------------------------------------------------
+
+RSS_FEEDS = [
+    # ── Google News RSS (no auth, reliable from any server) ───────────────
+    # Indian stock market general
+    "https://news.google.com/rss/search?q=india+stock+market+NSE+BSE&hl=en-IN&gl=IN&ceid=IN:en",
+    # Nifty specific
+    "https://news.google.com/rss/search?q=nifty+sensex+today&hl=en-IN&gl=IN&ceid=IN:en",
+    # FII/DII and macro
+    "https://news.google.com/rss/search?q=FII+DII+india+market+inflow+outflow&hl=en-IN&gl=IN&ceid=IN:en",
+    # RBI and economy
+    "https://news.google.com/rss/search?q=RBI+india+economy+inflation+rate&hl=en-IN&gl=IN&ceid=IN:en",
+    # Earnings and corporate results
+    "https://news.google.com/rss/search?q=india+quarterly+results+earnings+NSE&hl=en-IN&gl=IN&ceid=IN:en",
+    # Sector specific: banking, IT, pharma
+    "https://news.google.com/rss/search?q=india+banking+IT+pharma+sector+stocks&hl=en-IN&gl=IN&ceid=IN:en",
+    # Global macro that impacts India
+    "https://news.google.com/rss/search?q=US+fed+dollar+crude+oil+india+market&hl=en-IN&gl=IN&ceid=IN:en",
+    # NSE official announcements via Google News
+    "https://news.google.com/rss/search?q=NSE+BSE+SEBI+announcement+circular&hl=en-IN&gl=IN&ceid=IN:en",
+]
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+    ),
+    "Accept": "application/rss+xml,application/xml,text/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-IN,en;q=0.9",
+}
+
+POSITIVE_WORDS = [
+    "surge", "rally", "gain", "rise", "jump", "soar", "record", "high",
+    "strong", "growth", "profit", "buy", "upgrade", "target", "bullish",
+    "outperform", "beat", "positive", "upside", "momentum", "breakout",
+    "recovery", "boom", "robust", "optimistic",
+]
+
+NEGATIVE_WORDS = [
+    "fall", "drop", "decline", "crash", "loss", "down", "weak", "sell",
+    "downgrade", "cut", "miss", "bearish", "underperform", "concern",
+    "risk", "warning", "negative", "plunge", "slump", "worry", "caution",
+]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _fetch_rss(url: str, timeout: int = 8) -> str:
+    """Fetch raw RSS XML string."""
+    try:
+        req = Request(url, headers=HEADERS)
+        with urlopen(req, timeout=timeout) as r:
+            return r.read().decode("utf-8", errors="replace")
+    except URLError as e:
+        logger.debug(f"RSS fetch failed {url}: {e}")
+        return ""
+    except Exception as e:
+        logger.debug(f"RSS error {url}: {e}")
+        return ""
+
+
+def _parse_rss_items(xml: str) -> list[dict]:
+    """Very simple RSS parser (no lxml dependency)."""
+    items = []
+    for item_match in re.finditer(r"<item>(.*?)</item>", xml, re.DOTALL):
+        raw = item_match.group(1)
+
+        def _tag(tag: str) -> str:
+            m = re.search(rf"<{tag}[^>]*>(.*?)</{tag}>", raw, re.DOTALL | re.I)
+            if m:
+                text = re.sub(r"<[^>]+>", "", m.group(1))
+                return html.unescape(text).strip()
+            return ""
+
+        pub_raw = _tag("pubDate")
+        try:
+            from email.utils import parsedate_to_datetime
+            pub_dt = parsedate_to_datetime(pub_raw)
+            pub_iso = pub_dt.isoformat()
+        except Exception:
+            pub_iso = datetime.now().isoformat()
+
+        items.append({
+            "title":       _tag("title"),
+            "description": _tag("description"),
+            "link":        _tag("link"),
+            "published":   pub_iso,
+        })
+    return items
+
+
+def _sentiment_score(text: str) -> float:
+    """
+    Simple word-count sentiment: returns -1 (very negative) to +1 (very positive).
+    """
+    low = text.lower()
+    pos = sum(1 for w in POSITIVE_WORDS if w in low)
+    neg = sum(1 for w in NEGATIVE_WORDS if w in low)
+    total = pos + neg
+    if total == 0:
+        return 0.0
+    return (pos - neg) / total
+
+
+def _extract_tickers(text: str) -> list[str]:
+    """
+    Find NSE tickers mentioned in a news headline / description.
+    Match company names → NSE ticker via lookup table.
+    """
+    low = text.lower()
+    found = set()
+    for name, ticker in COMPANY_TO_TICKER.items():
+        # Word-boundary-ish match
+        pattern = r"(?<![a-z])" + re.escape(name) + r"(?![a-z])"
+        if re.search(pattern, low):
+            found.add(ticker)
+    return list(found)
+
+
+# ---------------------------------------------------------------------------
+# News Agent
+# ---------------------------------------------------------------------------
+
+class NewsAgent:
+
+    def __init__(self):
+        self._news_cache:  list  = []
+        self._news_ts:     float = 0
+        self._commod_cache: dict = {}
+        self._commod_ts:   float = 0
+        self._load_persisted()
+
+    # ------------------------------------------------------------ persistence
+
+    def _load_persisted(self):
+        if NEWS_CACHE.exists():
+            try:
+                with open(NEWS_CACHE) as f:
+                    d = json.load(f)
+                self._news_cache = d.get("items", [])
+                self._news_ts    = d.get("ts", 0)
+            except Exception:
+                pass
+        if COMMOD_CACHE.exists():
+            try:
+                with open(COMMOD_CACHE) as f:
+                    d = json.load(f)
+                self._commod_cache = d.get("data", {})
+                self._commod_ts    = d.get("ts", 0)
+            except Exception:
+                pass
+
+    def _save_news(self):
+        try:
+            with open(NEWS_CACHE, "w") as f:
+                json.dump({"items": self._news_cache[:500], "ts": self._news_ts}, f)
+        except Exception:
+            pass
+
+    def _save_commod(self):
+        try:
+            with open(COMMOD_CACHE, "w") as f:
+                json.dump({"data": self._commod_cache, "ts": self._commod_ts}, f)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------ RSS layer
+
+    def _refresh_news(self):
+        age_min = (time.time() - self._news_ts) / 60
+        if age_min < NEWS_TTL_MIN:
             return
-        msg = self.format(record)
-        entry = {
-            "t":     datetime.now().strftime("%H:%M:%S"),
-            "level": record.levelname,
-            "tag":   _LEVEL_TAG.get(record.levelname, "text"),
-            "msg":   msg,
-        }
-        with _log_lock:
-            _agent_log.append(entry)
 
-# Attach to root but only emit for our modules (handler filters internally)
-_handler = _AgentLogHandler()
-_handler.setFormatter(logging.Formatter("%(name)s — %(message)s"))
-_handler.setLevel(logging.DEBUG)
-logging.getLogger().addHandler(_handler)
+        all_items = []
+        for feed_url in RSS_FEEDS:
+            xml = _fetch_rss(feed_url)
+            if xml:
+                items = _parse_rss_items(xml)
+                all_items.extend(items)
+            time.sleep(0.2)
 
-# Silence noisy third-party loggers explicitly
-for _noisy in ("yfinance", "peewee", "urllib3", "requests", "httpx",
-               "asyncio", "telethon", "websocket", "charset_normalizer"):
-    logging.getLogger(_noisy).setLevel(logging.CRITICAL)
+        if all_items:
+            # De-duplicate by title; score sentiment + extract tickers for each item
+            seen  = set()
+            dedup = []
+            for it in all_items:
+                key = it["title"].lower()[:80]
+                if key not in seen:
+                    seen.add(key)
+                    combined = it["title"] + " " + it.get("description", "")
+                    it["sentiment"] = round(_sentiment_score(combined), 3)
+                    it["tickers"]   = _extract_tickers(combined)
+                    it.setdefault("source", "RSS")
+                    dedup.append(it)
+            self._news_cache = dedup
+            self._news_ts    = time.time()
+            self._save_news()
+            logger.info(f"NewsAgent: fetched {len(dedup)} unique items, scored sentiment")
 
-
-# ── Agent state ─────────────────────────────────────────────────────────────
-
-# NSE market schedule (IST = UTC+5:30)
-_IST          = ZoneInfo("Asia/Kolkata")
-_MARKET_OPEN  = dt_time(9, 15)
-_MARKET_CLOSE = dt_time(15, 30)
-
-# ── NSE holiday calendar (via pandas_market_calendars, cached per process) ────
-_nse_calendar = None
-_nse_calendar_loaded = False  # True once we've attempted to load
-
-def _get_nse_calendar():
-    """Lazy-load the NSE exchange calendar using pandas_market_calendars."""
-    global _nse_calendar, _nse_calendar_loaded  # noqa: PLW0603
-    if not _nse_calendar_loaded:
-        _nse_calendar_loaded = True
+    def get_news_items(self) -> list[dict]:
+        """Return cached news items (refreshes if stale)."""
+        self._refresh_news()
+        # Merge yfinance ticker news for held positions
         try:
-            import pandas_market_calendars as mcal  # type: ignore[import-untyped]
-            _nse_calendar = mcal.get_calendar("NSE")
-            logging.getLogger(__name__).info("[Scheduler] NSE holiday calendar loaded (pandas_market_calendars)")
-        except Exception as exc:
-            logging.getLogger(__name__).warning(
-                f"[Scheduler] pandas_market_calendars unavailable — holiday check disabled: {exc}"
-            )
-    return _nse_calendar
+            yf_items = self._fetch_yfinance_news()
+            # Prepend yfinance news (most relevant to holdings) before RSS items
+            combined = yf_items + list(self._news_cache)
+            # Deduplicate by title
+            seen, out = set(), []
+            for it in combined:
+                key = (it.get("title") or "")[:80].lower()
+                if key and key not in seen:
+                    seen.add(key)
+                    out.append(it)
+            return out
+        except Exception:
+            return list(self._news_cache)
 
-
-def _is_nse_holiday(date_obj) -> bool:
-    """Return True if date_obj is an NSE trading holiday (not a session day)."""
-    cal = _get_nse_calendar()
-    if cal is None:
-        return False  # can't check, assume not a holiday
-    try:
-        date_str = date_obj.strftime("%Y-%m-%d") if hasattr(date_obj, "strftime") else str(date_obj)
-        schedule = cal.schedule(start_date=date_str, end_date=date_str)
-        return schedule.empty  # empty schedule = holiday or weekend
-    except Exception:
-        return False
-
-
-def _ist_now() -> datetime:
-    """Return the current time in IST."""
-    return datetime.now(_IST)
-
-
-def _market_open() -> bool:
-    """Return True if NSE is currently open (weekday, 9:15–15:30 IST, non-holiday)."""
-    now = _ist_now()
-    if now.weekday() >= 5:
-        return False  # weekend
-    if not (_MARKET_OPEN <= now.time() <= _MARKET_CLOSE):
-        return False  # outside trading hours
-    if _is_nse_holiday(now.date()):
-        return False  # NSE declared holiday
-    return True
-
-
-def _secs_until_next_open() -> float:
-    """Seconds until the next NSE trading day opening bell."""
-    from datetime import timedelta
-    now = _ist_now()
-    candidate = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    if now.time() >= _MARKET_OPEN:
-        candidate += timedelta(days=1)
-    # Skip weekends AND NSE holidays
-    while candidate.weekday() >= 5 or _is_nse_holiday(candidate.date()):
-        candidate += timedelta(days=1)
-    return max(60.0, (candidate - now).total_seconds())
-
-
-@dataclass
-class _AgentState:
-    """Mutable runtime state for the background agent loop."""
-
-    running: bool = False
-    last_cycle: dict = field(default_factory=dict)
-    auto_interval: int = 900  # seconds between intra-day cycles
-    closing_report_dates: set = field(default_factory=set)
-
-
-_state = _AgentState()
-
-# ── Dashboard cache — stale-while-revalidate pattern ─────────────────────────
-# The API ALWAYS returns instantly. If cache is warm (even stale), return it
-# immediately and kick off a background refresh. If cold, build synchronously
-# once, then all future calls are instant.
-_dashboard_cache: dict = {"ts": 0, "data": None, "refreshing": False}
-_DASHBOARD_CACHE_TTL = 45   # seconds before background refresh kicks in
-
-
-_dash_logger = logging.getLogger("app")
-
-def _refresh_dashboard_cache():
-    """Rebuild dashboard data in a background thread — never blocks requests."""
-    if _dashboard_cache["refreshing"]:
-        return
-    _dashboard_cache["refreshing"] = True
-    def _do():
+    def _fetch_yfinance_news(self) -> list[dict]:
+        """Fetch news from yfinance for Nifty + key tickers. Free, always works."""
+        items = []
+        # Always fetch index + top blue chips
+        watchlist = ["^NSEI", "RELIANCE.NS", "HDFCBANK.NS", "INFY.NS", "TCS.NS",
+                     "SBIN.NS", "ICICIBANK.NS", "BAJFINANCE.NS", "MARUTI.NS"]
+        # Also add any tickers we currently hold
         try:
-            data = get_agent().get_dashboard_data()
-            data["agent_running"]    = _state.running
-            data["last_cycle"]       = _state.last_cycle
-            data["auto_interval_s"]  = _state.auto_interval
-            _dashboard_cache["data"] = data
-            _dashboard_cache["ts"]   = time.time()
-        except Exception as exc:
-            _dash_logger.debug(f"Dashboard cache refresh error: {exc}")
-        finally:
-            _dashboard_cache["refreshing"] = False
-    threading.Thread(target=_do, daemon=True, name="dash-cache-refresh").start()
+            from engine import get_agent  # pylint: disable=import-outside-toplevel
+            agent = get_agent()
+            watchlist += list(agent.portfolio.state.get("positions", {}).keys())
+        except Exception:
+            pass
 
+        seen_titles: set = set()
+        for ticker in watchlist[:15]:   # cap to avoid slow startup
+            try:
+                news = yf.Ticker(ticker).news or []
+                for n in news[:5]:
+                    title = (n.get("title") or "").strip()
+                    if not title or title.lower() in seen_titles:
+                        continue
+                    seen_titles.add(title.lower())
+                    # Sentiment
+                    desc = n.get("summary") or n.get("description") or ""
+                    sentiment = _sentiment_score(title + " " + desc)
+                    tickers_mentioned = _extract_tickers(title + " " + desc)
+                    items.append({
+                        "title":       title,
+                        "description": desc[:300],
+                        "link":        n.get("link") or n.get("url") or "",
+                        "published":   datetime.fromtimestamp(
+                            n.get("providerPublishTime", time.time())
+                        ).isoformat(),
+                        "source":      n.get("publisher") or "yfinance",
+                        "sentiment":   round(sentiment, 3),
+                        "tickers":     tickers_mentioned,
+                    })
+            except Exception:
+                pass
+        return items
 
-# ── Dashboard ────────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------ Commodity layer
 
-@app.route("/")
-def index():
-    """Serve the single-page dashboard."""
-    return send_from_directory("templates", "dashboard.html")
+    def _refresh_commodities(self):
+        age_min = (time.time() - self._commod_ts) / 60
+        if age_min < COMMOD_TTL_MIN:
+            return
 
-
-# ── Data endpoints ───────────────────────────────────────────────────────────
-
-@app.route("/api/dashboard")
-def api_dashboard():
-    """
-    Stale-while-revalidate: always returns instantly.
-    • Cache hit (fresh): return immediately
-    • Cache hit (stale): return stale data + trigger background refresh
-    • Cache cold (first request): build synchronously once, cache it
-    """
-    try:
-        now  = time.time()
-        data = _dashboard_cache["data"]
-
-        if data is not None:
-            # Always return cached data immediately
-            resp = dict(data)
-            resp["agent_running"]   = _state.running
-            resp["last_cycle"]      = _state.last_cycle
-            resp["auto_interval_s"] = _state.auto_interval
-            resp["_cached"] = True
-            # Trigger background refresh if stale
-            if now - _dashboard_cache["ts"] > _DASHBOARD_CACHE_TTL:
-                _refresh_dashboard_cache()
-            return jsonify({"ok": True, "data": resp})
-
-        # Cold start — build once synchronously, then all future calls are cached
-        data = get_agent().get_dashboard_data()
-        data["agent_running"]   = _state.running
-        data["last_cycle"]      = _state.last_cycle
-        data["auto_interval_s"] = _state.auto_interval
-        _dashboard_cache["data"] = data
-        _dashboard_cache["ts"]   = now
-        return jsonify({"ok": True, "data": data})
-
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@app.route("/api/portfolio")
-def api_portfolio():
-    """Return current portfolio summary (value, cash, P&L)."""
-    agent = get_agent()
-    return jsonify({
-        "ok": True,
-        "portfolio": {
-            "total_value":    round(agent.portfolio.get_total_value(), 2),
-            "cash":           round(agent.portfolio.state["cash"], 2),
-            "realised_pnl":   round(agent.portfolio.state.get("realised_pnl", 0), 2),
-            "unrealised_pnl": round(agent.portfolio.get_unrealised_pnl(), 2),
-        },
-    })
-
-
-@app.route("/api/positions")
-def api_positions():
-    """Return all open positions with live P&L."""
-    return jsonify({"ok": True, "positions": get_agent().portfolio.get_positions_display()})
-
-
-@app.route("/api/trades")
-def api_trades():
-    """Return full trade log, newest first."""
-    from engine import TRADE_LOG_FILE  # pylint: disable=import-outside-toplevel
-
-    trades = []
-    if TRADE_LOG_FILE.exists():
-        with open(TRADE_LOG_FILE, encoding="utf-8") as fh:
-            trades = json.load(fh)
-    return jsonify({"ok": True, "trades": list(reversed(trades))})
-
-
-@app.route("/api/pnl_calendar")
-def api_pnl_calendar():
-    """
-    Returns daily P&L aggregated by date for the calendar view.
-    Response: { days: { "2026-05-27": { pnl, trades, wins, win_rate } } }
-    """
-    from engine import TRADE_LOG_FILE  # pylint: disable=import-outside-toplevel
-    from collections import defaultdict
-
-    trades = []
-    if TRADE_LOG_FILE.exists():
-        with open(TRADE_LOG_FILE, encoding="utf-8") as fh:
-            trades = json.load(fh)
-
-    # Only look at SELL trades (realised P&L)
-    days: dict = defaultdict(lambda: {"pnl": 0.0, "trades": 0, "wins": 0})
-    for t in trades:
-        if t.get("action") != "SELL" or t.get("pnl") is None:
-            continue
-        day = (t.get("time") or "")[:10]   # "2026-05-27"
-        if not day:
-            continue
-        pnl = float(t["pnl"])
-        days[day]["pnl"]    = round(days[day]["pnl"] + pnl, 2)
-        days[day]["trades"] += 1
-        if pnl > 0:
-            days[day]["wins"] += 1
-
-    # Compute win rate per day
-    result = {}
-    for day, d in days.items():
-        result[day] = {
-            "pnl":      d["pnl"],
-            "trades":   d["trades"],
-            "wins":     d["wins"],
-            "win_rate": round(d["wins"] / d["trades"] * 100) if d["trades"] else 0,
+        # Friendly display names for the briefing
+        DISPLAY_NAMES = {
+            "copper":      "Copper",
+            "crude_oil":   "Crude Oil WTI",
+            "gold":        "Gold",
+            "silver":      "Silver",
+            "natural_gas": "Natural Gas",
+            "aluminium":   "Aluminium",
         }
 
-    # Summary stats
-    all_pnl = [v["pnl"] for v in result.values()]
-    total_days = len(result)
-    green_days = sum(1 for p in all_pnl if p > 0)
-    red_days   = sum(1 for p in all_pnl if p < 0)
+        data = {}
+        for key, ticker in COMMODITY_FUTURES.items():
+            name = DISPLAY_NAMES.get(key, key)
+            try:
+                # Try 1h interval first (more current pre-market)
+                df = yf.download(ticker, period="2d", interval="1h",
+                                 auto_adjust=True, progress=False)
+                if isinstance(df.columns, __import__("pandas").MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                if df.empty or len(df) < 2:
+                    raise ValueError("empty 1h data")
+                closes = df["Close"].dropna()
+                latest = float(closes.iloc[-1])
+                prev   = float(closes.iloc[-2])
+            except Exception:
+                try:
+                    # Fallback: daily data
+                    df = yf.download(ticker, period="5d", interval="1d",
+                                     auto_adjust=True, progress=False)
+                    if isinstance(df.columns, __import__("pandas").MultiIndex):
+                        df.columns = df.columns.get_level_values(0)
+                    if df.empty or len(df) < 2:
+                        continue
+                    closes = df["Close"].dropna()
+                    latest = float(closes.iloc[-1])
+                    prev   = float(closes.iloc[-2])
+                except Exception as e:
+                    logger.debug(f"Commodity fetch failed {name} ({ticker}): {e}")
+                    continue
 
-    return jsonify({
-        "ok":         True,
-        "days":       result,
-        "summary": {
-            "total_days":  total_days,
-            "green_days":  green_days,
-            "red_days":    red_days,
-            "best_day":    max(all_pnl) if all_pnl else 0,
-            "worst_day":   min(all_pnl) if all_pnl else 0,
-            "total_pnl":   round(sum(all_pnl), 2),
-        },
-    })
-
-
-@app.route("/api/signals")
-def api_signals():
-    """Return the latest generated signals from all strategies."""
-    from engine import SIGNALS_FILE  # pylint: disable=import-outside-toplevel
-
-    if SIGNALS_FILE.exists():
-        with open(SIGNALS_FILE, encoding="utf-8") as fh:
-            data = json.load(fh)
-        return jsonify({"ok": True, **data})
-    return jsonify({"ok": True, "signals": [], "updated_at": ""})
-
-
-_market_overview_cache: dict = {}
-_market_overview_ts: float = 0.0
-_MARKET_OVERVIEW_TTL = 15  # seconds between yfinance refreshes (fast enough for ~live feel)
-
-
-def _fetch_index_price(ticker: str) -> tuple[float, float]:
-    """
-    Return (current_price, pct_change_vs_prev_close) for an index ticker.
-    Uses yf.Ticker.fast_info which gives the *live delayed* price (15-min lag)
-    rather than the previous day's EOD close that daily OHLCV bars return.
-    Falls back to 5d daily bars if fast_info fails.
-    """
-    import yfinance as yf  # pylint: disable=import-outside-toplevel
-    try:
-        fi = yf.Ticker(ticker).fast_info
-        price = float(fi.last_price or 0)
-        prev  = float(fi.previous_close or 0)
-        if price > 0 and prev > 0:
-            return price, (price / prev - 1) * 100
-    except Exception:
-        pass
-    # Fallback to daily bars (gives previous close during market hours)
-    try:
-        df = yf.download(ticker, period="5d", interval="1d",
-                         auto_adjust=True, progress=False)
-        if not df.empty:
-            price = float(df["Close"].iloc[-1])
-            prev  = float(df["Close"].iloc[-2]) if len(df) > 1 else price
-            return price, (price / prev - 1) * 100
-    except Exception:
-        pass
-    return 0.0, 0.0
-
-
-@app.route("/api/market_overview")
-def api_market_overview():
-    """Return latest price and % change for Nifty 50 and Bank Nifty.
-
-    Priority:
-      1. Angel One SmartAPI live WebSocket feed (if configured + connected)
-      2. yfinance fast_info — delayed ~15 min but updates *intraday*
-      3. Daily OHLCV bar fallback (gives previous EOD close)
-    Result cached for 60 s to avoid hammering yfinance.
-    """
-    global _market_overview_cache, _market_overview_ts  # noqa: PLW0603
-
-    feed = get_feed()
-    now  = time.time()
-
-    # ── 1. Angel One live feed (sub-second, no cache needed) ──────────────
-    now_ist_str = _ist_now().strftime("%H:%M:%S IST")
-    if feed.is_connected():
-        live = feed.get_all_prices()
-        results: dict = {}
-        for name, ticker in INDEX_TICKERS.items():
-            ltp = live.get(ticker)
-            if ltp:
-                results[name] = {
-                    "price":       round(ltp, 2),
-                    "chg_pct":     round(feed.get_change(ticker) or 0, 2),
-                    "ticker":      ticker,
-                    "source":      "live",
-                    "last_updated": now_ist_str,
-                }
-        if results:
-            return jsonify({"ok": True, "indices": results})
-
-    # ── 2. yfinance fast_info (60-second TTL cache) ───────────────────────
-    if now - _market_overview_ts < _MARKET_OVERVIEW_TTL and _market_overview_cache:
-        return jsonify({"ok": True, "indices": _market_overview_cache, "source": "cache"})
-
-    results = {}
-    for name, ticker in INDEX_TICKERS.items():
-        price, chg_pct = _fetch_index_price(ticker)
-        if price > 0:
-            results[name] = {
-                "price":        round(price, 2),
-                "chg_pct":      round(chg_pct, 2),
-                "ticker":       ticker,
-                "source":       "delayed",
-                "last_updated": now_ist_str,
+            pct = (latest - prev) / prev * 100 if prev != 0 else 0.0
+            data[name] = {
+                "ticker":  ticker,
+                "price":   round(latest, 4),
+                "prev":    round(prev, 4),
+                "pct_chg": round(pct, 3),
+                "ts":      datetime.now().isoformat(),
             }
 
-    _market_overview_cache = results
-    _market_overview_ts    = now
-    return jsonify({"ok": True, "indices": results})
-
-
-# ── Agent controls ───────────────────────────────────────────────────────────
-
-@app.route("/api/run_cycle", methods=["POST"])
-def api_run_cycle():
-    """Trigger a full agent cycle (fetch → signal → execute → stop-check)."""
-    if _state.running:
-        return jsonify({"ok": False, "error": "Agent already running"})
-    _state.running = True
-    try:
-        summary = get_agent().run_cycle()
-        _state.last_cycle = summary
-        return jsonify({"ok": True, "summary": summary})
-    except (ValueError, RuntimeError) as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-    finally:
-        _state.running = False
-
-
-@app.route("/api/manual_buy", methods=["POST"])
-def api_manual_buy():
-    """Manually buy a stock at current LTP using standard position sizing."""
-    body = request.get_json(force=True)
-    ticker = body.get("ticker", "").upper()
-    if not ticker.endswith(".NS"):
-        ticker += ".NS"
-    price = DataFetcher.get_current_price(ticker)
-    if price <= 0:
-        return jsonify({"ok": False, "error": f"Could not fetch price for {ticker}"}), 400
-    trade = get_agent().portfolio.execute_buy(ticker, price, "MANUAL", "Manual buy")
-    if trade:
-        return jsonify({"ok": True, "trade": trade})
-    return jsonify({
-        "ok": False,
-        "error": "Could not execute buy (check capital / position limits)",
-    }), 400
-
-
-@app.route("/api/manual_sell", methods=["POST"])
-def api_manual_sell():
-    """Manually exit an entire position at current LTP."""
-    body = request.get_json(force=True)
-    ticker = body.get("ticker", "")
-    price = DataFetcher.get_current_price(ticker)
-    trade = get_agent().portfolio.execute_sell(ticker, price, "MANUAL")
-    if trade:
-        return jsonify({"ok": True, "trade": trade})
-    return jsonify({"ok": False, "error": f"No position in {ticker}"}), 400
-
-
-@app.route("/api/reset", methods=["POST"])
-def api_reset():
-    """Reset portfolio to initial ₹10,00,000 and clear all trade history."""
-    get_agent().portfolio.reset()
-    DataFetcher.clear_cache()
-    return jsonify({"ok": True, "message": "Portfolio reset to ₹10,00,000"})
-
-
-@app.route("/api/set_interval", methods=["POST"])
-def api_set_interval():
-    """Set the auto-run interval in seconds (minimum 60)."""
-    body = request.get_json(force=True)
-    secs = int(body.get("seconds", 900))
-    _state.auto_interval = max(60, secs)
-    return jsonify({"ok": True, "interval": _state.auto_interval})
-
-
-
-
-@app.route("/api/live_prices")
-def api_live_prices():
-    """Return live LTP and % change for all tracked instruments from Angel One feed."""
-    feed = get_feed()
-    prices  = feed.get_all_prices()
-    changes = feed.get_all_changes()
-
-    # Build a unified response
-    instruments = {}
-    all_tickers = list(prices.keys()) or []
-    for ticker in all_tickers:
-        instruments[ticker] = {
-            "ltp":     prices.get(ticker, 0),
-            "chg_pct": changes.get(ticker, 0),
-        }
-
-    return jsonify({
-        "ok":        True,
-        "connected": feed.is_connected(),
-        "count":     len(instruments),
-        "prices":    instruments,
-        "ts":        datetime.now(_IST).isoformat(),
-    })
-
-
-@app.route("/api/feed_status")
-def api_feed_status():
-    """Return Angel One live feed connection status."""
-    feed = get_feed()
-    return jsonify({
-        "ok":           True,
-        "connected":    feed.is_connected(),
-        "configured":   feed.is_configured(),
-        "price_count":  len(feed.get_all_prices()),
-    })
-
-
-def _build_ohlcv_response(df, period: str, ticker: str = "") -> dict:
-    """Shared helper: convert a yfinance DataFrame to an API response dict."""
-    intraday = period == "1d"
-    records = []
-    for ts, row in df.iterrows():
-        # For intraday use HH:MM label; for daily use YYYY-MM-DD
-        label = str(ts)[11:16] if intraday else str(ts)[:10]
-        records.append({
-            "date":   label,
-            "open":   round(float(row["Open"]),  2),
-            "high":   round(float(row["High"]),  2),
-            "low":    round(float(row["Low"]),   2),
-            "close":  round(float(row["Close"]), 2),
-            "volume": int(row["Volume"]) if "Volume" in df.columns else 0,
-        })
-    latest     = records[-1]["close"] if records else 0
-    first      = records[0]["close"]  if records else 0
-    change_pct = round((latest / first - 1) * 100, 2) if first else 0
-    return {"ok": True, "ticker": ticker, "data": records,
-            "change_pct": change_pct, "period": period, "intraday": intraday}
-
-
-@app.route("/api/nifty_chart")
-def api_nifty_chart():
-    """Return Nifty 50 OHLCV history for the requested period."""
-    period    = request.args.get("period", "1y")
-    intraday  = period == "1d"
-    valid_day = {"1w": "5d", "1m": "1mo", "3m": "3mo", "6m": "6mo", "1y": "1y", "5y": "5y"}
-    yf_period = "1d"    if intraday else valid_day.get(period, "1y")
-    yf_itvl   = "5m"   if intraday else "1d"
-    if intraday:
-        DataFetcher._cache.pop(f"^NSEI_{yf_period}_{yf_itvl}", None)
-    df = DataFetcher.fetch("^NSEI", period=yf_period, interval=yf_itvl)
-    if df.empty:
-        return jsonify({"ok": False, "error": "No data"}), 500
-    return jsonify(_build_ohlcv_response(df, period, "^NSEI"))
-
-
-@app.route("/api/chart/<path:ticker>")
-def api_chart(ticker: str):
-    """Return OHLCV history for any ticker with optional period.
-
-    period values: 1d (5-min intraday) | 1w | 1m | 3m | 6m | 1y | 5y
-    """
-    period    = request.args.get("period", "3m")
-    intraday  = period == "1d"
-    valid_day = {"1w": "5d", "1m": "1mo", "3m": "3mo", "6m": "6mo", "1y": "1y", "5y": "5y"}
-    yf_period = "1d"  if intraday else valid_day.get(period, "3mo")
-    yf_itvl   = "5m"  if intraday else "1d"
-
-    # Always bypass cache for intraday so we get the freshest bars
-    if intraday:
-        DataFetcher._cache.pop(f"{ticker}_{yf_period}_{yf_itvl}", None)
-
-    df = DataFetcher.fetch(ticker, period=yf_period, interval=yf_itvl)
-    if df.empty:
-        return jsonify({"ok": False, "error": f"No data for {ticker}"}), 500
-    return jsonify(_build_ohlcv_response(df, period, ticker))
-
-# ── Background loop ──────────────────────────────────────────────────────────
-
-
-
-@app.route("/api/market_status")
-def api_market_status():
-    """Return whether NSE is currently open plus time to open/close."""
-    now      = _ist_now()
-    is_open  = _market_open()
-    holiday  = _is_nse_holiday(now.date())
-    if is_open:
-        close_dt  = now.replace(hour=15, minute=30, second=0, microsecond=0)
-        secs_left = max(0, (close_dt - now).total_seconds())
-        label = f"Closes in {int(secs_left//3600):02d}:{int((secs_left%3600)//60):02d}"
-    elif holiday:
-        secs_left = _secs_until_next_open()
-        label = f"Holiday — opens in {int(secs_left//3600):02d}:{int((secs_left%3600)//60):02d}"
-    else:
-        secs_left = _secs_until_next_open()
-        label = f"Opens in {int(secs_left//3600):02d}:{int((secs_left%3600)//60):02d}"
-    return jsonify({
-        "ok":       True,
-        "is_open":  is_open,
-        "holiday":  holiday,
-        "time_ist": now.strftime("%H:%M IST"),
-        "label":    label,
-        "weekday":  now.strftime("%A"),
-    })
-
-
-@app.route("/api/report")
-def api_report():
-    """Return the latest closing report."""
-    from pathlib import Path  # pylint: disable=import-outside-toplevel
-    p = Path("data/closing_report.json")
-    if p.exists():
-        with open(p, encoding="utf-8") as fh:
-            import json as _j  # pylint: disable=import-outside-toplevel
-            return jsonify({"ok": True, "report": _j.load(fh)})
-    return jsonify({"ok": True, "report": None})
-
-# ── Telegram Intelligence endpoints ─────────────────────────────────────────
-
-@app.route("/api/telegram/status")
-def api_telegram_status():
-    """Return Telegram agent connection status and aggregate stats."""
-    from telegram_agent import get_telegram_agent  # pylint: disable=import-outside-toplevel
-    return jsonify({"ok": True, **get_telegram_agent().get_stats()})
-
-
-@app.route("/api/telegram/groups")
-def api_telegram_groups():
-    """Return all tracked groups sorted by score (best first)."""
-    from telegram_agent import get_telegram_agent  # pylint: disable=import-outside-toplevel
-    agent  = get_telegram_agent()
-    status = request.args.get("status")          # filter: active | probation | dropped
-    groups = agent.get_groups()
-    if status:
-        groups = [g for g in groups if g.get("status") == status]
-    return jsonify({"ok": True, "groups": groups, "total": len(groups)})
-
-
-@app.route("/api/telegram/messages")
-def api_telegram_messages():
-    """Return recent raw messages from all monitored groups."""
-    from telegram_agent import get_telegram_agent  # pylint: disable=import-outside-toplevel
-    agent    = get_telegram_agent()
-    limit    = int(request.args.get("limit", 50))
-    group_id = request.args.get("group_id")
-    messages = agent.get_messages(group_id=group_id, limit=limit)
-    return jsonify({"ok": True, "messages": messages, "total": len(messages)})
-
-
-@app.route("/api/telegram/signals")
-def api_telegram_signals():
-    """Return recent Telegram signals with parsed fields and outcomes."""
-    from telegram_agent import get_telegram_agent  # pylint: disable=import-outside-toplevel
-    limit   = int(request.args.get("limit", 50))
-    status  = request.args.get("status")         # filter: pending | hit_target | hit_sl | expired
-    signals = get_telegram_agent().get_signals(limit=max(limit, 200))
-    if status:
-        signals = [s for s in signals if s.get("status") == status]
-    return jsonify({"ok": True, "signals": signals[:limit], "total": len(signals)})
-
-
-@app.route("/api/telegram/reparse", methods=["POST"])
-def api_telegram_reparse():
-    """
-    Re-parse all stored signals from their raw_text using the current parser.
-    Call once after a parser upgrade to fix historical bad targets/entries.
-    """
-    from telegram_agent import get_telegram_agent, SignalParser  # pylint: disable=import-outside-toplevel
-    agent  = get_telegram_agent()
-    fixed  = 0
-    kept   = 0
-    parser = SignalParser()
-
-    for i, sig in enumerate(agent._signals):
-        raw = sig.get("raw_text", "")
-        if not raw:
-            kept += 1
-            continue
-        new_parsed = parser.parse(
-            raw,
-            sig.get("group_id", 0),
-            sig.get("group_title", ""),
-            sig.get("message_id", 0),
-        )
-        if new_parsed:
-            # Preserve identity fields and outcome — only update the parsed block
-            sig["parsed"] = new_parsed["parsed"]
-            fixed += 1
-        else:
-            kept += 1
-
-    agent._save_signals()
-    return jsonify({"ok": True, "reparsed": fixed, "kept": kept,
-                    "total": len(agent._signals)})
-
-
-@app.route("/api/telegram/add", methods=["POST"])
-def api_telegram_add():
-    """Manually add a Telegram group/channel by @username or invite link."""
-    from telegram_agent import get_telegram_agent  # pylint: disable=import-outside-toplevel
-    body       = request.get_json(force=True)
-    identifier = (body.get("identifier") or "").strip()
-    if not identifier:
-        return jsonify({"ok": False, "error": "identifier is required"}), 400
-    result = get_telegram_agent().add_group_manual(identifier)
-    return jsonify(result), (200 if result["ok"] else 400)
-
-
-@app.route("/api/telegram/discover", methods=["POST"])
-def api_telegram_discover():
-    """Trigger a manual discovery cycle (searches Telegram for new signal groups)."""
-    from telegram_agent import get_telegram_agent  # pylint: disable=import-outside-toplevel
-    result = get_telegram_agent().trigger_discovery()
-    return jsonify(result), (200 if result["ok"] else 400)
-
-
-# ── News & Commodity Intelligence endpoints ──────────────────────────────────
-
-@app.route("/api/news/headlines")
-def api_news_headlines():
-    """Return latest news headlines with sentiment and ticker mentions."""
-    try:
-        from news_agent import get_news_agent  # pylint: disable=import-outside-toplevel
-        n = int(request.args.get("n", 30))
-        headlines = get_news_agent().latest_headlines(n=n)
-        return jsonify({"ok": True, "headlines": headlines})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@app.route("/api/news/commodities")
-def api_news_commodities():
-    """Return current commodity prices and % moves."""
-    try:
-        from news_agent import get_news_agent  # pylint: disable=import-outside-toplevel
-        data = get_news_agent().get_commodity_data()
-        return jsonify({"ok": True, "commodities": data})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@app.route("/api/news/signals")
-def api_news_signals():
-    """Return all news + commodity signals."""
-    try:
-        from news_agent import get_news_agent  # pylint: disable=import-outside-toplevel
-        signals = get_news_agent().get_all_signals()
-        return jsonify({"ok": True, "signals": signals, "count": len(signals)})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-# ── Fundamental Analysis endpoints ───────────────────────────────────────────
-
-@app.route("/api/fundamentals/<path:ticker>")
-def api_fundamentals_ticker(ticker: str):
-    """Return fundamental score and metrics for a single ticker."""
-    try:
-        from fundamental_analyzer import get_analyzer  # pylint: disable=import-outside-toplevel
-        result = get_analyzer().get_score(ticker)
-        return jsonify({"ok": True, "ticker": ticker, **result})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@app.route("/api/fundamentals")
-def api_fundamentals_all():
-    """Return all cached fundamental scores."""
-    try:
-        from fundamental_analyzer import get_analyzer  # pylint: disable=import-outside-toplevel
-        scores = get_analyzer().get_all_scores()
-        return jsonify({"ok": True, "scores": scores, "count": len(scores)})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@app.route("/api/screener/<path:ticker>")
-def api_screener_ticker(ticker: str):
-    """Return screener.in data for a single ticker (live scrape, cached 24h)."""
-    try:
-        from fundamental_analyzer import get_screener  # pylint: disable=import-outside-toplevel
-        data = get_screener().scrape(ticker)
-        return jsonify({"ok": True, "ticker": ticker, "data": data})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@app.route("/api/screener")
-def api_screener_all():
-    """Return all cached screener.in data."""
-    try:
-        from fundamental_analyzer import get_screener  # pylint: disable=import-outside-toplevel
-        return jsonify({"ok": True, "data": get_screener().get_all_cached()})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@app.route("/api/logs")
-def api_logs():
-    """Return recent agent log lines.  ?since=HH:MM:SS returns only newer entries."""
-    since = request.args.get("since", "")
-    n     = int(request.args.get("n", 200))
-    with _log_lock:
-        entries = list(_agent_log)
-    if since:
-        entries = [e for e in entries if e["t"] > since]
-    return jsonify({"ok": True, "logs": entries[-n:], "total": len(entries)})
-
-
-@app.route("/api/learning")
-def api_learning():
-    """Return the current learning engine state: strategy weights, threshold, adjustment log."""
-    try:
-        from learning_engine import get_learning_engine  # pylint: disable=import-outside-toplevel
-        state = get_learning_engine().get_state_snapshot()
-        return jsonify({"ok": True, **state})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@app.route("/api/notifier/status")
-def api_notifier_status():
-    """Return notification channel configuration status."""
-    try:
-        from notifier import get_notifier  # pylint: disable=import-outside-toplevel
-        return jsonify({"ok": True, **get_notifier().get_status()})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@app.route("/api/notifier/test", methods=["POST"])
-def api_notifier_test():
-    """Send a test alert to all configured channels."""
-    try:
-        from notifier import get_notifier  # pylint: disable=import-outside-toplevel
-        results = get_notifier().send_test()
-        return jsonify({"ok": True, "results": results})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@app.route("/api/risk")
-def api_risk():
-    """Return current dynamic risk snapshot: macro score, drawdown, event calendar."""
-    try:
-        from risk_manager import get_risk_manager  # pylint: disable=import-outside-toplevel
-        from engine import get_engine              # pylint: disable=import-outside-toplevel
-        eng = get_engine()
-        port_val = eng.portfolio.get_total_value() if eng else 1_000_000
-        status = get_risk_manager().full_status(port_val)
-        return jsonify({"ok": True, **status})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@app.route("/api/learning/reset", methods=["POST"])
-def api_learning_reset():
-    """Reset all learning state to defaults (use with caution)."""
-    try:
-        from learning_engine import get_learning_engine  # pylint: disable=import-outside-toplevel
-        get_learning_engine().reset()
-        return jsonify({"ok": True, "message": "Learning state reset to defaults"})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@app.route("/api/universe")
-def api_universe():
-    """Return the current full NSE trading universe (or force-refresh it)."""
-    try:
-        from engine import load_nse_universe, PENNY_UNIVERSE  # pylint: disable=import-outside-toplevel
-        force = request.args.get("refresh", "").lower() in ("1", "true", "yes")
-        tickers = load_nse_universe(force_refresh=force)
-        return jsonify({"ok": True, "count": len(tickers), "tickers": tickers})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@app.route("/api/fundamentals/top")
-def api_fundamentals_top():
-    """Return top N stocks by fundamental quality from the full universe."""
-    try:
-        from fundamental_analyzer import get_analyzer  # pylint: disable=import-outside-toplevel
-        from engine import load_nse_universe, PENNY_UNIVERSE  # pylint: disable=import-outside-toplevel
-        n      = int(request.args.get("n", 15))
-        all_t  = load_nse_universe() + PENNY_UNIVERSE
-        result = get_analyzer().top_stocks(all_t, n=n)
-        return jsonify({"ok": True, "top": result})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-# ── Penny Stock endpoints ─────────────────────────────────────────────────────
-
-@app.route("/api/penny/universe")
-def api_penny_universe():
-    """Return the penny/small-cap universe with latest prices and fundamental scores."""
-    try:
-        from engine import PENNY_UNIVERSE, DataFetcher  # pylint: disable=import-outside-toplevel
-        from fundamental_analyzer import get_analyzer   # pylint: disable=import-outside-toplevel
-
-        analyzer = get_analyzer()
-        rows = []
-        for ticker in PENNY_UNIVERSE:
-            price = DataFetcher.get_current_price(ticker)
-            cached = analyzer._cache.get(ticker, {})
-            rows.append({
-                "ticker":     ticker,
-                "price":      round(price, 2),
-                "fund_score": cached.get("score"),
-                "fund_grade": cached.get("grade", "-"),
-                "metrics":    cached.get("metrics", {}),
+        if data:
+            self._commod_cache = data
+            self._commod_ts    = time.time()
+            self._save_commod()
+            logger.info(f"NewsAgent commodities refreshed: {list(data.keys())}")
+
+    def get_commodity_data(self) -> dict:
+        """Return {name: {price, pct_chg, …}} for all tracked commodities."""
+        self._refresh_commodities()
+        return dict(self._commod_cache)
+
+    # ------------------------------------------------------------ Signal generation
+
+    def get_news_signals(self) -> list[dict]:
+        """
+        Generate signals from news sentiment.
+        Each signal:  {ticker, action, strength, strategy, reason}
+        """
+        self._refresh_news()
+        signals = []
+        cutoff  = datetime.now() - timedelta(hours=6)
+
+        # Aggregate sentiment per ticker from recent news
+        ticker_sentiment: dict[str, list[float]] = {}
+        ticker_items:     dict[str, list[str]]   = {}
+
+        for item in self._news_cache:
+            # Only consider recent news
+            try:
+                pub_dt = datetime.fromisoformat(item["published"][:19])
+            except Exception:
+                continue
+            if pub_dt < cutoff:
+                continue
+
+            text     = item["title"] + " " + item.get("description", "")
+            tickers  = _extract_tickers(text)
+            sentiment = _sentiment_score(text)
+
+            for t in tickers:
+                ticker_sentiment.setdefault(t, []).append(sentiment)
+                ticker_items.setdefault(t, []).append(item["title"][:80])
+
+        for ticker, scores in ticker_sentiment.items():
+            avg_sentiment = float(np.mean(scores))
+            mention_count = len(scores)
+            # Only signal if mentioned ≥2 times or sentiment is strong
+            if mention_count < 2 and abs(avg_sentiment) < 0.5:
+                continue
+
+            strength = _clamp(abs(avg_sentiment) * 0.7 + min(mention_count, 5) * 0.05)
+            action   = "BUY" if avg_sentiment > 0 else "SELL"
+            reason   = "; ".join(ticker_items[ticker][:2])
+
+            signals.append({
+                "ticker":   ticker,
+                "action":   action,
+                "strength": round(strength, 3),
+                "strategy": "News Sentiment",
+                "reason":   f"[{mention_count} articles] {reason}",
+                "time":     datetime.now().isoformat(),
+                "is_penny": False,
             })
-        # Sort by fundamental score desc, with unscored at bottom
-        rows.sort(key=lambda r: r["fund_score"] or -1, reverse=True)
-        return jsonify({"ok": True, "universe": rows, "count": len(rows)})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
+
+        logger.info(f"NewsAgent: {len(signals)} news-based signals")
+        return signals
+
+    def get_commodity_signals(self) -> list[dict]:
+        """
+        Generate BUY/SELL signals from commodity price moves.
+        """
+        self._refresh_commodities()
+        signals = []
+
+        for commod_name, mapping in COMMODITY_SECTOR_MAP.items():
+            data = self._commod_cache.get(commod_name)
+            if not data:
+                continue
+
+            pct_chg    = data.get("pct_chg", 0)
+            threshold  = mapping["threshold_pct"]
+            base_str   = mapping["strength"]
+            description = mapping["description"]
+
+            # Scale strength by how much the commodity moved
+            scale    = min(abs(pct_chg) / threshold, 2.5)
+            strength = round(_clamp(base_str * scale), 3)
+
+            if abs(pct_chg) < threshold * 0.5:
+                continue  # move too small
+
+            move_dir = "up" if pct_chg > 0 else "down"
+            reason   = (
+                f"{commod_name.replace('_', ' ').title()} {move_dir} "
+                f"{abs(pct_chg):.1f}% — {description}"
+            )
+
+            # Primary beneficiary tickers
+            for ticker in mapping.get("tickers", []):
+                if ticker == mapping.get("etf"):
+                    continue  # ETFs handled separately
+                action = "BUY" if pct_chg > 0 else "SELL"
+                signals.append({
+                    "ticker":   ticker,
+                    "action":   action,
+                    "strength": strength,
+                    "strategy": "Commodity",
+                    "reason":   reason,
+                    "time":     datetime.now().isoformat(),
+                    "is_penny": False,
+                })
+
+            # Adverse effect tickers (e.g. OMCs when crude spikes)
+            for ticker in mapping.get("adverse", []):
+                action = "SELL" if pct_chg > 0 else "BUY"
+                signals.append({
+                    "ticker":   ticker,
+                    "action":   action,
+                    "strength": round(strength * 0.8, 3),
+                    "strategy": "Commodity",
+                    "reason":   f"[Adverse] {reason}",
+                    "time":     datetime.now().isoformat(),
+                    "is_penny": False,
+                })
+
+            # ETF signal if applicable
+            if mapping.get("etf"):
+                action = "BUY" if pct_chg > 0 else "SELL"
+                signals.append({
+                    "ticker":   mapping["etf"],
+                    "action":   action,
+                    "strength": strength,
+                    "strategy": "Commodity",
+                    "reason":   reason,
+                    "time":     datetime.now().isoformat(),
+                    "is_penny": False,
+                })
+
+        logger.info(f"NewsAgent: {len(signals)} commodity-based signals")
+        return signals
+
+    def get_all_signals(self) -> list[dict]:
+        """Combined list of news + commodity signals."""
+        news  = self.get_news_signals()
+        commd = self.get_commodity_signals()
+        return news + commd
+
+    # ------------------------------------------------------------ Public API helpers
+
+    def latest_headlines(self, n: int = 20) -> list[dict]:
+        """Return latest N news items with sentiment pre-computed."""
+        self._refresh_news()
+        result = []
+        for item in self._news_cache[:n]:
+            text = item["title"] + " " + item.get("description", "")
+            result.append({
+                "title":     item["title"],
+                "link":      item.get("link", ""),
+                "published": item.get("published", ""),
+                "sentiment": round(_sentiment_score(text), 3),
+                "tickers":   _extract_tickers(text),
+            })
+        return result
 
 
-@app.route("/api/penny/positions")
-def api_penny_positions():
-    """Return open positions that are in the penny universe."""
-    try:
-        from engine import PENNY_UNIVERSE  # pylint: disable=import-outside-toplevel
-        penny_set  = set(PENNY_UNIVERSE)
-        positions  = get_agent().portfolio.get_positions_display()
-        penny_pos  = [p for p in positions if p["ticker"] in penny_set]
-        return jsonify({"ok": True, "positions": penny_pos, "count": len(penny_pos)})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
+# ---------------------------------------------------------------------------
+# Pre-market Briefing  (sent to Telegram at 8:45 AM IST before market open)
+# ---------------------------------------------------------------------------
 
-
-def _run_cycle_safe() -> None:
-    """Run one agent cycle, guarded against concurrent calls."""
-    if _state.running:
-        return
-    _state.running = True
-    try:
-        summary = get_agent().run_cycle()
-        _state.last_cycle = summary
-    except (ValueError, RuntimeError) as exc:
-        print(f"[BG] Error in cycle: {exc}")
-    finally:
-        _state.running = False
-
-
-def _generate_closing_report() -> None:
-    """Persist an end-of-day summary to data/closing_report.json."""
-    import json as _json
-    from pathlib import Path
-    from engine import TRADE_LOG_FILE  # pylint: disable=import-outside-toplevel
-
-    agent  = get_agent()
-    today  = _ist_now().date().isoformat()
-    trades = []
-    if TRADE_LOG_FILE.exists():
-        with open(TRADE_LOG_FILE, encoding="utf-8") as fh:
-            trades = _json.load(fh)
-
-    today_trades = [t for t in trades if t.get("time", "").startswith(today)]
-    day_pnl      = sum(t.get("pnl") or 0 for t in today_trades if t["action"] == "SELL")
-    port_value   = agent.portfolio.get_total_value()
-    positions    = agent.portfolio.get_positions_display()
-
-    report = {
-        "date":           today,
-        "generated_at":   _ist_now().isoformat(),
-        "portfolio_value": round(port_value, 2),
-        "day_pnl":        round(day_pnl, 2),
-        "day_pnl_pct":    round(day_pnl / 1_000_000 * 100, 4),
-        "trades_today":   today_trades,
-        "trades_count":   len(today_trades),
-        "open_positions": len(positions),
-        "top_gainers":    sorted(positions, key=lambda p: p["pnl_pct"], reverse=True)[:3],
-        "top_losers":     sorted(positions, key=lambda p: p["pnl_pct"])[:3],
-        "last_cycle":     _state.last_cycle,
-    }
-    Path("data/closing_report.json").write_text(
-        _json.dumps(report, indent=2), encoding="utf-8"
-    )
-    print(f"[CLOSE] Closing report saved for {today}  day_pnl=₹{day_pnl:,.0f}")
-
-    # ── Full closing report notification ─────────────────────────────────────
-    try:
-        from notifier import get_notifier  # pylint: disable=import-outside-toplevel
-        today_sells  = [t for t in today_trades if t.get("action") == "SELL"]
-        wins         = [t for t in today_sells if (t.get("pnl") or 0) > 0]
-        win_rate_val = (len(wins) / len(today_sells)) if today_sells else None
-        get_notifier().send_closing_report(
-            date=today,
-            day_pnl=day_pnl,
-            portfolio_value=port_value,
-            initial_capital=INITIAL_CAPITAL,
-            today_trades=today_trades,
-            open_positions=positions,
-            win_rate=win_rate_val,
-        )
-    except Exception as _ne:
-        print(f"[CLOSE] Notifier closing report error: {_ne}")
-
-
-@app.route("/api/news/premarket", methods=["POST"])
-def api_news_premarket():
-    """Manually trigger the pre-market briefing (news + events + commodities)."""
-    try:
-        from news_agent import send_premarket_briefing  # pylint: disable=import-outside-toplevel
-        send_premarket_briefing()
-        return jsonify({"ok": True, "message": "Pre-market briefing triggered — check Telegram in ~15 seconds"})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@app.route("/api/digest/send", methods=["POST"])
-def api_digest_send():
-    """Manually trigger the morning digest (for testing or on-demand use)."""
-    try:
-        from notifier import send_morning_digest  # pylint: disable=import-outside-toplevel
-        send_morning_digest()
-        return jsonify({"ok": True, "message": "Morning digest triggered — check your Telegram group in ~30 seconds"})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-_bg_logger = logging.getLogger("app")
-
-def _background_loop() -> None:
-    """Market-aware scheduler: runs every 15 min during NSE hours (9:15–15:30 IST).
-
-    Opening bell  → immediate first cycle
-    Intra-day     → cycle every _state.auto_interval seconds
-    Closing bell  → final cycle + closing report at 15:15–15:30 IST
-    Holiday/weekend → sleep until next trading day open
+def send_premarket_briefing() -> None:
     """
-    _bg_logger.info("[Scheduler] Market-aware agent loop started")
-    opening_done_dates:  set = set()
-    _holiday_logged_dates: set = set()
-    _digest_done_dates:  set = set()   # track 9 AM digest
+    Runs in a daemon thread. Fetches fresh news + event calendar + commodities
+    and sends a structured pre-market briefing to TELEGRAM_NOTIFY_CHAT_ID.
 
-    while True:
-        now   = _ist_now()
-        today = now.date()
+    Covers:
+      • Upcoming high-risk events today / this week
+      • Top market headlines (last 12 hours) with sentiment
+      • Key commodity moves (crude, gold, SGX Nifty)
+      • FII/DII sentiment from headlines
+      • Agent recommendation: cautious / normal / aggressive
+    """
+    import threading as _t
+    _t.Thread(target=_do_premarket_briefing, daemon=True, name="premarket-briefing").start()
 
-        # ── 8:45 AM Pre-Market Briefing (news + events + commodities) ────────
-        if now.hour == 8 and now.minute >= 44 and now.minute < 50 and today not in _digest_done_dates:
-            _bg_logger.info("🌅 8:45 AM — sending pre-market briefing")
-            try:
-                from news_agent import send_premarket_briefing  # pylint: disable=import-outside-toplevel
-                send_premarket_briefing()
-            except Exception as _pe:
-                _bg_logger.warning(f"Pre-market briefing error: {_pe}")
 
-        # ── 9 AM Morning Digest — graded signals (runs regardless of market open/close) ──
-        if now.hour == 9 and now.minute < 5 and today not in _digest_done_dates:
-            _bg_logger.info("☀️ 9 AM — sending morning digest")
-            try:
-                from notifier import send_morning_digest  # pylint: disable=import-outside-toplevel
-                send_morning_digest()
-            except Exception as _de:
-                _bg_logger.warning(f"Morning digest error: {_de}")
-            _digest_done_dates.add(today)
+def _do_premarket_briefing() -> None:
+    import os as _os, requests as _req
+    logger.info("[PreMarket] Building pre-market briefing…")
 
-        if _market_open():
-            # ── Opening bell: run immediately on first entry ──────────────
-            if today not in opening_done_dates:
-                _bg_logger.info(f"🔔 Opening bell — {now.strftime('%H:%M IST')}")
-                _run_cycle_safe()
-                opening_done_dates.add(today)
+    bot_token = _os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id   = _os.environ.get("TELEGRAM_NOTIFY_CHAT_ID", "").strip()
+    if not bot_token or not chat_id:
+        logger.warning("[PreMarket] Bot credentials not set — skipping briefing")
+        return
 
-            # ── Closing bell: generate report when ≥15:15 ─────────────────
-            if now.time() >= dt_time(15, 15) and today not in _state.closing_report_dates:
-                _run_cycle_safe()
-                _generate_closing_report()
-                _state.closing_report_dates.add(today)
+    try:
+        agent = get_news_agent()
+        # Force-refresh news right now
+        agent._news_ts = 0
+        agent._refresh_news()
+        news  = agent.get_news_items()
+        comms = agent.get_commodity_data()
 
-            time.sleep(_state.auto_interval)
+        from datetime import date as _date
+        today_str = _date.today().strftime("%d %b %Y, %a")
 
+        # ── Section 1: Event calendar ──────────────────────────────────────
+        try:
+            from risk_manager import get_risk_manager
+            rm = get_risk_manager()
+            events_today = rm.upcoming_events(days=2)
+            macro_score, macro_label, _ = rm.macro_risk(force_refresh=True)
+        except Exception:
+            events_today, macro_score, macro_label = [], 0, "LOW"
+
+        event_lines = ""
+        if events_today:
+            event_lines = "\n".join(
+                f"  ⚠️ <b>{e['label']}</b> — {e['days_away'] == 0 and 'TODAY' or 'tomorrow'}"
+                for e in events_today
+            )
         else:
-            secs = _secs_until_next_open()
-            if _is_nse_holiday(today):
-                if today not in _holiday_logged_dates:
-                    _bg_logger.info(
-                        f"🏖️ NSE Holiday today ({today}) — next trading session opens "
-                        f"in {secs/3600:.1f}h"
-                    )
-                    _holiday_logged_dates.add(today)
-            else:
-                _bg_logger.info(
-                    f"[Scheduler] Market closed. Next open in {secs/3600:.1f}h"
-                )
-            # Sleep at most 5 min at a time so we catch the open promptly
-            time.sleep(min(300, secs))
+            event_lines = "  ✅ No major market events today"
+
+        risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴", "EXTREME": "🚨"}.get(macro_label, "🟢")
+
+        # ── Section 2: Top headlines (last 24 hours) ───────────────────────
+        from datetime import datetime as _dt
+        cutoff = _dt.now().timestamp() - 24 * 3600
+        recent_news = []
+        for item in news[:60]:
+            try:
+                pub = _dt.fromisoformat(item.get("published", "")[:19]).timestamp()
+            except Exception:
+                pub = cutoff + 1
+            if pub >= cutoff:
+                recent_news.append(item)
+
+        # Sort by absolute sentiment (most impactful first)
+        recent_news.sort(key=lambda x: abs(x.get("sentiment", 0)), reverse=True)
+
+        bullish_headlines = [n for n in recent_news if n.get("sentiment", 0) > 0.1][:4]
+        bearish_headlines = [n for n in recent_news if n.get("sentiment", 0) < -0.1][:4]
+        neutral_headlines = [n for n in recent_news if abs(n.get("sentiment", 0)) <= 0.1][:2]
+
+        def _fmt_headline(n: dict) -> str:
+            title = n.get("title", "")[:90]
+            src   = n.get("source") or n.get("publisher") or ""
+            link  = n.get("link", "")
+            if link:
+                return f'  • <a href="{link}">{title}</a>'
+            return f"  • {title}"
+
+        bull_section = "\n".join(_fmt_headline(n) for n in bullish_headlines) or "  • No clearly bullish headlines"
+        bear_section = "\n".join(_fmt_headline(n) for n in bearish_headlines) or "  • No clearly bearish headlines"
+
+        # FII sentiment detection from headlines
+        fii_text = " ".join(n.get("title","") for n in recent_news).lower()
+        if "fii buying" in fii_text or "foreign inflow" in fii_text or "fii net buy" in fii_text:
+            fii_line = "📥 FII: Buying (bullish signal)"
+        elif "fii selling" in fii_text or "foreign outflow" in fii_text or "fii net sell" in fii_text:
+            fii_line = "📤 FII: Selling (bearish signal)"
+        else:
+            fii_line = "📊 FII: No strong signal in headlines"
+
+        # ── Section 3: Commodities ─────────────────────────────────────────
+        comm_lines = []
+        priority = ["Crude Oil WTI", "Gold", "Silver", "SGX Nifty", "Copper"]
+        for name in priority:
+            c = comms.get(name)
+            if not c:
+                continue
+            pct = c.get("pct_chg", 0)
+            arrow = "▲" if pct > 0 else "▼" if pct < 0 else "—"
+            color_note = " ⚠️" if abs(pct) > 1.5 else ""
+            comm_lines.append(f"  {arrow} {name}: {pct:+.2f}%{color_note}")
+
+        comm_section = "\n".join(comm_lines) or "  • Commodity data unavailable"
+
+        # ── Section 4: Agent recommendation ────────────────────────────────
+        if macro_label == "EXTREME":
+            rec = "🚨 <b>EXTREME CAUTION</b> — high-risk event. Agent will limit new trades."
+        elif macro_label == "HIGH":
+            rec = "🔴 <b>CAUTIOUS DAY</b> — risk elevated. Position sizes reduced."
+        elif len(bearish_headlines) > len(bullish_headlines) + 1:
+            rec = "🟡 <b>DEFENSIVE</b> — more bearish than bullish headlines. Watch carefully."
+        elif len(bullish_headlines) > len(bearish_headlines) + 1:
+            rec = "🟢 <b>CONSTRUCTIVE</b> — sentiment leaning positive. Normal position sizing."
+        else:
+            rec = "⚪ <b>NEUTRAL</b> — mixed signals. Standard risk management applies."
+
+        # ── Assemble message ───────────────────────────────────────────────
+        msg = (
+            f"🌅 <b>Pre-Market Briefing — {today_str}</b>\n"
+            f"Market opens in ~30 minutes\n"
+            f"─────────────────────────\n\n"
+            f"📅 <b>Events &amp; Risk</b>  {risk_emoji} {macro_label} ({macro_score*100:.0f}/100)\n"
+            f"{event_lines}\n\n"
+            f"📰 <b>Bullish Headlines</b>\n{bull_section}\n\n"
+            f"📰 <b>Bearish Headlines</b>\n{bear_section}\n\n"
+            f"🛢 <b>Commodities</b>\n{comm_section}\n\n"
+            f"{fii_line}\n\n"
+            f"🤖 <b>Agent Today:</b> {rec}"
+        )
+
+        _req.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json={"chat_id": chat_id, "text": msg,
+                  "parse_mode": "HTML", "disable_web_page_preview": True},
+            timeout=15,
+        )
+        logger.info("[PreMarket] Briefing sent successfully")
+
+    except Exception as exc:
+        logger.error(f"[PreMarket] Briefing failed: {exc}", exc_info=True)
 
 
-# ── Entry point ──────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Singleton
+# ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    # ── Start Angel One live feed (if credentials are present in .env) ────────
-    feed = get_feed()
-    if feed.is_configured():
-        feed.start()
-        print("  📡  Angel One SmartAPI feed starting…")
-    else:
-        print("  ⚠️   Angel One credentials not found in .env — using yfinance (delayed)")
-        print("       Copy .env.example → .env and fill in your credentials for live data.")
+_news_agent_instance: NewsAgent | None = None
 
-    # ── Start Telegram intelligence agent ────────────────────────────────────
-    from telegram_agent import get_telegram_agent  # pylint: disable=import-outside-toplevel
-    tg = get_telegram_agent()
-    tg.start()
-    if tg.is_configured():
-        print("  💬  Telegram agent starting (discovering signal groups…)")
-    else:
-        print("  ⚠️   Telegram credentials not set — add TELEGRAM_API_ID / HASH / PHONE to .env")
 
-    # ── Start NSE market-aware background agent loop ─────────────────────────
-    threading.Thread(target=_background_loop, daemon=True, name="nse-scheduler").start()
+def get_news_agent() -> NewsAgent:
+    global _news_agent_instance
+    if _news_agent_instance is None:
+        _news_agent_instance = NewsAgent()
+    return _news_agent_instance
 
-    print("\n" + "=" * 60)
-    print("  🇮🇳  Indian Institutional Trading Agent  —  Paper Mode")
-    print("=" * 60)
-    print("  Dashboard → http://localhost:5001")
-    print(f"  Capital   → ₹{INITIAL_CAPITAL:,.0f}")
-    print("  Strategies: Momentum | Mean Rev | Multi-Factor | Sector Rot | SMA | Fibonacci")
-    print("              RSI Divergence | Bollinger Squeeze | Volume Breakout | Telegram")
-    print("              News Sentiment | Commodity | Fundamental Rescoring")
-    print("=" * 60 + "\n")
 
-    port = int(os.environ.get("PORT", 5001))
-    app.run(host="0.0.0.0", port=port, debug=False)
+# ---------------------------------------------------------------------------
+# Quick clamp helper (module-level, used in get_commodity_signals)
+# ---------------------------------------------------------------------------
+
+def _clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
+    return max(lo, min(hi, x))
