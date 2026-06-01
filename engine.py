@@ -1654,6 +1654,187 @@ class MarketStructureStrategy:
 # Strategy 5: Telegram Signal Intelligence
 # ---------------------------------------------------------------------------
 
+class SectorMomentumStrategy:
+    """
+    Ranks all NSE sectors on 1-day, 5-day and 20-day returns, then drills into
+    the top-performing sectors and generates BUY signals for the best stocks
+    within those sectors.
+
+    Logic:
+      1. Compute weighted sector score: 50% × 1d + 30% × 5d + 20% × 20d
+      2. Top 3 sectors are "hot" — generate BUY signals for stocks inside them
+      3. Bottom 2 sectors are "cold" — generate SELL signals for any held stocks
+      4. Signal strength reflects how much the sector outperforms Nifty
+    """
+    name       = "Sector Momentum"
+    short_name = "SECTOR_MOM"
+
+    # Sector → constituent tickers (broad NSE universe)
+    SECTOR_STOCKS: dict[str, list[str]] = {
+        "Banking":      ["HDFCBANK.NS","ICICIBANK.NS","SBIN.NS","AXISBANK.NS",
+                         "KOTAKBANK.NS","INDUSINDBK.NS","BANDHANBNK.NS","FEDERALBNK.NS",
+                         "IDFCFIRSTB.NS","YESBANK.NS"],
+        "IT":           ["TCS.NS","INFY.NS","WIPRO.NS","HCLTECH.NS","TECHM.NS",
+                         "LTIM.NS","MPHASIS.NS","PERSISTENT.NS","COFORGE.NS"],
+        "Pharma":       ["SUNPHARMA.NS","DRREDDY.NS","CIPLA.NS","DIVISLAB.NS",
+                         "APOLLOHOSP.NS","LUPIN.NS","BIOCON.NS","LAURUSLABS.NS"],
+        "Auto":         ["MARUTI.NS","TATAMOTORS.NS","M&M.NS","BAJAJ-AUTO.NS",
+                         "HEROMOTOCO.NS","EICHERMOT.NS","MOTHERSON.NS","BHARATFORG.NS"],
+        "FMCG":         ["ITC.NS","HINDUNILVR.NS","NESTLEIND.NS","BRITANNIA.NS",
+                         "DABUR.NS","GODREJCP.NS","MARICO.NS","COLPAL.NS"],
+        "Metal":        ["TATASTEEL.NS","JSWSTEEL.NS","HINDALCO.NS","VEDL.NS",
+                         "SAIL.NS","NATIONALUM.NS","HINDZINC.NS","NMDC.NS"],
+        "Energy":       ["RELIANCE.NS","ONGC.NS","BPCL.NS","IOC.NS",
+                         "GAIL.NS","NTPC.NS","POWERGRID.NS","TATAPOWER.NS"],
+        "CapGoods":     ["LT.NS","ABB.NS","SIEMENS.NS","BHEL.NS",
+                         "HAVELLS.NS","CUMMINSIND.NS","THERMAX.NS","BEL.NS"],
+        "Realty":       ["DLF.NS","GODREJPROP.NS","PRESTIGE.NS","OBEROIRLTY.NS",
+                         "PHOENIXLTD.NS","SOBHA.NS"],
+        "Consumer":     ["TITAN.NS","VOLTAS.NS","CROMPTON.NS","HAVELLS.NS",
+                         "WHIRLPOOL.NS","VGUARD.NS"],
+    }
+
+    def generate_signals(self, all_data: dict, index_df: pd.DataFrame) -> list:
+        signals = []
+
+        # ── Step 1: Score each sector ─────────────────────────────────────── #
+        sector_scores: list[dict] = []
+        nifty_ret = {}
+        for days, label in [(1, "1d"), (5, "5d"), (20, "20d")]:
+            if len(index_df) > days:
+                nifty_ret[label] = float(index_df["Close"].pct_change(days).iloc[-1])
+            else:
+                nifty_ret[label] = 0.0
+
+        for sector, tickers in self.SECTOR_STOCKS.items():
+            rets: dict[str, list[float]] = {"1d": [], "5d": [], "20d": []}
+            for tk in tickers:
+                df = all_data.get(tk)
+                if df is None or df.empty or len(df) < 22:
+                    continue
+                close = df["Close"].dropna()
+                for days, label in [(1, "1d"), (5, "5d"), (20, "20d")]:
+                    if len(close) > days:
+                        rets[label].append(float(close.pct_change(days).iloc[-1]))
+
+            if not rets["1d"]:
+                continue
+
+            avg = {k: float(np.mean(v)) for k, v in rets.items() if v}
+            # Relative to Nifty
+            rs_1d  = avg.get("1d",  0) - nifty_ret["1d"]
+            rs_5d  = avg.get("5d",  0) - nifty_ret["5d"]
+            rs_20d = avg.get("20d", 0) - nifty_ret["20d"]
+
+            # Weighted composite: recent momentum weighted most
+            composite = 0.50 * rs_1d + 0.30 * rs_5d + 0.20 * rs_20d
+
+            sector_scores.append({
+                "sector":    sector,
+                "tickers":   tickers,
+                "composite": composite,
+                "rs_1d":     round(rs_1d * 100, 2),
+                "rs_5d":     round(rs_5d * 100, 2),
+                "rs_20d":    round(rs_20d * 100, 2),
+                "avg_1d":    round(avg.get("1d", 0) * 100, 2),
+            })
+
+        if not sector_scores:
+            return signals
+
+        sector_scores.sort(key=lambda x: x["composite"], reverse=True)
+        n = len(sector_scores)
+        hot_sectors  = sector_scores[:3]    # top 3
+        cold_sectors = sector_scores[-2:]   # bottom 2
+
+        logger.info(
+            f"[SectorMom] Top: {[s['sector'] for s in hot_sectors]}  "
+            f"Weak: {[s['sector'] for s in cold_sectors]}"
+        )
+
+        # ── Step 2: BUY signals — best stocks in hot sectors ──────────────── #
+        for rank, sec in enumerate(hot_sectors):
+            sector_strength = min(100, max(50, int(70 + sec["composite"] * 500)))
+            stock_signals = []
+
+            for tk in sec["tickers"]:
+                df = all_data.get(tk)
+                if df is None or df.empty or len(df) < 22:
+                    continue
+                df = add_indicators(df)
+                if df.empty or "rsi" not in df.columns:
+                    continue
+
+                row   = df.iloc[-1]
+                close = float(row["Close"])
+                rsi   = float(row.get("rsi", 50))
+                ema20 = float(row.get("ema_20", close))
+                ema50 = float(row.get("ema_50", close))
+
+                # Must be in uptrend and not overbought
+                if close < ema20:
+                    continue
+                if rsi > 75:
+                    continue
+
+                # Stock-level score: reward momentum + room to run
+                stock_score = 0
+                if close > ema20: stock_score += 20
+                if close > ema50: stock_score += 20
+                if 40 < rsi < 65: stock_score += 30    # sweet spot
+                elif 30 < rsi <= 40: stock_score += 20  # oversold bounce
+                ret_1d = float(df["Close"].pct_change(1).iloc[-1])
+                if ret_1d > 0: stock_score += 15
+                ret_5d = float(df["Close"].pct_change(5).iloc[-1])
+                if ret_5d > 0.02: stock_score += 15
+
+                strength = min(100, int(sector_strength * 0.6 + stock_score * 0.4))
+                if strength < 55:
+                    continue
+
+                stock_signals.append({
+                    "ticker":   tk,
+                    "signal":   "BUY",
+                    "price":    round(close, 2),
+                    "score":    round(sec["composite"], 4),
+                    "rsi":      round(rsi, 1),
+                    "strategy": self.short_name,
+                    "strength": strength,
+                    "reason":   (
+                        f"{sec['sector']} sector +{sec['rs_1d']:.1f}% vs Nifty today "
+                        f"(rank #{rank+1}) | stock RSI {rsi:.0f}"
+                    ),
+                })
+
+            # Keep top 3 stocks per sector by strength
+            stock_signals.sort(key=lambda x: x["strength"], reverse=True)
+            signals += stock_signals[:3]
+
+        # ── Step 3: SELL signals — stocks held in cold sectors ────────────── #
+        cold_tickers = {tk for s in cold_sectors for tk in s["tickers"]}
+        for sec in cold_sectors:
+            for tk in sec["tickers"]:
+                df = all_data.get(tk)
+                if df is None or df.empty:
+                    continue
+                close = float(df["Close"].iloc[-1])
+                signals.append({
+                    "ticker":   tk,
+                    "signal":   "SELL",
+                    "price":    round(close, 2),
+                    "score":    round(sec["composite"], 4),
+                    "rsi":      50.0,
+                    "strategy": self.short_name,
+                    "strength": max(30, int(50 - abs(sec["composite"]) * 300)),
+                    "reason":   (
+                        f"{sec['sector']} sector underperforming Nifty "
+                        f"({sec['rs_1d']:+.1f}% today)"
+                    ),
+                })
+
+        return signals
+
+
 class TelegramSignalStrategy:
     """
     Converts high-scoring Telegram group signals into trading signals.
@@ -1740,6 +1921,7 @@ class SignalAggregator:
         self.mean_rev    = MeanReversionStrategy()
         self.multifactor = MultiFactorStrategy()
         self.sector_rot  = SectorRotationStrategy()
+        self.sector_mom  = SectorMomentumStrategy()
         self.sma         = SMAStrategy()
         self.fibonacci   = FibonacciStrategy()
         self.rsi_div     = RSIDivergenceStrategy()
@@ -1770,6 +1952,7 @@ class SignalAggregator:
         all_signals += self.mean_rev.generate_signals(all_data)
         all_signals += self.multifactor.generate_signals(all_data)
         all_signals += self.sector_rot.generate_signals(etf_data, index_df)
+        all_signals += self.sector_mom.generate_signals(all_data, index_df)
         all_signals += self.sma.generate_signals(all_data)
         all_signals += self.fibonacci.generate_signals(all_data)
         all_signals += self.rsi_div.generate_signals(all_data)
