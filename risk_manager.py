@@ -70,19 +70,20 @@ class EventCalendar:
       GST Council Meeting         → LOW      (1.2×)
     """
 
-    # ── MSCI Standard Index Review effective dates (quarterly) ────────────────
-    # Source: msci.com — first business day of Mar/Jun/Sep/Dec each year.
-    # Semi-annual reviews (May → Jun effective, Nov → Dec effective) are the BIG ones —
-    # they drive the largest institutional flows and widest risk windows.
+    # ── MSCI Standard Index Review rebalancing dates (quarterly) ─────────────
+    # MSCI rebalancing TRADES happen on the last Friday of Feb/May/Aug/Nov.
+    # (The "effective date" published by MSCI is the next Monday, but the
+    # actual institutional flows occur at Friday's close — that's the risk day.)
+    # Semi-annual reviews (May/Nov) are the BIG ones driving largest flows.
     MSCI_REBALANCE_DATES = [
-        # 2025
-        date(2025, 3, 3), date(2025, 6, 2), date(2025, 9, 1), date(2025, 12, 1),
+        # 2025 — last Friday of Feb/May/Aug/Nov
+        date(2025, 2, 28), date(2025, 5, 30), date(2025, 8, 29), date(2025, 11, 28),
         # 2026
-        date(2026, 3, 2), date(2026, 6, 1), date(2026, 9, 1), date(2026, 12, 1),
+        date(2026, 2, 27), date(2026, 5, 29), date(2026, 8, 28), date(2026, 11, 27),
         # 2027
-        date(2027, 3, 1), date(2027, 6, 1), date(2027, 9, 1), date(2027, 12, 1),
+        date(2027, 2, 26), date(2027, 5, 28), date(2027, 8, 27), date(2027, 11, 26),
         # 2028
-        date(2028, 3, 1), date(2028, 6, 1), date(2028, 9, 1), date(2028, 12, 1),
+        date(2028, 2, 25), date(2028, 5, 26), date(2028, 8, 25), date(2028, 11, 24),
     ]
 
     # ── FTSE Russell Index Rebalancing (quarterly, March/June/Sep/Dec) ────────
@@ -174,8 +175,8 @@ class EventCalendar:
     MSCI_SEMI_HIGH_DAYS     = 2
 
     def _is_msci_semi_annual(self, d: date) -> bool:
-        """May/June and Nov/Dec MSCI reviews are the large semi-annual ones."""
-        return d.month in (5, 6, 11, 12)
+        """May and Nov MSCI reviews are the large semi-annual ones (last Fri of those months)."""
+        return d.month in (5, 11)
 
     def is_market_holiday(self, d: date | None = None) -> bool:
         """Return True if d (default: today) is an NSE holiday."""
