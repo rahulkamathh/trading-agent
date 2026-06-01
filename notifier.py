@@ -492,7 +492,7 @@ class Notifier:
         if open_positions:
             pos_lines.append("")
             pos_lines.append("<b>📂 Open positions carried forward:</b>")
-            for p in open_positions[:8]:   # cap at 8 to keep message readable
+            for p in open_positions:   # show all positions, split into 2 msgs if too long
                 short   = (p.get("ticker") or "").replace(".NS", "").replace("^", "")
                 pnl_pct = p.get("pnl_pct", 0)
                 sl      = p.get("stop_loss")
@@ -501,8 +501,6 @@ class Notifier:
                 sl_str  = f"  SL ₹{sl:,.0f}" if sl else ""
                 tp_str  = f"  TP ₹{tp:,.0f}" if tp else ""
                 pos_lines.append(f"  {e} <b>{short}</b>  {pnl_pct:+.1f}%{sl_str}{tp_str}")
-            if len(open_positions) > 8:
-                pos_lines.append(f"  … +{len(open_positions) - 8} more")
 
         footer = ["", f"🕐 {_ist_now_str()}", "<i>Paper trade — not real money</i>"]
 
