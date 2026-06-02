@@ -2271,22 +2271,30 @@ class SignalAggregator:
         except Exception as e:
             logger.warning(f"Fundamental rescoring skipped: {e}")
 
-        # ── Enrich all BUY signals with entry / SL / target if missing ──────
-        enriched = []
+        # ── Enrich all signals with entry / SL / target ──────────────────────
+        # Use FLAT computation (no extra API calls) — ATR-based SL/TP is computed
+        # at execution time when we already have the data in memory.
+        # Flat approach: SL = entry × (1 - STOP_LOSS_PCT), TP = entry × (1 + rr × STOP_LOSS_PCT)
         for sig in all_signals:
-            if sig.get("signal") == "BUY" and not sig.get("entry_price"):
-                try:
-                    price    = sig.get("price") or DataFetcher.get_current_price(sig["ticker"])
-                    strength = sig.get("strength", 65)
-                    sl, tp, rr = _compute_sl_tp(sig["ticker"], price, strength)
-                    sig["entry_price"] = round(price, 2)
-                    sig["stop_loss"]   = sl
-                    sig["target"]      = tp
-                    sig["planned_rr"]  = rr
-                except Exception:
-                    pass
-            enriched.append(sig)
-        all_signals = enriched
+            if sig.get("signal") in ("BUY", "SELL") and not sig.get("entry_price"):
+                price = sig.get("price", 0)
+                if not price:
+                    continue
+                strength = sig.get("strength", 65)
+                if strength >= 90:   rr = 4.0
+                elif strength >= 80: rr = 3.0
+                elif strength >= 70: rr = 2.5
+                else:                rr = 2.0
+                if sig["signal"] == "BUY":
+                    sl = round(price * (1 - STOP_LOSS_PCT), 2)
+                    tp = round(price * (1 + STOP_LOSS_PCT * rr), 2)
+                else:
+                    sl = round(price * (1 + STOP_LOSS_PCT), 2)
+                    tp = round(price * (1 - STOP_LOSS_PCT * rr), 2)
+                sig["entry_price"] = round(price, 2)
+                sig["stop_loss"]   = sl
+                sig["target"]      = tp
+                sig["planned_rr"]  = rr
 
         # Save to file
         with open(SIGNALS_FILE, "w") as f:

@@ -315,18 +315,41 @@ def api_market_overview():
 
 @app.route("/api/run_cycle", methods=["POST"])
 def api_run_cycle():
-    """Trigger a full agent cycle (fetch → signal → execute → stop-check)."""
+    """
+    Trigger a full agent cycle in the background — returns immediately.
+    The cycle downloads data for 500+ stocks and takes 3-5 minutes.
+    Poll /api/dashboard to see when signals update.
+    """
+    if _state.running:
+        return jsonify({"ok": False, "error": "Agent cycle already running — check back in a few minutes"})
+    threading.Thread(target=_run_cycle_safe, daemon=True, name="manual-cycle").start()
+    return jsonify({"ok": True, "message": "Cycle started in background — signals will update in 3-5 minutes"})
+
+
+@app.route("/api/refresh_signals", methods=["POST"])
+def api_refresh_signals():
+    """
+    Fast signal refresh — skips trade execution, just regenerates signals.
+    Completes in ~60-90 seconds (much faster than full cycle).
+    Returns immediately; poll /api/dashboard for updated signals.
+    """
     if _state.running:
         return jsonify({"ok": False, "error": "Agent already running"})
-    _state.running = True
-    try:
-        summary = get_agent().run_cycle()
-        _state.last_cycle = summary
-        return jsonify({"ok": True, "summary": summary})
-    except (ValueError, RuntimeError) as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-    finally:
-        _state.running = False
+
+    def _fast_refresh():
+        _state.running = True
+        try:
+            from engine import SignalAggregator  # pylint: disable=import-outside-toplevel
+            agg     = SignalAggregator()
+            signals = agg.run()
+            logging.getLogger(__name__).info(f"[FastRefresh] {len(signals)} signals generated")
+        except Exception as exc:
+            logging.getLogger(__name__).error(f"[FastRefresh] Error: {exc}", exc_info=True)
+        finally:
+            _state.running = False
+
+    threading.Thread(target=_fast_refresh, daemon=True, name="fast-refresh").start()
+    return jsonify({"ok": True, "message": "Signal refresh started — takes ~60-90s, then refresh the page"})
 
 
 @app.route("/api/manual_buy", methods=["POST"])

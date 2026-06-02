@@ -2157,21 +2157,53 @@ function switchSigTab(tab) {
 async function refreshSignals() {
   const btn = document.getElementById('refreshSignalsBtn');
   btn.disabled = true;
-  btn.textContent = '⟳ Refreshing…';
+  btn.textContent = '⟳ Starting…';
+
   try {
-    const r = await fetch('/api/run_cycle', {method: 'POST'});
+    // Use the fast refresh endpoint (signals only, no trade execution)
+    const r = await fetch('/api/refresh_signals', {method: 'POST'});
     const d = await r.json();
-    if (d.ok) {
-      toast(`Signals refreshed — ${d.summary?.signals_count ?? '—'} signals generated`);
-      await loadDashboard();
-    } else {
-      toast('Refresh failed: ' + (d.error || 'unknown'), 'error');
+    if (!d.ok) {
+      toast(d.error || 'Could not start refresh', 'error');
+      btn.disabled = false; btn.textContent = '↻ Refresh Signals';
+      return;
     }
+    toast('Signal refresh started — updating in ~60s…');
+    btn.textContent = '⟳ Refreshing (~60s)…';
+
+    // Poll every 8 seconds until signals_updated timestamp changes
+    const oldTs = document.getElementById('signalsTs').textContent;
+    let polls = 0;
+    const poll = setInterval(async () => {
+      polls++;
+      try {
+        const pr = await fetch('/api/dashboard');
+        const pd = await pr.json();
+        if (pd.ok) {
+          const newTs = (pd.data?.signals_updated || '').slice(0,16);
+          const curTs = oldTs.replace('Updated: ','').slice(0,16);
+          if (newTs && newTs !== curTs) {
+            clearInterval(poll);
+            btn.disabled = false; btn.textContent = '↻ Refresh Signals';
+            renderSignals(pd.data.signals || [], pd.data.signals_updated);
+            toast(`✅ ${pd.data.signals?.length ?? 0} signals refreshed with entry/SL/target`);
+            return;
+          }
+        }
+      } catch(_) {}
+      // Give up after 3 minutes (22 polls × 8s)
+      if (polls > 22) {
+        clearInterval(poll);
+        btn.disabled = false; btn.textContent = '↻ Refresh Signals';
+        toast('Refresh timed out — try again or wait for next auto-cycle', 'error');
+      } else {
+        btn.textContent = `⟳ Refreshing… (${polls * 8}s)`;
+      }
+    }, 8000);
+
   } catch(e) {
     toast('Refresh error: ' + e.message, 'error');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '↻ Refresh Signals';
+    btn.disabled = false; btn.textContent = '↻ Refresh Signals';
   }
 }
 
