@@ -367,6 +367,54 @@ class LiveFeed:
             logger.debug(f"[LiveFeed] Historical fetch failed for {ticker}: {exc}")
             return None
 
+    def get_option_ltp(self, underlying: str, strike: float, expiry_date, option_type: str) -> Optional[float]:
+        """
+        Fetch live LTP for an NSE option contract via Angel One REST API.
+        Builds the NSE option symbol (e.g. INFY26JUN1400CE), searches for token,
+        then calls ltpData. Returns None if not connected or lookup fails.
+
+        option_type: "call" or "put"
+        expiry_date: datetime.date object
+        """
+        if not self._smart:
+            return None
+        try:
+            import calendar  # noqa: PLC0415
+            # Build NSE option symbol: e.g. INFY26JUN1400CE
+            sym    = underlying.replace(".NS", "").replace(".BO", "")
+            yy     = expiry_date.strftime("%y")           # "26"
+            mon    = expiry_date.strftime("%b").upper()   # "JUN"
+            strike_str = str(int(strike))                 # "1400"
+            suffix = "CE" if option_type.lower() == "call" else "PE"
+            nse_symbol = f"{sym}{yy}{mon}{strike_str}{suffix}"
+
+            # Search for the token
+            search_resp = self._smart.searchScrip("NFO", nse_symbol)
+            if not search_resp or not search_resp.get("data"):
+                return None
+
+            # Pick exact match
+            matches = search_resp["data"]
+            token = None
+            for m in matches:
+                if m.get("tradingsymbol", "").upper() == nse_symbol.upper():
+                    token = m["symboltoken"]
+                    break
+            if not token and matches:
+                token = matches[0]["symboltoken"]
+                nse_symbol = matches[0].get("tradingsymbol", nse_symbol)
+            if not token:
+                return None
+
+            ltp_resp = self._smart.ltpData("NFO", nse_symbol, token)
+            if ltp_resp and ltp_resp.get("data"):
+                ltp = ltp_resp["data"].get("ltp")
+                if ltp and float(ltp) > 0:
+                    return float(ltp)
+        except Exception as exc:
+            logger.debug(f"[LiveFeed] Option LTP lookup failed for {underlying} {strike} {option_type}: {exc}")
+        return None
+
     def _run(self) -> None:
         """Main feed loop with exponential-backoff reconnect."""
         backoff = 5

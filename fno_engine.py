@@ -559,6 +559,14 @@ class FNOPortfolio:
         Open an option position.
         position: LONG (buy) | SHORT (sell/write)
         """
+        # Hard gate: no new F&O positions in last 30 min of trading (after 3:00 PM IST)
+        # Positions opened near close get immediately closed by end-of-day cleanup at ₹0
+        now_time = _now_ist().time()
+        from datetime import time as _dtt  # noqa: PLC0415
+        if not (_dtt(9, 15) <= now_time <= _dtt(15, 0)):
+            logger.info(f"[FNO] BLOCKED open_option {underlying} — outside window (after 3PM or pre-market)")
+            return None
+
         spot = self._get_spot(underlying)
         if spot <= 0:
             logger.warning(f"[FNO] Cannot fetch spot for {underlying}")
@@ -742,9 +750,31 @@ class FNOPortfolio:
         spot = self._get_spot(pos["underlying"])
         T    = days_to_expiry(date.fromisoformat(pos["expiry"]))
         iv   = pos.get("iv", 0.25)
-        curr_premium = BlackScholes.price(
-            spot, pos["strike"], T, RISK_FREE_RATE, iv, pos["option_type"]
-        )
+
+        # Try Angel One live option LTP first (actual market price)
+        # Falls back to Black-Scholes if Angel One unavailable
+        curr_premium = None
+        try:
+            from angelone_feed import get_feed as _get_feed  # noqa: PLC0415
+            _feed = _get_feed()
+            if _feed.is_connected() and _feed._smart:
+                live_ltp = _feed.get_option_ltp(
+                    pos["underlying"], pos["strike"],
+                    date.fromisoformat(pos["expiry"]), pos["option_type"]
+                )
+                if live_ltp and live_ltp > 0:
+                    curr_premium = live_ltp
+                    logger.debug(f"[FNO] Using Angel One LTP ₹{live_ltp:.2f} for {pos['underlying']} {pos['strike']}{pos['option_type'][0].upper()}")
+        except Exception as _ltp_err:
+            logger.debug(f"[FNO] Angel One LTP failed, using BS: {_ltp_err}")
+
+        if curr_premium is None:
+            curr_premium = BlackScholes.price(spot, pos["strike"], T, RISK_FREE_RATE, iv, pos["option_type"])
+
+        # Safety: don't close at ₹0 — market is likely closed or data is bad
+        if curr_premium <= 0:
+            logger.warning(f"[FNO] SKIP close {position_id} — premium computed as ₹0 (market closed or bad data)")
+            return None
         lot   = get_lot_size(pos["underlying"])
         qty   = pos["qty"] * lot
         entry = pos["entry_premium"]
