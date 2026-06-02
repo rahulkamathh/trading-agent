@@ -415,6 +415,73 @@ class Notifier:
             self._sms.send_async(sms, strength=strength)
         logger.info(f"[Notifier] SELL alert fired → {ticker} @ ₹{price:.2f}  P&L ₹{pnl:+,.0f}")
 
+    def notify_fno_open(
+        self,
+        underlying: str,
+        option_type: str,   # call | put
+        strike: float,
+        expiry: str,
+        premium: float,
+        lot_size: int,
+        qty_lots: int,
+        strategy: str,
+        reason: str = "",
+        strength: float = 0,
+    ):
+        if not self._enabled:
+            return
+        if not _throttle_ok(f"fno_open_{underlying}_{option_type}"):
+            return
+        direction = "🟢 CALL (Bullish)" if option_type == "call" else "🔴 PUT (Bearish)"
+        total_cost = round(premium * lot_size * qty_lots)
+        sl_prem = round(premium * 0.60, 2)
+        tgt_prem = round(premium * 1.80, 2)
+        msg = (
+            f"<b>⚡ F&O Position Opened</b>\n\n"
+            f"<b>{underlying.replace('.NS','')}</b> {direction}\n"
+            f"Strike: ₹{strike:,.0f}  |  Expiry: {expiry}\n\n"
+            f"Entry Premium: <b>₹{premium:.2f}</b>\n"
+            f"Stop Loss: <b>₹{sl_prem:.2f}</b> (−40%)\n"
+            f"Target: <b>₹{tgt_prem:.2f}</b> (+80%)\n"
+            f"Lots: {qty_lots} × {lot_size} = {qty_lots*lot_size} shares\n"
+            f"Total Outlay: <b>₹{total_cost:,}</b>\n\n"
+            f"Strategy: {strategy}\n"
+            f"Reason: {reason[:120] if reason else '—'}\n\n"
+            f"🕐 {_ist_now_str()}\n<i>Paper trade — not real money</i>"
+        )
+        self._tg.send_async(msg)
+        logger.info(f"[Notifier] F&O OPEN alert → {underlying} {strike}{option_type[0].upper()} @ ₹{premium:.2f}")
+
+    def notify_fno_close(
+        self,
+        underlying: str,
+        option_type: str,
+        strike: float,
+        entry_premium: float,
+        exit_premium: float,
+        qty_lots: int,
+        lot_size: int,
+        pnl: float,
+        reason: str = "",
+    ):
+        if not self._enabled:
+            return
+        if not _throttle_ok(f"fno_close_{underlying}"):
+            return
+        pnl_pct = ((exit_premium - entry_premium) / entry_premium * 100) if entry_premium else 0
+        emoji = "✅" if pnl >= 0 else "❌"
+        msg = (
+            f"<b>{emoji} F&O Position Closed</b>\n\n"
+            f"<b>{underlying.replace('.NS','')}</b> {strike:,.0f}{option_type[0].upper()}\n\n"
+            f"Entry: ₹{entry_premium:.2f}  →  Exit: ₹{exit_premium:.2f}\n"
+            f"P&L: <b>{'+'if pnl>=0 else ''}₹{pnl:,.0f}</b> ({pnl_pct:+.1f}%)\n"
+            f"Lots closed: {qty_lots} × {lot_size}\n"
+            f"Reason: {reason[:120] if reason else '—'}\n\n"
+            f"🕐 {_ist_now_str()}\n<i>Paper trade — not real money</i>"
+        )
+        self._tg.send_async(msg)
+        logger.info(f"[Notifier] F&O CLOSE alert → {underlying} {strike}{option_type[0].upper()} P&L ₹{pnl:+,.0f}")
+
     def send_test(self) -> dict:
         """Send a test alert to all configured channels. Returns results dict."""
         test_msg_html = (

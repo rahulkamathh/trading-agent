@@ -31,6 +31,10 @@ import math
 import time
 from collections import defaultdict
 from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
+_IST = ZoneInfo("Asia/Kolkata")
+def _now_ist() -> datetime:
+    return datetime.now(_IST)
 from pathlib import Path
 from typing import Optional
 
@@ -404,8 +408,8 @@ class FNOPortfolio:
             "initial":       FNO_INITIAL_CAPITAL,
             "positions":     {},    # key: position_id → position dict
             "realised_pnl":  0.0,
-            "created_at":    datetime.now().isoformat(),
-            "last_updated":  datetime.now().isoformat(),
+            "created_at":    _now_ist().isoformat(),
+            "last_updated":  _now_ist().isoformat(),
         }
 
     def _load(self) -> dict:
@@ -422,7 +426,7 @@ class FNOPortfolio:
     def _save(self, state: dict = None):
         if state:
             self.state = state
-        self.state["last_updated"] = datetime.now().isoformat()
+        self.state["last_updated"] = _now_ist().isoformat()
         with open(FNO_PORTFOLIO_FILE, "w") as f:
             json.dump(self.state, f, indent=2)
 
@@ -435,7 +439,7 @@ class FNOPortfolio:
             except Exception:
                 pass
         trade["id"] = len(log) + 1
-        trade["time"] = datetime.now().isoformat()
+        trade["time"] = _now_ist().isoformat()
         log.append(trade)
         with open(FNO_TRADE_FILE, "w") as f:
             json.dump(log, f, indent=2)
@@ -571,7 +575,7 @@ class FNOPortfolio:
             "iv":             iv,
             "strategy":       strategy,
             "reason":         reason,
-            "entry_date":     datetime.now().isoformat(),
+            "entry_date":     _now_ist().isoformat(),
         }
         self.state["positions"][pid] = pos
 
@@ -604,6 +608,18 @@ class FNOPortfolio:
             f"[FNO] OPEN {position} {qty_lots}L {underlying} {strike}{option_type[0].upper()} "
             f"@ ₹{premium:.2f}  IV={iv:.1%}  T={T*365:.0f}d  [{strategy}]"
         )
+        # Telegram alert
+        if position == "LONG":
+            try:
+                from notifier import get_notifier  # noqa: PLC0415
+                get_notifier().notify_fno_open(
+                    underlying=underlying, option_type=option_type,
+                    strike=strike, expiry=expiry.isoformat(),
+                    premium=premium, lot_size=lot, qty_lots=qty_lots,
+                    strategy=strategy, reason=reason, strength=0,
+                )
+            except Exception:
+                pass
         return trade
 
     def execute_sell_signal_as_put(
@@ -739,6 +755,17 @@ class FNOPortfolio:
             f"{pos['strike']}{pos['option_type'][0].upper()} "
             f"P&L=₹{pnl:+.0f}  ({reason})"
         )
+        try:
+            from notifier import get_notifier  # noqa: PLC0415
+            get_notifier().notify_fno_close(
+                underlying=pos["underlying"], option_type=pos["option_type"],
+                strike=pos["strike"], entry_premium=pos["entry_premium"],
+                exit_premium=round(curr_premium, 2),
+                qty_lots=pos["qty"], lot_size=get_lot_size(pos["underlying"]),
+                pnl=round(pnl, 2), reason=reason,
+            )
+        except Exception:
+            pass
         return trade
 
     def open_future(self, underlying: str, expiry: date, position: str,
@@ -764,7 +791,7 @@ class FNOPortfolio:
             "margin_blocked": round(margin, 2),
             "strategy":       strategy,
             "reason":         reason,
-            "entry_date":     datetime.now().isoformat(),
+            "entry_date":     _now_ist().isoformat(),
         }
         self.state["positions"][pid] = pos
         self.state["cash"] -= margin
@@ -1428,7 +1455,7 @@ class HourlyFNOStrategy:
             "delta":          greeks["delta"],
             "theta":          greeks["theta"],
             "reason":         " | ".join(reason_parts),
-            "generated_at":   datetime.now().isoformat(),
+            "generated_at":   _now_ist().isoformat(),
         })
 
         return signals
@@ -1488,7 +1515,7 @@ class HourlyFNOStrategy:
             "delta":          greeks["delta"],
             "theta":          greeks["theta"],
             "reason":         f"1h trend aligned | VWAP {vwap_dev:+.2f}% | IV {iv_env['iv_regime']}",
-            "generated_at":   datetime.now().isoformat(),
+            "generated_at":   _now_ist().isoformat(),
         }]
 
 
@@ -1501,7 +1528,7 @@ def run_hourly_fno_signals() -> list:
         strategy = HourlyFNOStrategy()
         signals  = strategy.generate()
         with open(FNO_HOURLY_SIGNALS_FILE, "w") as f:
-            json.dump({"signals": signals, "generated_at": datetime.now().isoformat()}, f, indent=2)
+            json.dump({"signals": signals, "generated_at": _now_ist().isoformat()}, f, indent=2)
         logger.info(f"[HourlyFNO] Generated {len(signals)} signals")
         return signals
     except Exception as exc:
