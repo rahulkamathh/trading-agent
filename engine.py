@@ -2380,7 +2380,7 @@ class SignalAggregator:
                 "updated_at": _now_ist().isoformat(),
             }, f, indent=2)
         logger.info(f"Generated {len(all_signals)} signals")
-        return all_signals
+        return all_signals, all_data
 
 
 # ---------------------------------------------------------------------------
@@ -2405,8 +2405,8 @@ class TradingAgent:
         # 1. Check stop-loss / take-profit on open positions first
         stops = self.portfolio.check_stops()
 
-        # 2. Generate fresh signals
-        signals = self.aggregator.run()
+        # 2. Generate fresh signals (also returns the already-fetched price data)
+        signals, all_data = self.aggregator.run()
 
         # ── Aggregate signals per ticker ───────────────────────────────────
         # Multiple strategies may fire for the same ticker. We combine them:
@@ -2536,20 +2536,20 @@ class TradingAgent:
                 logger.debug(f"⏭  SKIP {ticker} — outside execution window")
                 continue
 
-            # Guard-rail 4: volume / liquidity filter
+            # Guard-rail 4: volume / liquidity filter (uses already-fetched batch data — no extra API calls)
             try:
-                df_vol = DataFetcher.fetch(ticker, period="30d", interval="1d")
+                df_vol = all_data.get(ticker)
                 if df_vol is not None and not df_vol.empty and len(df_vol) >= 5:
                     avg_vol   = float(df_vol["Volume"].iloc[-20:].mean()) if len(df_vol) >= 20 else float(df_vol["Volume"].mean())
                     today_vol = float(df_vol["Volume"].iloc[-1])
                     avg_val   = avg_vol * float(df_vol["Close"].iloc[-1])
-                    # Minimum: avg daily traded value > ₹1 crore AND today > 30% of avg
-                    if avg_val < 1_00_00_000:   # ₹1 crore
+                    if avg_val < 1_00_00_000:   # ₹1 crore minimum ADV
                         logger.info(f"⏭  SKIP {ticker} — illiquid (avg daily ₹{avg_val/1e7:.1f}Cr < ₹1Cr)")
                         continue
                     if today_vol < avg_vol * 0.30:
                         logger.info(f"⏭  SKIP {ticker} — low volume today ({today_vol/avg_vol:.0%} of avg)")
                         continue
+                # If ticker not in all_data, allow through — data may have been missing due to rate limit
             except Exception:
                 pass
 
