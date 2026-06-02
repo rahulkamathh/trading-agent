@@ -2539,10 +2539,9 @@ async function runCycle() {
     const r = await fetch('/api/run_cycle', { method:'POST' });
     const d = await r.json();
     if (d.ok) {
-      const s = d.summary;
-      toast(`✅ Cycle done! Signals: ${s.signals_count} | Buys: ${s.buys_executed} | Sells: ${s.sells_executed}`, 'success');
+      toast('✅ Agent cycle started — positions will update in ~60s', 'success');
     } else {
-      toast('Error: ' + d.error, 'error');
+      toast('Error: ' + (d.error || 'unknown'), 'error');
     }
   } catch(e) {
     toast('Network error: ' + e.message, 'error');
