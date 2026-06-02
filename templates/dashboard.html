@@ -593,14 +593,20 @@
   <div id="page-signals" class="page-section hidden">
     <div class="page-header">
       <span class="page-title">🎯 Live Signals</span>
-      <span class="page-sub" id="signalsTs"></span>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span class="page-sub" id="signalsTs"></span>
+        <span id="signalsStaleBadge" style="display:none;font-size:11px;background:#3d1a1a;color:var(--red);padding:2px 8px;border-radius:8px;border:1px solid var(--red)">⚠️ Stale — run agent to refresh</span>
+      </div>
     </div>
+    <!-- Strategy filter pills -->
+    <div id="sigStratFilters" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;"></div>
     <div class="card">
       <div class="table-wrap">
         <table>
           <thead><tr>
             <th>Ticker</th><th>Strategy</th><th>Signal</th><th>Strength</th>
-            <th>Price</th><th>RSI</th><th>Score</th><th>Fund Grade</th>
+            <th>Entry ₹</th><th>Stop Loss ₹</th><th>Target ₹</th><th>R:R</th>
+            <th>RSI</th><th>Grade</th>
           </tr></thead>
           <tbody id="sigBody"></tbody>
         </table>
@@ -1997,7 +2003,11 @@ function renderPositions(positions) {
 // ──────────────────────────────────────────────
 // Signals
 // ──────────────────────────────────────────────
+let _sigAllSignals = [];
+let _sigActiveFilter = 'ALL';
+
 function renderSignals(signals, ts) {
+  _sigAllSignals = signals;
   document.getElementById('kpiSignals').textContent = signals.length + ' active';
   const ds = document.getElementById('dash-signals');
   if (ds) {
@@ -2005,32 +2015,83 @@ function renderSignals(signals, ts) {
     const sells = signals.filter(s => s.signal === 'SELL').length;
     ds.textContent = `${signals.length} signals (${buys}B / ${sells}S)`;
   }
-  if (ts) document.getElementById('signalsTs').textContent = 'Last updated: ' + ts.replace('T',' ').slice(0,19) + ' IST';
+
+  // ── Staleness check ──
+  if (ts) {
+    const tsEl = document.getElementById('signalsTs');
+    const staleEl = document.getElementById('signalsStaleBadge');
+    const generated = new Date(ts);
+    const ageHours = (Date.now() - generated) / 36e5;
+    tsEl.textContent = 'Updated: ' + ts.replace('T',' ').slice(0,16) + ' IST';
+    if (staleEl) staleEl.style.display = ageHours > 18 ? 'inline' : 'none';
+  }
+
+  // ── Strategy filter pills ──
+  const strategies = ['ALL', ...new Set(signals.map(s => s.strategy).filter(Boolean))];
+  const filterEl = document.getElementById('sigStratFilters');
+  if (filterEl) {
+    filterEl.innerHTML = strategies.map(st => `
+      <button onclick="setSigFilter('${st}')" id="sigFilter_${st.replace(/\W/g,'_')}"
+        style="padding:3px 12px;font-size:11px;font-weight:600;border-radius:12px;cursor:pointer;border:1px solid var(--border);
+               background:${_sigActiveFilter===st?'var(--accent)':'transparent'};
+               color:${_sigActiveFilter===st?'#fff':'var(--muted)'}">
+        ${st === 'ALL' ? `All (${signals.length})` : `${st} (${signals.filter(s=>s.strategy===st).length})`}
+      </button>`).join('');
+  }
+
+  _renderSigTable();
+}
+
+function setSigFilter(st) {
+  _sigActiveFilter = st;
+  renderSignals(_sigAllSignals, null);
+}
+
+function _renderSigTable() {
+  const filtered = _sigActiveFilter === 'ALL'
+    ? _sigAllSignals
+    : _sigAllSignals.filter(s => s.strategy === _sigActiveFilter);
+
   const color = s => STRAT_COLORS[s] || '#8b949e';
-  document.getElementById('sigBody').innerHTML = signals.map(s => {
+  document.getElementById('sigBody').innerHTML = filtered.map(s => {
     const grade = s.fund_grade;
     const gradeColor = grade==='A'?'var(--green)':grade==='B'?'#58a6ff':grade==='C'?'var(--yellow)':grade==='D'||grade==='F'?'var(--red)':'var(--muted)';
     const gradePill = grade && grade!=='-'
       ? `<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;background:${gradeColor}22;color:${gradeColor}">${grade}</span>`
       : '<span style="color:var(--muted)">—</span>';
+
+    const entry = s.entry_price ?? s.price;
+    const sl    = s.stop_loss;
+    const tgt   = s.target;
+    const rr    = (s.planned_rr || (sl && tgt && entry ? ((tgt-entry)/(entry-sl)).toFixed(1) : null));
+
+    const fmtLevel = (v) => v ? `₹${Number(v).toLocaleString('en-IN',{maximumFractionDigits:2})}` : '<span style="color:var(--muted)">—</span>';
+
     return `<tr>
-      <td><strong>${(s.ticker||'').replace('.NS','')}</strong></td>
-      <td><span class="strat-dot" style="background:${color(s.strategy)}"></span>${s.strategy}</td>
+      <td>
+        <a href="https://www.tradingview.com/chart/?symbol=NSE:${(s.ticker||'').replace('.NS','')}"
+           target="_blank" style="color:var(--text);text-decoration:none;font-weight:700">
+          ${(s.ticker||'').replace('.NS','')} <span style="font-size:10px;color:var(--muted)">↗</span>
+        </a>
+      </td>
+      <td><span class="strat-dot" style="background:${color(s.strategy)}"></span><span style="font-size:12px">${s.strategy||'—'}</span></td>
       <td>${pillFor(s.signal)}</td>
       <td>
-        <div style="display:flex;align-items:center;gap:8px">
-          <div style="width:60px;height:5px;background:#21262d;border-radius:3px;overflow:hidden">
-            <div style="width:${s.strength||50}%;height:100%;background:${s.signal==='BUY'?'var(--green)':'var(--red)'};transition:width .4s"></div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <div style="width:56px;height:5px;background:#21262d;border-radius:3px;overflow:hidden">
+            <div style="width:${s.strength||50}%;height:100%;background:${s.signal==='BUY'?'var(--green)':'var(--red)'}"></div>
           </div>
           <span style="font-size:11px;color:var(--muted)">${s.strength||50}</span>
         </div>
       </td>
-      <td>${fmt(s.price)}</td>
-      <td class="${s.rsi<35?'pos':s.rsi>65?'neg':'neu'}">${(s.rsi||0).toFixed(1)}</td>
-      <td style="color:var(--muted)">${(s.score||0).toFixed(4)}</td>
+      <td style="font-weight:600">${fmtLevel(entry)}</td>
+      <td class="neg">${fmtLevel(sl)}</td>
+      <td class="pos">${fmtLevel(tgt)}</td>
+      <td style="color:var(--muted);font-size:12px">${rr ? '1:'+rr : '—'}</td>
+      <td class="${(s.rsi||50)<35?'pos':(s.rsi||50)>65?'neg':'neu'}">${(s.rsi||0).toFixed(1)}</td>
       <td>${gradePill}</td>
     </tr>`;
-  }).join('');
+  }).join('') || '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:30px">No signals for this strategy</td></tr>';
 }
 
 function pillFor(sig) {

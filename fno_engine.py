@@ -1064,6 +1064,319 @@ class HedgeStrategy:
 
 
 # ---------------------------------------------------------------------------
+# Hourly F&O Signal Generator
+# ---------------------------------------------------------------------------
+
+FNO_HOURLY_SIGNALS_FILE = DATA_DIR / "fno_hourly_signals.json"
+
+class HourlyFNOStrategy:
+    """
+    Generates intraday F&O signals every hour using 1h candle data.
+
+    Signals cover:
+      1. Index momentum   — Nifty / BankNifty EMA crossover + MACD on 1h chart
+      2. IV environment   — compare current HV to 30d avg; low IV → buy options,
+                            high IV → sell premium
+      3. PCR proxy        — put/call premium ratio from yfinance chain data
+      4. Strike targeting — which specific strike + expiry to trade
+      5. Intraday S/R     — VWAP deviation for entry timing
+
+    Each signal includes: direction, instrument, strike, expiry, premium estimate,
+    entry/SL/target, conviction score, and plain-English reason.
+    """
+
+    INDICES = {
+        "^NSEI":    "Nifty 50",
+        "^NSEBANK": "Bank Nifty",
+    }
+
+    def generate(self) -> list[dict]:
+        signals = []
+        for ticker, name in self.INDICES.items():
+            try:
+                sigs = self._analyse_index(ticker, name)
+                signals.extend(sigs)
+            except Exception as exc:
+                logger.warning(f"[HourlyFNO] Error on {name}: {exc}")
+        # Also scan top F&O stocks for directional opportunity
+        for stock in ["RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS",
+                      "TCS.NS", "SBIN.NS", "AXISBANK.NS", "BAJFINANCE.NS"]:
+            try:
+                sigs = self._analyse_stock(stock)
+                signals.extend(sigs)
+            except Exception:
+                pass
+        return signals
+
+    def _fetch_hourly(self, ticker: str, days: int = 10) -> pd.DataFrame:
+        df = yf.download(ticker, period=f"{days}d", interval="1h",
+                         auto_adjust=True, progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        return df
+
+    def _ema(self, series: pd.Series, n: int) -> pd.Series:
+        return series.ewm(span=n, adjust=False).mean()
+
+    def _macd(self, close: pd.Series):
+        fast = self._ema(close, 12)
+        slow = self._ema(close, 26)
+        macd = fast - slow
+        signal = self._ema(macd, 9)
+        return macd, signal
+
+    def _vwap(self, df: pd.DataFrame) -> float:
+        """Today's VWAP."""
+        from datetime import datetime as _dt
+        today = _dt.now().date()
+        today_df = df[df.index.date == today] if hasattr(df.index, 'date') else df.iloc[-8:]
+        if today_df.empty:
+            return float(df["Close"].iloc[-1])
+        tp = (today_df["High"] + today_df["Low"] + today_df["Close"]) / 3
+        return float((tp * today_df["Volume"]).sum() / today_df["Volume"].sum())
+
+    def _iv_environment(self, ticker: str) -> dict:
+        """
+        Compare current 10-day HV to 30-day HV.
+        Returns: {'iv_regime': 'LOW'|'NORMAL'|'HIGH', 'hv10': x, 'hv30': x}
+        """
+        hv10 = historical_vol(ticker, window=10)
+        hv30 = historical_vol(ticker, window=30)
+        ratio = hv10 / hv30 if hv30 > 0 else 1.0
+        if ratio < 0.80:
+            regime = "LOW"      # IV compressed → buy options (cheap)
+        elif ratio > 1.20:
+            regime = "HIGH"     # IV elevated  → sell premium
+        else:
+            regime = "NORMAL"
+        return {"iv_regime": regime, "hv10": round(hv10, 4), "hv30": round(hv30, 4), "ratio": round(ratio, 2)}
+
+    def _pcr_proxy(self, ticker: str, spot: float) -> dict:
+        """
+        Estimate PCR using yfinance option chain.
+        Returns put_vol / call_vol ratio and sentiment.
+        """
+        try:
+            import yfinance as _yf
+            tk  = _yf.Ticker(ticker)
+            exp = tk.options
+            if not exp:
+                return {"pcr": 1.0, "sentiment": "NEUTRAL"}
+            chain = tk.option_chain(exp[0])
+            call_oi = float(chain.calls["openInterest"].sum())
+            put_oi  = float(chain.puts["openInterest"].sum())
+            pcr = put_oi / call_oi if call_oi > 0 else 1.0
+            if pcr > 1.3:
+                sentiment = "BEARISH"   # heavy put buying
+            elif pcr < 0.7:
+                sentiment = "BULLISH"   # heavy call buying
+            else:
+                sentiment = "NEUTRAL"
+            return {"pcr": round(pcr, 2), "sentiment": sentiment}
+        except Exception:
+            return {"pcr": 1.0, "sentiment": "NEUTRAL"}
+
+    def _analyse_index(self, ticker: str, name: str) -> list[dict]:
+        df = self._fetch_hourly(ticker, days=15)
+        if df.empty or len(df) < 30:
+            return []
+
+        close  = df["Close"]
+        spot   = float(close.iloc[-1])
+        ema9   = float(self._ema(close, 9).iloc[-1])
+        ema21  = float(self._ema(close, 21).iloc[-1])
+        ema9_1 = float(self._ema(close, 9).iloc[-2])
+        ema21_1= float(self._ema(close, 21).iloc[-2])
+        macd, macd_sig = self._macd(close)
+        macd_v  = float(macd.iloc[-1])
+        macd_s  = float(macd_sig.iloc[-1])
+        macd_v1 = float(macd.iloc[-2])
+        macd_s1 = float(macd_sig.iloc[-2])
+
+        # VWAP position
+        vwap = self._vwap(df)
+        above_vwap = spot > vwap
+        vwap_dev   = (spot - vwap) / vwap * 100
+
+        # IV environment
+        iv_env = self._iv_environment(ticker)
+
+        # PCR
+        pcr    = self._pcr_proxy(ticker, spot)
+
+        signals = []
+
+        # ── Signal 1: EMA crossover (golden/death cross on 1h) ──────────── #
+        golden_cross = ema9_1 < ema21_1 and ema9 > ema21
+        death_cross  = ema9_1 > ema21_1 and ema9 < ema21
+
+        # ── Signal 2: MACD crossover on 1h ──────────────────────────────── #
+        macd_bull = macd_v1 < macd_s1 and macd_v > macd_s
+        macd_bear = macd_v1 > macd_s1 and macd_v < macd_s
+
+        # ── Determine direction ──────────────────────────────────────────── #
+        bullish_count = sum([golden_cross, macd_bull, above_vwap, pcr["sentiment"] == "BULLISH"])
+        bearish_count = sum([death_cross,  macd_bear, not above_vwap, pcr["sentiment"] == "BEARISH"])
+
+        if bullish_count >= 2:
+            direction   = "BUY"
+            option_type = "call"
+            conviction  = min(95, 55 + bullish_count * 10)
+        elif bearish_count >= 2:
+            direction   = "SELL"
+            option_type = "put"
+            conviction  = min(95, 55 + bearish_count * 10)
+        else:
+            return []   # no clear signal
+
+        # ── Strike & expiry selection ───────────────────────────────────── #
+        expiry  = get_expiry(ticker, monthly=False)
+        T       = days_to_expiry(expiry)
+        iv      = iv_env["hv30"]
+
+        # IV regime → moneyness preference
+        # Low IV → buy OTM (cheap, more leverage)
+        # High IV → buy ATM or ITM (less vega exposure)
+        if iv_env["iv_regime"] == "LOW":
+            moneyness = "OTM1"
+            trade_note = "Low IV — buying OTM for leverage"
+        elif iv_env["iv_regime"] == "HIGH":
+            moneyness = "ATM"
+            trade_note = "High IV — staying ATM to limit vega exposure"
+        else:
+            moneyness = "ATM"
+            trade_note = "Normal IV environment"
+
+        strike  = select_strike(spot, option_type, moneyness=moneyness)
+        premium = BlackScholes.price(spot, strike, T, RISK_FREE_RATE, iv, option_type)
+        greeks  = BlackScholes.greeks(spot, strike, T, RISK_FREE_RATE, iv, option_type)
+        lot     = get_lot_size(ticker)
+
+        # Risk/reward: SL at 40% of premium, target at 80%
+        sl_prem     = round(premium * 0.60, 2)   # exit if falls to 60% of entry
+        target_prem = round(premium * 1.80, 2)   # exit at 180% (80% gain)
+
+        reason_parts = []
+        if golden_cross: reason_parts.append("1h EMA golden cross")
+        if death_cross:  reason_parts.append("1h EMA death cross")
+        if macd_bull:    reason_parts.append("MACD bullish crossover (1h)")
+        if macd_bear:    reason_parts.append("MACD bearish crossover (1h)")
+        reason_parts.append(f"VWAP {vwap_dev:+.2f}%")
+        reason_parts.append(f"PCR {pcr['pcr']:.2f} ({pcr['sentiment']})")
+        reason_parts.append(trade_note)
+
+        signals.append({
+            "type":           "HOURLY_FNO",
+            "underlying":     ticker,
+            "name":           name,
+            "direction":      direction,
+            "option_type":    option_type,
+            "strike":         strike,
+            "expiry":         expiry.isoformat(),
+            "days_to_expiry": int(T * 365),
+            "moneyness":      moneyness,
+            "entry_premium":  round(premium, 2),
+            "sl_premium":     sl_prem,
+            "target_premium": target_prem,
+            "lot_size":       lot,
+            "cost_1lot":      round(premium * lot, 0),
+            "rr_ratio":       round((target_prem - premium) / (premium - sl_prem), 2) if premium > sl_prem else 0,
+            "iv_regime":      iv_env["iv_regime"],
+            "hv10":           iv_env["hv10"],
+            "hv30":           iv_env["hv30"],
+            "pcr":            pcr["pcr"],
+            "pcr_sentiment":  pcr["sentiment"],
+            "spot":           round(spot, 2),
+            "vwap":           round(vwap, 2),
+            "vwap_dev_pct":   round(vwap_dev, 2),
+            "ema9":           round(ema9, 2),
+            "ema21":          round(ema21, 2),
+            "conviction":     conviction,
+            "delta":          greeks["delta"],
+            "theta":          greeks["theta"],
+            "reason":         " | ".join(reason_parts),
+            "generated_at":   datetime.now().isoformat(),
+        })
+
+        return signals
+
+    def _analyse_stock(self, ticker: str) -> list[dict]:
+        """Lighter analysis for individual F&O stocks — EMA + VWAP only."""
+        df = self._fetch_hourly(ticker, days=5)
+        if df.empty or len(df) < 10:
+            return []
+
+        close  = df["Close"]
+        spot   = float(close.iloc[-1])
+        ema9   = float(self._ema(close, 9).iloc[-1])
+        ema21  = float(self._ema(close, 21).iloc[-1])
+        vwap   = self._vwap(df)
+        vwap_dev = (spot - vwap) / vwap * 100
+
+        # Require strong trend alignment
+        if spot > ema9 > ema21 and vwap_dev > 0.3:
+            direction, option_type, conviction = "BUY",  "call", 68
+        elif spot < ema9 < ema21 and vwap_dev < -0.3:
+            direction, option_type, conviction = "SELL", "put",  68
+        else:
+            return []
+
+        iv_env  = self._iv_environment(ticker)
+        expiry  = get_expiry(ticker, monthly=True)
+        T       = days_to_expiry(expiry)
+        iv      = iv_env["hv30"]
+        strike  = select_strike(spot, option_type, moneyness="ATM")
+        premium = BlackScholes.price(spot, strike, T, RISK_FREE_RATE, iv, option_type)
+        greeks  = BlackScholes.greeks(spot, strike, T, RISK_FREE_RATE, iv, option_type)
+        lot     = get_lot_size(ticker)
+
+        return [{
+            "type":           "HOURLY_FNO",
+            "underlying":     ticker,
+            "name":           ticker.replace(".NS", ""),
+            "direction":      direction,
+            "option_type":    option_type,
+            "strike":         strike,
+            "expiry":         expiry.isoformat(),
+            "days_to_expiry": int(T * 365),
+            "moneyness":      "ATM",
+            "entry_premium":  round(premium, 2),
+            "sl_premium":     round(premium * 0.60, 2),
+            "target_premium": round(premium * 1.80, 2),
+            "lot_size":       lot,
+            "cost_1lot":      round(premium * lot, 0),
+            "rr_ratio":       2.0,
+            "iv_regime":      iv_env["iv_regime"],
+            "hv30":           iv_env["hv30"],
+            "spot":           round(spot, 2),
+            "vwap":           round(vwap, 2),
+            "vwap_dev_pct":   round(vwap_dev, 2),
+            "conviction":     conviction,
+            "delta":          greeks["delta"],
+            "theta":          greeks["theta"],
+            "reason":         f"1h trend aligned | VWAP {vwap_dev:+.2f}% | IV {iv_env['iv_regime']}",
+            "generated_at":   datetime.now().isoformat(),
+        }]
+
+
+def run_hourly_fno_signals() -> list:
+    """
+    Generate and persist hourly F&O signals.
+    Called by the hourly scheduler in app.py.
+    """
+    try:
+        strategy = HourlyFNOStrategy()
+        signals  = strategy.generate()
+        with open(FNO_HOURLY_SIGNALS_FILE, "w") as f:
+            json.dump({"signals": signals, "generated_at": datetime.now().isoformat()}, f, indent=2)
+        logger.info(f"[HourlyFNO] Generated {len(signals)} signals")
+        return signals
+    except Exception as exc:
+        logger.error(f"[HourlyFNO] Error: {exc}")
+        return []
+
+
+# ---------------------------------------------------------------------------
 # F&O Agent — orchestrates all strategies
 # ---------------------------------------------------------------------------
 

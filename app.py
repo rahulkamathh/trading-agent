@@ -565,6 +565,18 @@ def api_fno_close_position():
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 
+@app.route("/api/fno/hourly_signals")
+def api_fno_hourly_signals():
+    try:
+        from fno_engine import FNO_HOURLY_SIGNALS_FILE  # pylint: disable=import-outside-toplevel
+        import json as _j
+        if FNO_HOURLY_SIGNALS_FILE.exists():
+            with open(FNO_HOURLY_SIGNALS_FILE) as _f:
+                return jsonify({"ok": True, **_j.load(_f)})
+        return jsonify({"ok": True, "signals": [], "generated_at": None})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
 @app.route("/api/fno/reset", methods=["POST"])
 def api_fno_reset():
     from fno_engine import get_fno_agent  # pylint: disable=import-outside-toplevel
@@ -1116,6 +1128,20 @@ if __name__ == "__main__":
 
     # ── Start market-aware background agent loop ──────────────────────────────
     threading.Thread(target=_background_loop, daemon=True).start()
+
+    # ── Hourly F&O signal generator ───────────────────────────────────────
+    def _hourly_fno_loop():
+        import time as _time
+        while True:
+            try:
+                from fno_engine import run_hourly_fno_signals  # pylint: disable=import-outside-toplevel
+                run_hourly_fno_signals()
+            except Exception as _e:
+                print(f"[HourlyFNO] Error: {_e}")
+            _time.sleep(3600)   # every 60 minutes
+
+    threading.Thread(target=_hourly_fno_loop, daemon=True, name="hourly-fno").start()
+    print("  ⚡  Hourly F&O signal generator started")
 
     print("\n" + "=" * 60)
     print("  🇮🇳  Indian Institutional Trading Agent  —  Paper Mode")

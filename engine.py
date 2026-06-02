@@ -1220,6 +1220,34 @@ class Portfolio:
 
     def execute_buy(self, ticker: str, price: float, strategy: str,
                     reason: str = "", strength: float = 65.0) -> dict | None:
+
+        # ── Hard gate 1: market must be open ────────────────────────────── #
+        if not _market_open():
+            logger.info(
+                f"🚫 BLOCKED {ticker} [{strategy}] — market is closed "
+                f"(current IST time is outside 9:15–15:30)"
+            )
+            return None
+
+        # ── Hard gate 2: price sanity check ─────────────────────────────── #
+        # Cross-verify the passed price against a fresh yfinance fetch.
+        # Reject if the price deviates > 15% from the live quote — bad data.
+        try:
+            live = DataFetcher.get_current_price(ticker)
+            if live and live > 0:
+                deviation = abs(price - live) / live
+                if deviation > 0.15:
+                    logger.warning(
+                        f"🚫 PRICE SANITY FAIL {ticker} — "
+                        f"passed ₹{price:.2f} vs live ₹{live:.2f} "
+                        f"({deviation:.0%} deviation > 15%) — aborting trade"
+                    )
+                    return None
+                # Use the verified live price for execution
+                price = live
+        except Exception:
+            pass
+
         if not self.can_buy(ticker, price):
             return None
 
@@ -2528,7 +2556,7 @@ class TradingAgent:
         return summary
 
     def get_dashboard_data(self) -> dict:
-        """All data needed to render the dashboard."""
+        """All data needed to render the dashboard (signals page, KPIs, charts)."""
         port = self.portfolio
 
         # Trade log
@@ -2577,7 +2605,7 @@ class TradingAgent:
             },
             "positions":      port.get_positions_display(),
             "trades":         list(reversed(trades[-50:])),   # last 50
-            "signals":        signals[:30],                   # top 30
+            "signals":        _diversify_signals(signals, max_per_strategy=5, total=50),
             "signals_updated": signals_updated,
             "equity_curve":   equity_curve,
             "strategy_perf":  strat_perf,
@@ -2588,6 +2616,45 @@ class TradingAgent:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _diversify_signals(signals: list, max_per_strategy: int = 5, total: int = 50) -> list:
+    """
+    Return a strategy-diversified view of signals so the dashboard never shows
+    30 MOMENTUM rows and nothing else.
+
+    Algorithm:
+      1. Sort BUY signals by strength desc, SELL signals by strength desc.
+      2. Round-robin across strategies, taking up to max_per_strategy from each.
+      3. Cap at `total` signals.
+    """
+    from collections import defaultdict
+    buckets: dict[str, list] = defaultdict(list)
+    for sig in signals:
+        if sig.get("signal") in ("BUY", "SELL"):
+            buckets[sig.get("strategy", "OTHER")].append(sig)
+
+    # Sort each bucket by strength descending
+    for strat in buckets:
+        buckets[strat].sort(key=lambda x: x.get("strength", 0), reverse=True)
+        buckets[strat] = buckets[strat][:max_per_strategy]
+
+    # Round-robin interleave
+    result = []
+    strat_lists = list(buckets.values())
+    idx = 0
+    while len(result) < total and any(strat_lists):
+        if strat_lists:
+            lst = strat_lists[idx % len(strat_lists)]
+            if lst:
+                result.append(lst.pop(0))
+            if not lst:
+                strat_lists.pop(idx % len(strat_lists))
+                if not strat_lists:
+                    break
+            else:
+                idx += 1
+    return result
+
 
 def _calc_today_pnl(trades: list, current_value: float, equity_curve: list,
                     initial: float, portfolio_state: dict = None) -> dict:
