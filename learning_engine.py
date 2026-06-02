@@ -203,6 +203,17 @@ class LearningEngine:
                 actual_rr  = trade.get("actual_rr")   # float or None
                 planned_rr = trade.get("planned_rr")  # float or None
                 reason     = trade.get("reason", "")
+
+                # Skip junk trades that pollute win-rate stats:
+                # SIGNAL_EXIT = old-engine artifact (buy+sell in same cycle, ₹0 P&L)
+                # Zero P&L with no recognised reason = data artifact, not a real outcome
+                if reason == "SIGNAL_EXIT":
+                    continue
+                if pnl == 0 and reason not in ("STOP_LOSS", "TAKE_PROFIT", "DEAD_MONEY_EXIT",
+                                                "GAP_DOWN_PROTECTION", "CHANDELIER_STOP",
+                                                "PARTIAL_PROFIT", "MANUAL"):
+                    continue
+
                 is_win     = pnl > 0
                 is_tp      = reason == "TAKE_PROFIT"
                 is_sl      = reason == "STOP_LOSS"
