@@ -1100,15 +1100,16 @@ def _compute_sl_tp(ticker: str, entry: float, strength: float) -> tuple[float, f
     Falls back to flat STOP_LOSS_PCT / planned_rr × STOP_LOSS_PCT if ATR
     data is unavailable or looks wrong.
     """
-    # Conviction-based RR target
+    # Conviction-based RR target — kept realistic so targets are reachable
+    # 1:2 is the institutional minimum; going higher means waiting months for TP
     if strength >= 90:
-        planned_rr = 4.0
-    elif strength >= 80:
-        planned_rr = 3.0
-    elif strength >= 70:
         planned_rr = 2.5
-    else:
+    elif strength >= 80:
         planned_rr = 2.0
+    elif strength >= 70:
+        planned_rr = 1.5
+    else:
+        planned_rr = 1.5
 
     try:
         df = DataFetcher.fetch(ticker, period="60d", interval="1d")
@@ -2333,10 +2334,9 @@ class SignalAggregator:
             if not price:
                 continue
             strength = sig.get("strength", 65)
-            if strength >= 90:   rr = 4.0
-            elif strength >= 80: rr = 3.0
-            elif strength >= 70: rr = 2.5
-            else:                rr = 2.0
+            if strength >= 90:   rr = 2.5
+            elif strength >= 80: rr = 2.0
+            else:                rr = 1.5
 
             # Try ATR from in-memory data first
             atr_sl_mult = 1.5
@@ -2553,7 +2553,12 @@ class TradingAgent:
             except Exception:
                 pass
 
-            # Guard-rail 5: sector concentration limit
+            # Guard-rail 5: minimum price — no penny stocks under ₹50
+            if price > 0 and price < 50:
+                logger.info(f"⏭  SKIP {ticker} — price ₹{price:.2f} below ₹50 minimum")
+                continue
+
+            # Guard-rail 6: sector concentration limit
             ticker_sector = None
             for sector, tickers in SectorMomentumStrategy.SECTOR_STOCKS.items():
                 if ticker in tickers:
@@ -2574,6 +2579,33 @@ class TradingAgent:
 
             if price <= 0:
                 price = DataFetcher.get_current_price(ticker)
+
+            # Position rotation: if at max positions, exit the weakest holder
+            # to make room for a higher-conviction signal
+            positions = self.portfolio.state.get("positions", {})
+            if len(positions) >= MAX_POSITIONS:
+                # Find the position with lowest unrealised P&L % that isn't in profit >5%
+                weakest_ticker = None
+                weakest_pnl_pct = float("inf")
+                for held_tk, held_pos in positions.items():
+                    held_price = DataFetcher.get_current_price(held_tk) or held_pos["avg_price"]
+                    held_pnl_pct = (held_price - held_pos["avg_price"]) / held_pos["avg_price"]
+                    # Only rotate out if: flat or losing, AND new signal is meaningfully stronger
+                    if held_pnl_pct < 0.05 and held_pnl_pct < weakest_pnl_pct:
+                        weakest_pnl_pct = held_pnl_pct
+                        weakest_ticker = held_tk
+
+                if weakest_ticker and composite_strength > buy_threshold + 10:
+                    rotate_price = DataFetcher.get_current_price(weakest_ticker) or 0
+                    if rotate_price > 0:
+                        self.portfolio.execute_sell(
+                            weakest_ticker, rotate_price,
+                            reason=f"ROTATION→{ticker} (new strength={composite_strength:.0f})"
+                        )
+                        logger.info(
+                            f"🔄 ROTATE out {weakest_ticker} ({weakest_pnl_pct:+.1%}) "
+                            f"→ in {ticker} (strength={composite_strength:.0f})"
+                        )
 
             logger.info(
                 f"🔎 Evaluating BUY {ticker} @ ₹{price:.2f}  "
