@@ -46,6 +46,8 @@ FNO_PORTFOLIO_FILE = DATA_DIR / "fno_portfolio.json"
 FNO_TRADE_FILE     = DATA_DIR / "fno_trades.json"
 
 FNO_INITIAL_CAPITAL = 2_00_000   # ₹2 lakhs allocated to F&O desk
+FNO_MAX_POSITIONS   = 10         # hard cap on open F&O positions
+FNO_MAX_RISK_PER_TRADE = 0.10   # max 10% of F&O capital per trade
 RISK_FREE_RATE      = 0.0675     # RBI repo rate approximation
 MAX_RISK_PER_TRADE  = 0.05       # max 5% of F&O capital at risk per trade
 
@@ -439,6 +441,26 @@ class FNOPortfolio:
             json.dump(log, f, indent=2)
         return trade
 
+    def has_open_position(self, underlying: str, option_type: str = None) -> bool:
+        """True if we already have an open position on this underlying (optionally filtered by type)."""
+        for pos in self.state["positions"].values():
+            if pos["underlying"] == underlying:
+                if option_type is None or pos.get("option_type") == option_type:
+                    return True
+        return False
+
+    def at_max_positions(self) -> bool:
+        """True if we've hit the F&O position cap."""
+        return len(self.state["positions"]) >= FNO_MAX_POSITIONS
+
+    def can_afford(self, cost: float) -> bool:
+        """True if we have enough cash and cost is within single-trade risk limit."""
+        if self.state["cash"] < cost:
+            return False
+        if cost > self.state.get("initial", FNO_INITIAL_CAPITAL) * FNO_MAX_RISK_PER_TRADE:
+            return False
+        return True
+
     def get_total_value(self) -> float:
         """Cash + mark-to-market value of all open positions."""
         total = self.state["cash"]
@@ -612,6 +634,14 @@ class FNOPortfolio:
             logger.info(f"[FNO] {ticker} not F&O eligible — cannot express bearish view as PUT")
             return None
 
+        if self.at_max_positions():
+            logger.info(f"[FNO] PUT {ticker} skipped — at max {FNO_MAX_POSITIONS} positions")
+            return None
+
+        if self.has_open_position(ticker, "put"):
+            logger.debug(f"[FNO] PUT {ticker} skipped — already have open PUT position")
+            return None
+
         moneyness = "ATM" if strength >= 85 else "OTM1"
         expiry    = get_expiry(ticker, monthly=True)   # monthly for liquidity
         T         = days_to_expiry(expiry)
@@ -630,9 +660,16 @@ class FNOPortfolio:
         greeks  = BlackScholes.greeks(spot, strike, T, RISK_FREE_RATE, iv, "put")
         lot     = get_lot_size(ticker)
 
-        # Position sizing: max 2% of F&O portfolio per PUT trade
-        max_spend = self.get_total_value() * 0.02
+        # Position sizing: max 10% of F&O capital per PUT trade, minimum 1 lot
+        max_spend = self.state.get("initial", FNO_INITIAL_CAPITAL) * FNO_MAX_RISK_PER_TRADE
         qty_lots  = max(1, int(max_spend / (premium * lot)))
+        cost      = premium * lot * qty_lots
+        if not self.can_afford(cost):
+            # Try 1 lot minimum
+            if not self.can_afford(premium * lot):
+                logger.info(f"[FNO] PUT {ticker} skipped — insufficient cash (need ₹{premium*lot:.0f})")
+                return None
+            qty_lots = 1
 
         full_reason = (
             f"Equity SELL→PUT | {reason} | "
@@ -898,6 +935,8 @@ class DirectionalOptionsStrategy:
     def run(self, signals: list, portfolio: FNOPortfolio) -> list:
         executed = []
         for sig in signals:
+            if portfolio.at_max_positions():
+                break
             if sig.get("strength", 0) < 80:
                 continue
             ticker = sig["ticker"]
@@ -906,6 +945,11 @@ class DirectionalOptionsStrategy:
                 continue
 
             opt_type = "call" if action == "BUY" else "put"
+
+            # Skip if we already have this underlying open (no doubling up)
+            if portfolio.has_open_position(ticker, opt_type):
+                continue
+
             is_index = ticker in ("^NSEI", "^NSEBANK", "NIFTY", "BANKNIFTY")
             monthly  = not is_index
 
@@ -920,11 +964,12 @@ class DirectionalOptionsStrategy:
                 iv     = historical_vol(ticker)
                 prem   = BlackScholes.price(spot, strike, T, RISK_FREE_RATE, iv, opt_type)
                 lot    = get_lot_size(ticker)
-                cost   = prem * lot * 1   # 1 lot
+                cost   = prem * lot
 
-                if cost > portfolio.state["cash"] * 0.20:   # max 20% of F&O capital
+                if cost < 500:   # nonsensical premium
                     continue
-                if cost < 100:   # nonsensical premium
+                if not portfolio.can_afford(cost):
+                    logger.info(f"[DirOpt] SKIP {ticker} — cannot afford ₹{cost:.0f} (cash=₹{portfolio.state['cash']:.0f})")
                     continue
 
                 result = portfolio.open_option(
