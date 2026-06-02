@@ -1208,6 +1208,19 @@ if __name__ == "__main__":
                         continue
 
                     try:
+                        # Minimum hold: don't trigger realtime stops within 2h of opening
+                        # BS model prices can diverge from entry by 30-50% on tiny spot moves
+                        # for OTM options — this is model noise, not a real loss
+                        entry_date = pos.get("entry_date", "")
+                        if entry_date:
+                            from datetime import datetime as _dt  # noqa: PLC0415
+                            entry_dt = _dt.fromisoformat(entry_date)
+                            if entry_dt.tzinfo is None:
+                                entry_dt = entry_dt.replace(tzinfo=_IST)
+                            age_hours = (datetime.now(_IST) - entry_dt).total_seconds() / 3600
+                            if age_hours < 2.0:
+                                continue  # too young — skip stop check
+
                         T  = days_to_expiry(_date.fromisoformat(pos["expiry"]))
                         iv = pos.get("iv", 0.25)
                         curr_prem = BlackScholes.price(
@@ -1217,15 +1230,15 @@ if __name__ == "__main__":
 
                         pnl_pct = (curr_prem - entry_prem) / entry_prem if entry_prem else 0
 
-                        # Intraday stop: exit if premium falls 40% from entry
-                        if pnl_pct <= -0.40:
-                            portfolio.close_option(pid, reason="REALTIME_STOP_40PCT")
+                        # Intraday stop: exit if premium falls 50% from entry (after 2h hold)
+                        if pnl_pct <= -0.50:
+                            portfolio.close_option(pid, reason="REALTIME_STOP_50PCT")
                             logger.info(
                                 f"[FNO-RT] 🛑 Stop hit {underlying} {pos['strike']}{pos['option_type'][0].upper()} "
                                 f"prem={curr_prem:.2f} ({pnl_pct:.0%}) — closed"
                             )
 
-                        # Intraday target: exit if premium gains 80%
+                        # Intraday target: exit if premium gains 80% (after 2h hold)
                         elif pnl_pct >= 0.80:
                             portfolio.close_option(pid, reason="REALTIME_TARGET_80PCT")
                             logger.info(

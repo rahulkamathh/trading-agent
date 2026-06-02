@@ -445,6 +445,22 @@ class FNOPortfolio:
             json.dump(log, f, indent=2)
         return trade
 
+    def in_cooldown(self, underlying: str, hours: float = 4.0) -> bool:
+        """True if this underlying was closed within the last `hours` hours."""
+        cutoff = (_now_ist() - timedelta(hours=hours)).isoformat()
+        try:
+            if FNO_TRADE_FILE.exists():
+                with open(FNO_TRADE_FILE) as f:
+                    log = json.load(f)
+                for t in reversed(log):
+                    if t.get("underlying") == underlying and "CLOSE" in t.get("action", ""):
+                        if t.get("time", "") >= cutoff:
+                            return True
+                        break  # log is chronological, stop once past cutoff
+        except Exception:
+            pass
+        return False
+
     def has_open_position(self, underlying: str, option_type: str = None) -> bool:
         """True if we already have an open position on this underlying (optionally filtered by type)."""
         for pos in self.state["positions"].values():
@@ -656,6 +672,10 @@ class FNOPortfolio:
 
         if self.has_open_position(ticker, "put"):
             logger.debug(f"[FNO] PUT {ticker} skipped — already have open PUT position")
+            return None
+
+        if self.in_cooldown(ticker):
+            logger.info(f"[FNO] PUT {ticker} skipped — in 4h cooldown after recent close")
             return None
 
         moneyness = "ATM" if strength >= 85 else "OTM1"
@@ -973,8 +993,10 @@ class DirectionalOptionsStrategy:
 
             opt_type = "call" if action == "BUY" else "put"
 
-            # Skip if we already have this underlying open (no doubling up)
+            # Skip if we already have this underlying open or recently closed
             if portfolio.has_open_position(ticker, opt_type):
+                continue
+            if portfolio.in_cooldown(ticker):
                 continue
 
             is_index = ticker in ("^NSEI", "^NSEBANK", "NIFTY", "BANKNIFTY")
