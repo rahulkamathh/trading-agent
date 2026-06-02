@@ -2597,14 +2597,49 @@ class TradingAgent:
                     f"✅ BOUGHT {ticker}  qty={trade['qty']}  @ ₹{price:.2f}  [{strat_str}]"
                 )
 
-        # ── Signal-based SELL: intentionally disabled ─────────────────────
-        # Positions are closed ONLY by price-based rules (stop-loss / take-profit)
-        # via check_stops() above.  Strategy SELL signals are logged but never
-        # trigger an exit — an SMA crossover or RSI flip on a stock we own for a
-        # completely different reason is noise, not a decision.
-        # sell_agg is computed but unused here; keeping it available for future
-        # dashboard display ("strategies saying sell on X that we hold").
-        _ = sell_agg  # suppress unused-variable warnings
+        # ── SELL signals → PUT options (institutional approach) ───────────
+        # Equity desk is long-only. Bearish views are expressed via PUT options
+        # on F&O-eligible stocks. Same logic a real desk would use.
+        put_trades = []
+        try:
+            from fno_engine import get_fno_agent, is_fno_eligible  # noqa: PLC0415
+            fno = get_fno_agent()
+
+            # Build sell candidates (same aggregation logic as buys)
+            sell_candidates = []
+            for ticker, agg in sell_agg.items():
+                composite = float(np.mean(agg["strengths"]))
+                sell_candidates.append((ticker, composite, agg["price"], agg["strategies"]))
+            sell_candidates.sort(key=lambda x: x[1], reverse=True)
+
+            for ticker, strength, price, strategies in sell_candidates:
+                if strength < 70:
+                    continue   # too weak for an options trade
+                if not execution_window_open:
+                    break
+                if self.portfolio.in_cooldown(ticker):
+                    continue
+                # Don't open a PUT if we already hold a long equity position
+                # (that would be an internal hedge — use stop-loss instead)
+                if ticker in self.portfolio.state.get("positions", {}):
+                    logger.debug(f"[FNO] SKIP PUT {ticker} — we hold long equity; stop-loss handles this")
+                    continue
+                spot = price if price > 0 else DataFetcher.get_current_price(ticker)
+                if not spot or spot <= 0:
+                    continue
+                strat_str = "+".join(sorted(set(strategies)))
+                trade = fno.portfolio.execute_sell_signal_as_put(
+                    ticker   = ticker,
+                    spot     = spot,
+                    strength = strength,
+                    strategy = strat_str,
+                    reason   = f"Equity SELL signal strength={strength:.0f}",
+                )
+                if trade:
+                    put_trades.append(trade)
+                    logger.info(f"🔴 SELL→PUT {ticker}  strength={strength:.0f}  [{strat_str}]")
+        except Exception as _e:
+            logger.warning(f"SELL→PUT routing error: {_e}")
 
         # ── Self-learning: update strategy weights from closed trades ─────────
         try:

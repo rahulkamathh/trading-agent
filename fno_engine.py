@@ -157,6 +157,21 @@ def get_lot_size(ticker: str) -> int:
     return 1   # unknown instrument — return 1 to avoid division errors
 
 
+def is_fno_eligible(ticker: str) -> bool:
+    """
+    Return True if the ticker has an active F&O contract on NSE.
+    Uses the lot size cache — if a lot size exists for this ticker,
+    NSE recognises it as an F&O instrument.
+    Returns False for stocks with lot size == 1 (our sentinel for 'unknown').
+    """
+    # Ensure cache is loaded
+    get_lot_size(ticker)   # triggers cache refresh if needed
+    for key in (ticker, ticker.replace(".NS", ""), ticker.replace(".NS", "") + ".NS"):
+        if key in _LOT_CACHE:
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Expiry calendar helpers
 # ---------------------------------------------------------------------------
@@ -567,6 +582,79 @@ class FNOPortfolio:
             f"[FNO] OPEN {position} {qty_lots}L {underlying} {strike}{option_type[0].upper()} "
             f"@ ₹{premium:.2f}  IV={iv:.1%}  T={T*365:.0f}d  [{strategy}]"
         )
+        return trade
+
+    def execute_sell_signal_as_put(
+        self,
+        ticker: str,
+        spot: float,
+        strength: float,
+        strategy: str,
+        reason: str = "",
+    ) -> dict | None:
+        """
+        Convert an equity SELL signal into a PUT option buy.
+        Called when the equity desk fires a bearish signal on an F&O-eligible stock.
+
+        Strike selection:
+          - Strength ≥ 85  → ATM put (high conviction — maximum delta)
+          - Strength 70-85 → OTM1 put (moderate — cheaper, more leverage)
+          - Below 70       → skip (not enough conviction for options)
+
+        Expiry: nearest monthly (more liquidity than weeklies for stock options).
+        Position size: capped at 2% of F&O portfolio per trade.
+        """
+        if strength < 70:
+            logger.debug(f"[FNO] SELL signal on {ticker} too weak ({strength:.0f}) for PUT — skipping")
+            return None
+
+        if not is_fno_eligible(ticker):
+            logger.info(f"[FNO] {ticker} not F&O eligible — cannot express bearish view as PUT")
+            return None
+
+        moneyness = "ATM" if strength >= 85 else "OTM1"
+        expiry    = get_expiry(ticker, monthly=True)   # monthly for liquidity
+        T         = days_to_expiry(expiry)
+
+        if T < 7:
+            # Too close to expiry — force next month
+            today = date.today()
+            next_m = today.month % 12 + 1
+            next_y = today.year + (1 if today.month == 12 else 0)
+            expiry = _last_thursday(next_y, next_m)
+            T      = days_to_expiry(expiry)
+
+        iv      = historical_vol(ticker)
+        strike  = select_strike(spot, "put", moneyness=moneyness)
+        premium = BlackScholes.price(spot, strike, T, RISK_FREE_RATE, iv, "put")
+        greeks  = BlackScholes.greeks(spot, strike, T, RISK_FREE_RATE, iv, "put")
+        lot     = get_lot_size(ticker)
+
+        # Position sizing: max 2% of F&O portfolio per PUT trade
+        max_spend = self.get_total_value() * 0.02
+        qty_lots  = max(1, int(max_spend / (premium * lot)))
+
+        full_reason = (
+            f"Equity SELL→PUT | {reason} | "
+            f"moneyness={moneyness} IV={iv:.1%} delta={greeks['delta']:.2f}"
+        )
+
+        trade = self.open_option(
+            underlying  = ticker,
+            strike      = strike,
+            expiry      = expiry,
+            option_type = "put",
+            position    = "LONG",
+            qty_lots    = qty_lots,
+            strategy    = f"EQ_SELL_PUT|{strategy}",
+            reason      = full_reason,
+        )
+        if trade:
+            logger.info(
+                f"[FNO] 🔴 Expressed SELL {ticker} as PUT: "
+                f"{qty_lots}L {strike}PE {expiry} @ ₹{premium:.2f}  "
+                f"total=₹{premium*lot*qty_lots:.0f}  strength={strength:.0f}"
+            )
         return trade
 
     def close_option(self, position_id: str, reason: str = "") -> dict | None:
