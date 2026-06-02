@@ -898,6 +898,54 @@ class FNOPortfolio:
         logger.info(f"[FNO] CLOSE {pos['position']} {pos['underlying']} FUT  P&L=₹{pnl:+.0f}")
         return trade
 
+    def morning_gap_check(self) -> list:
+        """
+        Run once at market open (9:15–9:25 IST) to handle overnight gaps.
+        For each open option position, checks if the underlying gapped overnight
+        beyond the stop level. Closes immediately if so — before the realtime
+        monitor would even see it.
+
+        A PUT is hurt by an upward gap (underlying rose overnight).
+        A CALL is hurt by a downward gap (underlying fell overnight).
+        Threshold: if underlying moved >3% against the position overnight, close.
+        """
+        closed = []
+        now_t = _now_ist().time()
+        from datetime import time as _dtt3  # noqa: PLC0415
+        # Only run in the opening window 9:15–9:30
+        if not (_dtt3(9, 15) <= now_t <= _dtt3(9, 30)):
+            return closed
+
+        for pid, pos in list(self.state["positions"].items()):
+            if pos.get("instrument_type") != "OPTION" or pos.get("position") != "LONG":
+                continue
+            try:
+                spot = self._get_spot(pos["underlying"])
+                entry_spot = pos.get("entry_spot", spot)
+                if not entry_spot or entry_spot <= 0:
+                    continue
+
+                overnight_move = (spot - entry_spot) / entry_spot
+
+                # PUT is hurt by rising underlying; CALL is hurt by falling
+                adverse_move = overnight_move if pos["option_type"] == "call" else -overnight_move
+
+                # Gap >3% against position → close immediately at open
+                if adverse_move < -0.03:
+                    logger.warning(
+                        f"[FNO-GAP] {pos['underlying']} gapped {overnight_move:+.1%} overnight "
+                        f"— closing {pos['option_type'].upper()} position at open"
+                    )
+                    t = self.close_option(pid, reason="OVERNIGHT_GAP_STOP")
+                    if t:
+                        closed.append(t)
+            except Exception as _e:
+                logger.debug(f"[FNO-GAP] Error checking {pid}: {_e}")
+
+        if closed:
+            logger.info(f"[FNO-GAP] Morning gap check closed {len(closed)} position(s)")
+        return closed
+
     def check_expiry_and_stops(self) -> list:
         """
         Close positions approaching expiry (≤1 day) and enforce P&L stops:
@@ -1638,6 +1686,7 @@ class FNOAgent:
         equity_positions = equity_positions or []
 
         logger.info("[FNO] === F&O Cycle Start ===")
+        gap_closes = self.portfolio.morning_gap_check()   # runs only 9:15–9:30
         stops    = self.portfolio.check_expiry_and_stops()
         # SpreadStrategy and IronCondorStrategy DISABLED:
         # Both write (sell) options which require margin accounts and create
@@ -1657,6 +1706,7 @@ class FNOAgent:
             "fno_value":    total_value,
             "fno_pnl":      round(pnl, 2),
             "fno_cash":     round(self.portfolio.state["cash"], 2),
+            "gap_stops":    len(gap_closes),
             "stops_closed": len(stops),
             "new_condors":  len(condors) // 4,
             "new_directs":  len(directs),
