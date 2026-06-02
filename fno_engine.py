@@ -51,38 +51,110 @@ MAX_RISK_PER_TRADE  = 0.05       # max 5% of F&O capital at risk per trade
 
 
 # ---------------------------------------------------------------------------
-# Lot sizes (NSE standard — verify at nseindia.com/market-data/lot-size)
+# Lot sizes — fetched live from NSE, cached locally
 # ---------------------------------------------------------------------------
 
-LOT_SIZES: dict[str, int] = {
-    # Indices
-    "^NSEI":       75,    # Nifty 50
-    "^NSEBANK":    30,    # Bank Nifty
-    "NIFTY":       75,
-    "BANKNIFTY":   30,
-    "FINNIFTY":    40,
-    "MIDCPNIFTY":  75,
-    # Large caps (common F&O stocks)
-    "RELIANCE.NS": 500,   "TCS.NS":      150,   "HDFCBANK.NS": 550,
-    "ICICIBANK.NS":700,   "INFY.NS":     400,   "SBIN.NS":    1500,
-    "KOTAKBANK.NS":400,   "AXISBANK.NS": 1200,  "WIPRO.NS":   1500,
-    "LT.NS":       300,   "BAJFINANCE.NS":125,  "MARUTI.NS":  100,
-    "TATAMOTORS.NS":2850, "SUNPHARMA.NS":700,   "HCLTECH.NS": 700,
-    "TITAN.NS":    375,   "BHARTIARTL.NS":1851, "NTPC.NS":    3000,
-    "POWERGRID.NS":2700,  "ONGC.NS":    3850,   "BPCL.NS":    1800,
-    "IOC.NS":      3500,  "COALINDIA.NS":4200,  "HINDALCO.NS":2150,
-    "TATASTEEL.NS":5500,  "JSWSTEEL.NS": 675,   "VEDL.NS":    2750,
-    "ADANIPORTS.NS":1250, "ULTRACEMCO.NS":100,  "GRASIM.NS":  475,
-    "INDUSINDBK.NS":900,  "ITC.NS":      3200,  "HINDUNILVR.NS":300,
-    "DRREDDY.NS":  125,   "CIPLA.NS":    650,   "DIVISLAB.NS":  100,
-    "EICHERMOT.NS":150,   "HEROMOTOCO.NS":300,  "BAJAJ-AUTO.NS":250,
-    "M&M.NS":      900,   "TECHM.NS":    600,   "LTIM.NS":    150,
-    "APOLLOHOSP.NS":125,
-}
+_LOT_CACHE_FILE = DATA_DIR / "nse_lot_sizes.json"
+_LOT_CACHE: dict[str, int] = {}
+_LOT_CACHE_DATE: str = ""   # "YYYY-MM-DD" of last successful fetch
+# NSE lot sizes change quarterly (per SEBI circular) — refresh once per day is plenty.
+# On first call each calendar day, fetch fresh from NSE. Otherwise use local cache.
+
+def _fetch_lot_sizes_from_nse() -> dict[str, int]:
+    """
+    Fetch current F&O lot sizes from NSE's public API.
+    Returns dict: {ticker_with_NS_suffix: lot_size}
+    Falls back to cached file if NSE is unreachable.
+    """
+    from urllib.request import urlopen, Request
+    from urllib.error import URLError
+    import re as _re
+
+    url = "https://nsearchives.nseindia.com/content/fo/fo_mktlots.csv"
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "text/csv,*/*",
+        "Referer": "https://www.nseindia.com/",
+    }
+    try:
+        req  = Request(url, headers=headers)
+        resp = urlopen(req, timeout=10)
+        raw  = resp.read().decode("utf-8", errors="replace")
+        lots: dict[str, int] = {}
+        for line in raw.splitlines()[1:]:   # skip header
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 3:
+                continue
+            sym = parts[1].strip().upper()
+            try:
+                lot = int(parts[2].strip())
+            except ValueError:
+                continue
+            if not sym or lot <= 0:
+                continue
+            # Index symbols
+            if sym in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"):
+                index_map = {
+                    "NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK",
+                    "FINNIFTY": "FINNIFTY", "MIDCPNIFTY": "MIDCPNIFTY",
+                }
+                lots[index_map.get(sym, sym)] = lot
+                lots[sym] = lot
+            else:
+                lots[sym + ".NS"] = lot
+                lots[sym] = lot
+        logger.info(f"[FNO] Fetched {len(lots)} lot sizes from NSE")
+        return lots
+    except Exception as exc:
+        logger.warning(f"[FNO] Could not fetch lot sizes from NSE: {exc}")
+        return {}
+
+def _load_lot_cache() -> dict[str, int]:
+    """Load lot sizes from local cache file."""
+    if _LOT_CACHE_FILE.exists():
+        try:
+            with open(_LOT_CACHE_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def _save_lot_cache(lots: dict):
+    try:
+        with open(_LOT_CACHE_FILE, "w") as f:
+            json.dump(lots, f)
+    except Exception:
+        pass
 
 def get_lot_size(ticker: str) -> int:
-    """Return lot size for a given ticker, defaulting to 1."""
-    return LOT_SIZES.get(ticker, LOT_SIZES.get(ticker.replace(".NS", ""), 1))
+    """
+    Return NSE F&O lot size for a given ticker.
+
+    Refresh policy: once per calendar day (lot sizes are set quarterly by SEBI,
+    never change intraday). Falls back to local cache file if NSE unreachable.
+    Returns 1 for unknown instruments to avoid division errors.
+    """
+    global _LOT_CACHE, _LOT_CACHE_DATE
+
+    today = date.today().isoformat()
+    if _LOT_CACHE_DATE != today:
+        # New day — attempt a fresh fetch from NSE
+        fresh = _fetch_lot_sizes_from_nse()
+        if fresh:
+            _LOT_CACHE      = fresh
+            _LOT_CACHE_DATE = today
+            _save_lot_cache(fresh)
+        else:
+            # NSE unreachable — load from disk cache and stay on that
+            if not _LOT_CACHE:
+                _LOT_CACHE = _load_lot_cache()
+            _LOT_CACHE_DATE = today   # don't retry until tomorrow
+
+    # Try exact match, then without .NS suffix, then bare symbol
+    for key in (ticker, ticker.replace(".NS", ""), ticker.replace(".NS", "") + ".NS"):
+        if key in _LOT_CACHE:
+            return _LOT_CACHE[key]
+    return 1   # unknown instrument — return 1 to avoid division errors
 
 
 # ---------------------------------------------------------------------------
