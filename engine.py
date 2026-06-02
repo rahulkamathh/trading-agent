@@ -13,7 +13,7 @@ import time
 import logging
 import requests
 import io
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from zoneinfo import ZoneInfo
 from learning_engine import get_learning_engine
 from notifier import get_notifier
@@ -25,6 +25,12 @@ _IST_TZ = ZoneInfo("Asia/Kolkata")
 def _now_ist() -> datetime:
     """Return current datetime in IST (UTC+5:30)."""
     return datetime.now(_IST_TZ)
+
+
+def _market_open() -> bool:
+    """True if current IST time is within NSE trading hours 9:15–15:30."""
+    now = _now_ist().time()
+    return time(9, 15) <= now <= time(15, 30)
 from pathlib import Path
 
 import numpy as np
@@ -1283,11 +1289,13 @@ class Portfolio:
             "avg_price":     price,
             "strategy":      strategy,
             "entry_date":    _now_ist().isoformat(),
-            "stop_loss":     stop_loss,
+            "stop_loss":     stop_loss,      # always fixed -7% from entry — max loss is known
             "target":        target,
             "planned_rr":    planned_rr,
             "risk_per_unit": risk_per_unit,
             "strength":      round(strength, 1),
+            "atr_at_entry":  atr_val,        # cached for chandelier trailing (only moves stop UP)
+            "highest_close": price,          # tracks peak price for chandelier calculation
         }
         self._save()
         trade = self._log_trade(
@@ -1437,46 +1445,44 @@ class Portfolio:
             prev_sl  = pos["stop_loss"]
 
             # ── Chandelier Exit trailing stop ────────────────────────────── #
-            # Compute ATR(14) and track highest close since entry
+            # Use cached ATR stored on the position at entry time.
+            # We only fetch fresh data if ATR is not cached — avoids per-position
+            # API calls on every 15-minute cycle (institutional standard: compute
+            # stop at entry, trail mechanically from the stored ATR value).
             try:
-                df_recent = DataFetcher.fetch(ticker, period="60d", interval="1d")
-                if df_recent is not None and not df_recent.empty and len(df_recent) >= 15:
-                    hi  = df_recent["High"]
-                    lo  = df_recent["Low"]
-                    cl  = df_recent["Close"]
-                    tr  = pd.concat([
-                        hi - lo,
-                        (hi - cl.shift(1)).abs(),
-                        (lo - cl.shift(1)).abs(),
-                    ], axis=1).max(axis=1)
-                    atr = float(tr.rolling(14).mean().iloc[-1])
+                atr = pos.get("atr_at_entry")
+                highest_close = pos.get("highest_close", max(price, entry))
 
-                    # Highest close since entry date
-                    entry_dt = pos.get("entry_date", "")
-                    if entry_dt:
-                        try:
-                            entry_ts = pd.Timestamp(entry_dt[:10])
-                            since_entry = df_recent[df_recent.index.normalize() >= entry_ts]
-                            highest_close = float(since_entry["Close"].max()) if not since_entry.empty else price
-                        except Exception:
-                            highest_close = max(price, entry)
-                    else:
-                        highest_close = max(price, entry)
+                # Update highest close in position state
+                if price > highest_close:
+                    pos["highest_close"] = price
+                    highest_close = price
+                    state_dirty = True
 
-                    # Chandelier stop: ATR multiplier scales with gain
-                    # — tighter when we're very profitable, wider early on
-                    if pnl_pct >= 15:
-                        mult = 2.0   # tight — protect large gain
-                    elif pnl_pct >= 7:
-                        mult = 2.5   # standard
-                    else:
-                        mult = 3.0   # wide — let position breathe early
+                # If no cached ATR (position opened before this code), do a one-time fetch
+                if not atr:
+                    df_recent = DataFetcher.fetch(ticker, period="30d", interval="1d")
+                    if df_recent is not None and not df_recent.empty and len(df_recent) >= 15:
+                        hi = df_recent["High"]; lo = df_recent["Low"]; cl = df_recent["Close"]
+                        tr = pd.concat([hi-lo, (hi-cl.shift(1)).abs(), (lo-cl.shift(1)).abs()], axis=1).max(axis=1)
+                        atr = float(tr.rolling(14).mean().iloc[-1])
+                        pos["atr_at_entry"] = atr
+                        state_dirty = True
 
+                if atr and atr > 0:
+                    # Chandelier multiplier tightens as profits grow
+                    if pnl_pct >= 15: mult = 2.0
+                    elif pnl_pct >= 7: mult = 2.5
+                    else:              mult = 3.0
                     chandelier_sl = round(highest_close - mult * atr, 2)
-                    # Never go below original stop and never below entry once profitable
-                    floor = max(prev_sl, entry * 0.93)  # hard floor: never more than 7% loss
-                    new_sl = max(chandelier_sl, floor) if pnl_pct >= 5 else max(chandelier_sl, prev_sl)
-                    new_sl = round(new_sl, 2)
+
+                    # HARD FLOOR: initial -7% stop is the MINIMUM — chandelier
+                    # only activates above this level. Downside is always capped
+                    # at the entry stop so we never risk more than planned.
+                    initial_sl = round(entry * (1 - STOP_LOSS_PCT), 2)
+                    floor      = max(initial_sl, prev_sl)   # stop never moves down
+                    new_sl     = max(chandelier_sl, floor)
+                    new_sl     = round(new_sl, 2)
                 else:
                     new_sl = prev_sl
             except Exception:
@@ -2271,30 +2277,86 @@ class SignalAggregator:
         except Exception as e:
             logger.warning(f"Fundamental rescoring skipped: {e}")
 
-        # ── Enrich all signals with entry / SL / target ──────────────────────
-        # Use FLAT computation (no extra API calls) — ATR-based SL/TP is computed
-        # at execution time when we already have the data in memory.
-        # Flat approach: SL = entry × (1 - STOP_LOSS_PCT), TP = entry × (1 + rr × STOP_LOSS_PCT)
+        # ── Institutional signal filters ──────────────────────────────────────
+        # Drop signals that no institution would touch:
+        #   • Price < ₹20 (penny/illiquid)
+        #   • Average daily value < ₹2 Cr (not enough liquidity to enter/exit cleanly)
+        #   • RSI > 80 on a BUY (chasing overbought) or RSI < 20 on a SELL
+        #   • Fundamental grade F (avoid complete junk)
+        def _is_tradeable(sig: dict) -> bool:
+            price = sig.get("price", 0)
+            if price < 20:
+                return False
+            rsi = sig.get("rsi", 50)
+            if sig.get("signal") == "BUY" and rsi > 82:
+                return False
+            if sig.get("signal") == "SELL" and rsi < 18:
+                return False
+            if sig.get("fund_grade") == "F":
+                return False
+            # Volume/liquidity check from already-fetched data
+            ticker = sig.get("ticker", "")
+            df = all_data.get(ticker)
+            if df is not None and not df.empty and "Volume" in df.columns:
+                avg_vol = float(df["Volume"].iloc[-20:].mean()) if len(df) >= 20 else float(df["Volume"].mean())
+                avg_val = avg_vol * price
+                if avg_val < 2_00_00_000:   # < ₹2 Cr daily turnover
+                    return False
+            return True
+
+        all_signals = [s for s in all_signals if _is_tradeable(s)]
+        logger.info(f"After institutional filters: {len(all_signals)} signals remain")
+
+        # ── ATR-based SL/TP enrichment using already-downloaded data ─────────
+        # We already have 2 years of OHLCV for every stock in all_data.
+        # Use that to compute proper ATR(14) — zero extra API calls.
+        ATR_PERIOD = 14
         for sig in all_signals:
-            if sig.get("signal") in ("BUY", "SELL") and not sig.get("entry_price"):
-                price = sig.get("price", 0)
-                if not price:
-                    continue
-                strength = sig.get("strength", 65)
-                if strength >= 90:   rr = 4.0
-                elif strength >= 80: rr = 3.0
-                elif strength >= 70: rr = 2.5
-                else:                rr = 2.0
-                if sig["signal"] == "BUY":
-                    sl = round(price * (1 - STOP_LOSS_PCT), 2)
-                    tp = round(price * (1 + STOP_LOSS_PCT * rr), 2)
-                else:
-                    sl = round(price * (1 + STOP_LOSS_PCT), 2)
-                    tp = round(price * (1 - STOP_LOSS_PCT * rr), 2)
-                sig["entry_price"] = round(price, 2)
-                sig["stop_loss"]   = sl
-                sig["target"]      = tp
-                sig["planned_rr"]  = rr
+            if sig.get("entry_price"):
+                continue   # already has levels (e.g. from QUANT or Telegram parser)
+            price = sig.get("price", 0)
+            if not price:
+                continue
+            strength = sig.get("strength", 65)
+            if strength >= 90:   rr = 4.0
+            elif strength >= 80: rr = 3.0
+            elif strength >= 70: rr = 2.5
+            else:                rr = 2.0
+
+            # Try ATR from in-memory data first
+            atr_sl_mult = 1.5
+            sl_dist = None
+            ticker = sig.get("ticker", "")
+            df = all_data.get(ticker)
+            if df is not None and not df.empty and len(df) >= ATR_PERIOD + 1:
+                try:
+                    hi = df["High"]; lo = df["Low"]; cl = df["Close"]
+                    tr = pd.concat([
+                        hi - lo,
+                        (hi - cl.shift(1)).abs(),
+                        (lo - cl.shift(1)).abs(),
+                    ], axis=1).max(axis=1)
+                    atr = float(tr.rolling(ATR_PERIOD).mean().iloc[-1])
+                    if pd.notna(atr) and 0 < atr < price * 0.15:
+                        sl_dist = atr * atr_sl_mult
+                except Exception:
+                    pass
+
+            # Flat fallback only if ATR computation failed
+            if sl_dist is None:
+                sl_dist = price * STOP_LOSS_PCT
+
+            if sig.get("signal") == "BUY":
+                sl = round(max(price - sl_dist, price * 0.50), 2)
+                tp = round(price + sl_dist * rr, 2)
+            else:
+                sl = round(price + sl_dist, 2)
+                tp = round(price - sl_dist * rr, 2)
+
+            sig["entry_price"] = round(price, 2)
+            sig["stop_loss"]   = sl
+            sig["target"]      = tp
+            sig["planned_rr"]  = rr
 
         # Save to file
         with open(SIGNALS_FILE, "w") as f:

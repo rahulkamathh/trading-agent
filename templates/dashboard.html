@@ -2236,8 +2236,13 @@ async function loadFNOHourlySignals() {
       const rr = s.rr_ratio ? `1:${s.rr_ratio}` : '1:2';
       const conviction = s.conviction || 0;
       return `<tr>
-        <td><b>${(s.underlying||'').replace('.NS','').replace('^','')}</b>
-          <div style="font-size:10px;color:var(--muted)">${s.name||''}</div></td>
+        <td>
+          <a href="https://www.tradingview.com/chart/?symbol=NSE:${(s.underlying||'').replace('.NS','').replace('^NSEI','NIFTY').replace('^NSEBANK','BANKNIFTY')}" target="_blank" style="color:inherit;text-decoration:none">
+            <b>${(s.underlying||'').replace('.NS','').replace('^','')}</b>
+            <span style="font-size:9px;color:var(--blue);margin-left:3px">↗</span>
+          </a>
+          <div style="font-size:10px;color:var(--muted)">${s.name||''}</div>
+        </td>
         <td>${dirPill}</td>
         <td style="font-weight:700">₹${(s.strike||0).toLocaleString('en-IN')}</td>
         <td style="font-size:11px">${(s.option_type||'').toUpperCase()}</td>
