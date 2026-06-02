@@ -13,7 +13,8 @@ import time
 import logging
 import requests
 import io
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time as dt_time
+import time
 from zoneinfo import ZoneInfo
 from learning_engine import get_learning_engine
 from notifier import get_notifier
@@ -30,7 +31,7 @@ def _now_ist() -> datetime:
 def _market_open() -> bool:
     """True if current IST time is within NSE trading hours 9:15–15:30."""
     now = _now_ist().time()
-    return time(9, 15) <= now <= time(15, 30)
+    return dt_time(9, 15) <= now <= dt_time(15, 30)
 from pathlib import Path
 
 import numpy as np
