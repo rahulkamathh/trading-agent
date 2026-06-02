@@ -593,24 +593,64 @@
   <div id="page-signals" class="page-section hidden">
     <div class="page-header">
       <span class="page-title">🎯 Live Signals</span>
-      <div style="display:flex;align-items:center;gap:10px;">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <span class="page-sub" id="signalsTs"></span>
-        <span id="signalsStaleBadge" style="display:none;font-size:11px;background:#3d1a1a;color:var(--red);padding:2px 8px;border-radius:8px;border:1px solid var(--red)">⚠️ Stale — run agent to refresh</span>
+        <span id="signalsStaleBadge" style="display:none;font-size:11px;background:#3d1a1a;color:var(--red);padding:2px 8px;border-radius:8px;border:1px solid var(--red)">⚠️ Stale</span>
+        <button id="refreshSignalsBtn" class="btn btn-primary" onclick="refreshSignals()" style="font-size:12px;padding:5px 14px;">
+          ↻ Refresh Signals
+        </button>
       </div>
     </div>
-    <!-- Strategy filter pills -->
-    <div id="sigStratFilters" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;"></div>
-    <div class="card">
-      <div class="table-wrap">
-        <table>
-          <thead><tr>
-            <th>Ticker</th><th>Strategy</th><th>Signal</th><th>Strength</th>
-            <th>Entry ₹</th><th>Stop Loss ₹</th><th>Target ₹</th><th>R:R</th>
-            <th>RSI</th><th>Grade</th>
-          </tr></thead>
-          <tbody id="sigBody"></tbody>
-        </table>
+    <!-- Signals tabs: Equity | F&O -->
+    <div style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:14px;">
+      <div id="sigTabEquity" onclick="switchSigTab('equity')"
+        style="padding:7px 18px;cursor:pointer;font-size:13px;color:var(--text);border-bottom:2px solid var(--accent);">
+        Equity Signals</div>
+      <div id="sigTabFno" onclick="switchSigTab('fno')"
+        style="padding:7px 18px;cursor:pointer;font-size:13px;color:var(--muted);border-bottom:2px solid transparent;">
+        ⚡ F&amp;O Signals <span id="fnoSigCount" style="font-size:10px;background:#1f3a5f;color:#58a6ff;padding:1px 6px;border-radius:8px;margin-left:4px">0</span></div>
+    </div>
+
+    <!-- Equity signals panel -->
+    <div id="sigPanelEquity">
+      <!-- Strategy filter pills -->
+      <div id="sigStratFilters" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;"></div>
+      <div class="card">
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Ticker</th><th>Strategy</th><th>Signal</th><th>Strength</th>
+              <th>Entry ₹</th><th>Stop Loss ₹</th><th>Target ₹</th><th>R:R</th>
+              <th>RSI</th><th>Grade</th>
+            </tr></thead>
+            <tbody id="sigBody"></tbody>
+          </table>
+        </div>
       </div>
+    </div>
+
+    <!-- F&O signals panel -->
+    <div id="sigPanelFno" style="display:none;">
+      <div id="fnoSigTs" style="font-size:11px;color:var(--muted);margin-bottom:10px;"></div>
+      <div class="card">
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Underlying</th><th>Direction</th><th>Strike</th><th>Type</th>
+              <th>Expiry</th><th>Entry ₹</th><th>SL ₹</th><th>Target ₹</th><th>R:R</th>
+              <th>IV Regime</th><th>VWAP Dev</th><th>PCR</th><th>Conviction</th><th>Reason</th>
+            </tr></thead>
+            <tbody id="fnoSigBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- hidden spacer for old layout -->
+    <div style="display:none">
+    <div class="card"><div class="table-wrap">
+      <table><tbody id="sigBodyOld"></tbody></table>
+    </div></div>
     </div>
   </div>
 
@@ -2098,6 +2138,97 @@ function pillFor(sig) {
   if (sig === 'BUY')  return '<span class="pill pill-buy">BUY</span>';
   if (sig === 'SELL') return '<span class="pill pill-sell">SELL</span>';
   return '<span class="pill pill-hold">HOLD</span>';
+}
+
+// ── Signals tab switcher ─────────────────────
+let _sigTab = 'equity';
+function switchSigTab(tab) {
+  _sigTab = tab;
+  document.getElementById('sigPanelEquity').style.display = tab === 'equity' ? '' : 'none';
+  document.getElementById('sigPanelFno').style.display    = tab === 'fno'    ? '' : 'none';
+  document.getElementById('sigTabEquity').style.color        = tab === 'equity' ? 'var(--text)' : 'var(--muted)';
+  document.getElementById('sigTabEquity').style.borderBottomColor = tab === 'equity' ? 'var(--accent)' : 'transparent';
+  document.getElementById('sigTabFno').style.color           = tab === 'fno'    ? 'var(--text)' : 'var(--muted)';
+  document.getElementById('sigTabFno').style.borderBottomColor    = tab === 'fno'    ? 'var(--accent)' : 'transparent';
+  if (tab === 'fno') loadFNOHourlySignals();
+}
+
+// ── Refresh signals button ───────────────────
+async function refreshSignals() {
+  const btn = document.getElementById('refreshSignalsBtn');
+  btn.disabled = true;
+  btn.textContent = '⟳ Refreshing…';
+  try {
+    const r = await fetch('/api/run_cycle', {method: 'POST'});
+    const d = await r.json();
+    if (d.ok) {
+      toast(`Signals refreshed — ${d.summary?.signals_count ?? '—'} signals generated`);
+      await loadDashboard();
+    } else {
+      toast('Refresh failed: ' + (d.error || 'unknown'), 'error');
+    }
+  } catch(e) {
+    toast('Refresh error: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '↻ Refresh Signals';
+  }
+}
+
+// ── F&O hourly signals ────────────────────────
+async function loadFNOHourlySignals() {
+  try {
+    const r = await fetch('/api/fno/hourly_signals');
+    const d = await r.json();
+    if (!d.ok) return;
+    const sigs = d.signals || [];
+    const countEl = document.getElementById('fnoSigCount');
+    if (countEl) countEl.textContent = sigs.length;
+    const tsEl = document.getElementById('fnoSigTs');
+    if (tsEl && d.generated_at) {
+      const age = Math.round((Date.now() - new Date(d.generated_at)) / 60000);
+      tsEl.textContent = `Generated ${age}m ago · ${d.generated_at.slice(0,16).replace('T',' ')} IST`;
+    }
+    const tbody = document.getElementById('fnoSigBody');
+    if (!tbody) return;
+    if (!sigs.length) {
+      tbody.innerHTML = '<tr><td colspan="14" style="text-align:center;color:var(--muted);padding:30px">No F&O signals yet — generated hourly during market hours</td></tr>';
+      return;
+    }
+    tbody.innerHTML = sigs.map(s => {
+      const dirPill = s.direction === 'BUY'
+        ? '<span class="pill pill-buy">CALL</span>'
+        : '<span class="pill pill-sell">PUT</span>';
+      const ivColor = s.iv_regime === 'LOW' ? 'var(--green)' : s.iv_regime === 'HIGH' ? 'var(--red)' : 'var(--muted)';
+      const vwapColor = (s.vwap_dev_pct || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+      const rr = s.rr_ratio ? `1:${s.rr_ratio}` : '1:2';
+      const conviction = s.conviction || 0;
+      return `<tr>
+        <td><b>${(s.underlying||'').replace('.NS','').replace('^','')}</b>
+          <div style="font-size:10px;color:var(--muted)">${s.name||''}</div></td>
+        <td>${dirPill}</td>
+        <td style="font-weight:700">₹${(s.strike||0).toLocaleString('en-IN')}</td>
+        <td style="font-size:11px">${(s.option_type||'').toUpperCase()}</td>
+        <td style="font-size:11px">${s.expiry||'—'} <span style="color:var(--muted)">(${s.days_to_expiry}d)</span></td>
+        <td style="font-weight:600">₹${s.entry_premium||'—'}</td>
+        <td class="neg">₹${s.sl_premium||'—'}</td>
+        <td class="pos">₹${s.target_premium||'—'}</td>
+        <td style="color:var(--muted)">${rr}</td>
+        <td style="color:${ivColor};font-weight:600">${s.iv_regime||'—'}</td>
+        <td style="color:${vwapColor}">${(s.vwap_dev_pct||0) >= 0 ? '+' : ''}${(s.vwap_dev_pct||0).toFixed(2)}%</td>
+        <td style="color:var(--muted)">${s.pcr||'—'}</td>
+        <td>
+          <div style="display:flex;align-items:center;gap:5px">
+            <div style="width:44px;height:5px;background:#21262d;border-radius:3px;overflow:hidden">
+              <div style="width:${conviction}%;height:100%;background:var(--blue)"></div>
+            </div>
+            <span style="font-size:11px;color:var(--muted)">${conviction}</span>
+          </div>
+        </td>
+        <td style="font-size:11px;color:var(--muted);max-width:200px;white-space:normal;line-height:1.4">${s.reason||'—'}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) { console.error('FNO hourly signals error', e); }
 }
 
 // ──────────────────────────────────────────────
