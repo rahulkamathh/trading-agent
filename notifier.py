@@ -470,13 +470,24 @@ class Notifier:
             return
         pnl_pct = ((exit_premium - entry_premium) / entry_premium * 100) if entry_premium else 0
         emoji = "✅" if pnl >= 0 else "❌"
+        _reason_labels = {
+            "TAKE_PROFIT":       "🎯 Target hit",
+            "TAKE_PROFIT_80PCT": "🎯 Target hit (+80%)",
+            "STOP_LOSS":         "🛑 Stop loss",
+            "STOP_LOSS_50PCT":   "🛑 Stop loss (−50%)",
+            "REALTIME_STOP_50PCT": "🛑 Real-time stop",
+            "EXPIRY_CLOSE":      "📅 Expiry close",
+            "MODEL_EXIT_LOSS":   "⚠️ Model exit (loss)",
+            "MANUAL":            "👤 Manual close",
+        }
+        reason_label = _reason_labels.get(reason, reason.replace("_", " ").title() if reason else "—")
         msg = (
             f"<b>{emoji} F&O Position Closed</b>\n\n"
             f"<b>{underlying.replace('.NS','')}</b> {strike:,.0f}{option_type[0].upper()}\n\n"
             f"Entry: ₹{entry_premium:.2f}  →  Exit: ₹{exit_premium:.2f}\n"
             f"P&L: <b>{'+'if pnl>=0 else ''}₹{pnl:,.0f}</b> ({pnl_pct:+.1f}%)\n"
             f"Lots closed: {qty_lots} × {lot_size}\n"
-            f"Reason: {reason[:120] if reason else '—'}\n\n"
+            f"Exit reason: {reason_label}\n\n"
             f"🕐 {_ist_now_str()}\n<i>Paper trade — not real money</i>"
         )
         self._tg.send_async(msg)

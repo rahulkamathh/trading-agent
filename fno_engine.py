@@ -696,6 +696,10 @@ class FNOPortfolio:
         greeks  = BlackScholes.greeks(spot, strike, T, RISK_FREE_RATE, iv, "put")
         lot     = get_lot_size(ticker)
 
+        if premium < 10:
+            logger.info(f"[FNO] PUT {ticker} skipped — premium ₹{premium:.2f} below ₹10 minimum")
+            return None
+
         # Position sizing: max 10% of F&O capital per PUT trade, minimum 1 lot
         max_spend = self.state.get("initial", FNO_INITIAL_CAPITAL) * FNO_MAX_RISK_PER_TRADE
         qty_lots  = max(1, int(max_spend / (premium * lot)))
@@ -894,13 +898,19 @@ class FNOPortfolio:
 
                 if pnl_pct <= -0.50:   # Stop: lost 50% of premium
                     logger.warning(f"[FNO] OPTION STOP {pid}  lost {pnl_pct:.0%}")
-                    t = self.close_option(pid, reason="OPTION_STOP_50PCT")
+                    t = self.close_option(pid, reason="STOP_LOSS_50PCT")
                     if t:
+                        # Override reason based on actual P&L (model MTM can lie)
+                        actual_pnl = t.get("pnl", 0)
+                        t["reason"] = "STOP_LOSS" if actual_pnl < 0 else "STOP_LOSS_50PCT"
                         closed.append(t)
                 elif pnl_pct >= 0.80:  # Target: up 80%
                     logger.info(f"[FNO] OPTION TARGET {pid}  gained {pnl_pct:.0%}")
-                    t = self.close_option(pid, reason="OPTION_TARGET_80PCT")
+                    t = self.close_option(pid, reason="TAKE_PROFIT_80PCT")
                     if t:
+                        # If actual P&L is negative despite model saying +80%, label correctly
+                        actual_pnl = t.get("pnl", 0)
+                        t["reason"] = "TAKE_PROFIT" if actual_pnl >= 0 else "MODEL_EXIT_LOSS"
                         closed.append(t)
 
         return closed
@@ -1015,7 +1025,10 @@ class DirectionalOptionsStrategy:
                 lot    = get_lot_size(ticker)
                 cost   = prem * lot
 
-                if cost < 500:   # nonsensical premium
+                if prem < 10:    # minimum ₹10 premium — below this spreads are too wide
+                    logger.info(f"[DirOpt] SKIP {ticker} — premium ₹{prem:.2f} below ₹10 minimum")
+                    continue
+                if cost < 500:   # minimum total outlay
                     continue
                 if not portfolio.can_afford(cost):
                     logger.info(f"[DirOpt] SKIP {ticker} — cannot afford ₹{cost:.0f} (cash=₹{portfolio.state['cash']:.0f})")
