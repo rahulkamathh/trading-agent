@@ -637,7 +637,7 @@
           <table>
             <thead><tr>
               <th>Underlying</th><th>Direction</th><th>Strike</th><th>Type</th>
-              <th>Expiry</th><th>Entry ₹</th><th>SL ₹</th><th>Target ₹</th><th>R:R</th>
+              <th>Expiry</th><th>Lot</th><th>Cost/Lot</th><th>Entry ₹</th><th>SL ₹</th><th>Target ₹</th><th>R:R</th>
               <th>IV Regime</th><th>VWAP Dev</th><th>PCR</th><th>Conviction</th><th>Reason</th>
             </tr></thead>
             <tbody id="fnoSigBody"></tbody>
@@ -2247,6 +2247,8 @@ async function loadFNOHourlySignals() {
         <td style="font-weight:700">₹${(s.strike||0).toLocaleString('en-IN')}</td>
         <td style="font-size:11px">${(s.option_type||'').toUpperCase()}</td>
         <td style="font-size:11px">${s.expiry||'—'} <span style="color:var(--muted)">(${s.days_to_expiry}d)</span></td>
+        <td style="font-weight:600;color:var(--blue)">${s.lot_size||'—'}</td>
+        <td style="font-size:11px;color:var(--muted)">₹${s.cost_1lot ? Number(s.cost_1lot).toLocaleString('en-IN') : '—'}</td>
         <td style="font-weight:600">₹${s.entry_premium||'—'}</td>
         <td class="neg">₹${s.sl_premium||'—'}</td>
         <td class="pos">₹${s.target_premium||'—'}</td>
