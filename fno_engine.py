@@ -920,8 +920,13 @@ class FNOPortfolio:
                     closed.append(t)
                 continue
 
-            # Option P&L stops
-            if pos["instrument_type"] == "OPTION" and pos["position"] == "LONG":
+            # Option P&L stops — only during market hours 9:15–15:00
+            # After 3PM, BS prices become unreliable as liquidity dries up
+            now_t = _now_ist().time()
+            from datetime import time as _dtt2  # noqa: PLC0415
+            stops_active = _dtt2(9, 15) <= now_t <= _dtt2(15, 0)
+
+            if pos["instrument_type"] == "OPTION" and pos["position"] == "LONG" and stops_active:
                 mtm = self._mtm_value(pos)
                 cost = pos["entry_premium"] * pos["qty"] * get_lot_size(pos["underlying"])
                 pnl_pct = mtm / cost if cost != 0 else 0

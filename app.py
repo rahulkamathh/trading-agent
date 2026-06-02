@@ -1181,7 +1181,7 @@ if __name__ == "__main__":
                 now = datetime.now(_IST).time()
                 # Only run during market hours
                 from datetime import time as _dt_time
-                if not (_dt_time(9, 15) <= now <= _dt_time(15, 35)):
+                if not (_dt_time(9, 15) <= now <= _dt_time(15, 0)):
                     _time.sleep(60)
                     continue
 
