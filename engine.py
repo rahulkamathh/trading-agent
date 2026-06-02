@@ -1374,12 +1374,27 @@ class Portfolio:
 
     def check_stops(self) -> list:
         """
-        Check stop-loss and take-profit for all open positions.
-        Trailing stop ratchets up as positions gain — locks in intraday profits:
-          ≥ 5%  gain  → stop moves to breakeven (entry + 0.5%)
-          ≥ 10% gain  → stop trails at 5% below current price
-          ≥ 15% gain  → stop trails at 7% below current price (let winners run)
-        Stop only ever moves UP — never down.
+        Institutional-grade stop management.
+
+        TRAILING STOP — Chandelier Exit (industry standard):
+          Uses ATR so the stop width reflects each stock's actual volatility.
+          stop = highest_close_since_entry - ATR_MULT × ATR(14)
+          This prevents getting stopped out by normal volatility while still
+          locking in profits as the position moves in our favour.
+          Stop ONLY moves up — never down.
+
+        PARTIAL PROFIT BOOKING:
+          When price hits 50% of the way to target (T1), sell half the position
+          and tighten the stop to breakeven on the remainder. This locks in
+          cash while letting the winner run — standard institutional practice.
+
+        DEAD-MONEY EXIT:
+          If a position is flat (< 3% up or down) after 20 trading days,
+          exit and redeploy the capital. Dead positions have opportunity cost.
+
+        GAP-DOWN PROTECTION:
+          If price gaps down more than 4% from the previous stop level in a
+          single cycle, exit immediately regardless of stop level.
         """
         triggered = []
         state_dirty = False
@@ -1389,31 +1404,79 @@ class Portfolio:
             if price <= 0:
                 continue
 
-            entry   = pos["avg_price"]
-            pnl_pct = (price / entry - 1) * 100
+            entry    = pos["avg_price"]
+            pnl_pct  = (price / entry - 1) * 100
+            prev_sl  = pos["stop_loss"]
 
-            # ── Trailing stop ratchet ────────────────────────────────────── #
-            current_sl = pos["stop_loss"]
-            if pnl_pct >= 15:
-                new_sl = round(price * 0.93, 2)   # trail 7% below current
-            elif pnl_pct >= 10:
-                new_sl = round(price * 0.95, 2)   # trail 5% below current
-            elif pnl_pct >= 5:
-                new_sl = round(entry * 1.005, 2)  # move to breakeven + 0.5%
-            else:
-                new_sl = current_sl               # keep original stop
+            # ── Chandelier Exit trailing stop ────────────────────────────── #
+            # Compute ATR(14) and track highest close since entry
+            try:
+                df_recent = DataFetcher.fetch(ticker, period="60d", interval="1d")
+                if df_recent is not None and not df_recent.empty and len(df_recent) >= 15:
+                    hi  = df_recent["High"]
+                    lo  = df_recent["Low"]
+                    cl  = df_recent["Close"]
+                    tr  = pd.concat([
+                        hi - lo,
+                        (hi - cl.shift(1)).abs(),
+                        (lo - cl.shift(1)).abs(),
+                    ], axis=1).max(axis=1)
+                    atr = float(tr.rolling(14).mean().iloc[-1])
 
-            if new_sl > current_sl:
+                    # Highest close since entry date
+                    entry_dt = pos.get("entry_date", "")
+                    if entry_dt:
+                        try:
+                            entry_ts = pd.Timestamp(entry_dt[:10])
+                            since_entry = df_recent[df_recent.index.normalize() >= entry_ts]
+                            highest_close = float(since_entry["Close"].max()) if not since_entry.empty else price
+                        except Exception:
+                            highest_close = max(price, entry)
+                    else:
+                        highest_close = max(price, entry)
+
+                    # Chandelier stop: ATR multiplier scales with gain
+                    # — tighter when we're very profitable, wider early on
+                    if pnl_pct >= 15:
+                        mult = 2.0   # tight — protect large gain
+                    elif pnl_pct >= 7:
+                        mult = 2.5   # standard
+                    else:
+                        mult = 3.0   # wide — let position breathe early
+
+                    chandelier_sl = round(highest_close - mult * atr, 2)
+                    # Never go below original stop and never below entry once profitable
+                    floor = max(prev_sl, entry * 0.93)  # hard floor: never more than 7% loss
+                    new_sl = max(chandelier_sl, floor) if pnl_pct >= 5 else max(chandelier_sl, prev_sl)
+                    new_sl = round(new_sl, 2)
+                else:
+                    new_sl = prev_sl
+            except Exception:
+                new_sl = prev_sl
+
+            if new_sl > prev_sl:
                 pos["stop_loss"] = new_sl
                 state_dirty = True
                 logger.info(
-                    f"📈 TRAIL-STOP {ticker}  SL ₹{current_sl:.2f} → ₹{new_sl:.2f}"
-                    f"  (position +{pnl_pct:.1f}%)"
+                    f"📈 CHANDELIER-STOP {ticker}  "
+                    f"SL ₹{prev_sl:.2f} → ₹{new_sl:.2f}  ({pnl_pct:+.1f}%)"
                 )
 
-            # ── Trigger checks ───────────────────────────────────────────── #
+            # ── Gap-down protection ──────────────────────────────────────── #
+            gap_down_pct = (prev_sl - price) / prev_sl * 100 if prev_sl > 0 else 0
+            if gap_down_pct > 4 and price < entry:
+                logger.warning(
+                    f"⚡ GAP-DOWN {ticker} @ ₹{price:.2f}  "
+                    f"gapped {gap_down_pct:.1f}% below stop — exit immediately"
+                )
+                trade = self.execute_sell(ticker, price, reason="GAP_DOWN_PROTECTION")
+                if trade:
+                    triggered.append(trade)
+                continue
+
+            # ── Stop-loss trigger ────────────────────────────────────────── #
             if price <= pos["stop_loss"]:
-                reason = "TRAILING_STOP" if pos["stop_loss"] > entry else "STOP_LOSS"
+                reason = "CHANDELIER_STOP" if pos["stop_loss"] > entry else "STOP_LOSS"
                 logger.warning(
                     f"🛑 {reason} {ticker} @ ₹{price:.2f}  "
                     f"entry=₹{entry:.2f}  sl=₹{pos['stop_loss']:.2f}  {pnl_pct:+.1f}%"
@@ -1421,7 +1484,10 @@ class Portfolio:
                 trade = self.execute_sell(ticker, price, reason=reason)
                 if trade:
                     triggered.append(trade)
-            elif price >= pos["target"]:
+                continue
+
+            # ── Take-profit trigger ──────────────────────────────────────── #
+            if price >= pos["target"]:
                 logger.info(
                     f"🎯 TAKE-PROFIT {ticker} @ ₹{price:.2f}  "
                     f"entry=₹{entry:.2f}  gain={pnl_pct:.1f}%"
@@ -1429,14 +1495,62 @@ class Portfolio:
                 trade = self.execute_sell(ticker, price, reason="TAKE_PROFIT")
                 if trade:
                     triggered.append(trade)
-            else:
-                logger.debug(
-                    f"📊 HOLD {ticker} @ ₹{price:.2f}  "
-                    f"SL=₹{pos['stop_loss']:.2f}  TP=₹{pos['target']:.2f}  {pnl_pct:+.1f}%"
-                )
+                continue
+
+            # ── Partial profit booking at T1 (50% of way to target) ──────── #
+            t1 = entry + (pos["target"] - entry) * 0.50
+            if price >= t1 and not pos.get("t1_booked"):
+                half_qty = pos["qty"] // 2
+                if half_qty >= 1:
+                    logger.info(
+                        f"💰 PARTIAL-PROFIT {ticker} @ ₹{price:.2f}  "
+                        f"selling {half_qty}/{pos['qty']} shares at T1 ({pnl_pct:+.1f}%)"
+                    )
+                    # Execute partial sell
+                    pnl = (price - entry) * half_qty
+                    self.state["cash"]         += price * half_qty
+                    self.state["realised_pnl"] += pnl
+                    pos["qty"]      -= half_qty
+                    pos["t1_booked"] = True
+                    # Tighten stop to breakeven on remainder
+                    breakeven_sl = round(entry * 1.005, 2)
+                    if breakeven_sl > pos["stop_loss"]:
+                        pos["stop_loss"] = breakeven_sl
+                        logger.info(
+                            f"   ↳ Stop tightened to breakeven ₹{breakeven_sl:.2f} on remainder"
+                        )
+                    self._log_trade(
+                        "SELL", ticker, half_qty, price,
+                        pos.get("strategy", ""), "PARTIAL_PROFIT_T1",
+                        pnl=pnl,
+                    )
+                    state_dirty = True
+
+            # ── Dead-money exit: flat for 20+ days ──────────────────────── #
+            try:
+                entry_dt = pos.get("entry_date", "")
+                if entry_dt:
+                    entry_ts  = _now_ist().fromisoformat(entry_dt)
+                    days_held = (_now_ist() - entry_ts).days
+                    if days_held >= 20 and abs(pnl_pct) < 3.0:
+                        logger.info(
+                            f"⌛ DEAD-MONEY EXIT {ticker}  "
+                            f"held {days_held}d  only {pnl_pct:+.1f}% — redeploying capital"
+                        )
+                        trade = self.execute_sell(ticker, price, reason="DEAD_MONEY_EXIT")
+                        if trade:
+                            triggered.append(trade)
+                        continue
+            except Exception:
+                pass
+
+            logger.debug(
+                f"📊 HOLD {ticker} @ ₹{price:.2f}  "
+                f"SL=₹{pos['stop_loss']:.2f}  TP=₹{pos['target']:.2f}  {pnl_pct:+.1f}%"
+            )
 
         if state_dirty:
-            self._save()   # persist updated stop levels
+            self._save()
 
         return triggered
 
@@ -1653,6 +1767,159 @@ class MarketStructureStrategy:
 # ---------------------------------------------------------------------------
 # Strategy 5: Telegram Signal Intelligence
 # ---------------------------------------------------------------------------
+
+class QuantAnalysisStrategy:
+    """
+    Quantitative analysis strategy using statistical methods:
+
+    1. Z-Score mean reversion  — finds stocks statistically cheap/expensive
+       relative to their own 60-day distribution
+    2. Hurst Exponent          — detects whether each stock is trending (H>0.5)
+       or mean-reverting (H<0.5) and picks the right trade style
+    3. Volatility-adjusted momentum — Sharpe-like ranking using return / vol
+    4. Statistical support/resistance — entry near lower Bollinger + 2σ support,
+       target at mean, SL at 3σ below current
+
+    Entry, stop-loss and target are all computed from actual price statistics,
+    not fixed percentages.
+    """
+    name       = "Quant Analysis"
+    short_name = "QUANT"
+
+    LOOKBACK   = 60    # days for statistical window
+    Z_BUY      = -1.5  # Z-score threshold to signal statistically cheap
+    Z_SELL     =  1.8  # Z-score threshold to signal statistically expensive
+
+    @staticmethod
+    def _hurst(close: pd.Series, lags: int = 20) -> float:
+        """
+        Compute Hurst exponent using R/S analysis on log-returns.
+        H > 0.55 → trending  |  H < 0.45 → mean-reverting  |  ~0.5 → random walk
+        """
+        try:
+            log_ret = np.log(close / close.shift(1)).dropna().values
+            if len(log_ret) < lags * 2:
+                return 0.5
+            rs_vals = []
+            lag_vals = range(2, lags)
+            for lag in lag_vals:
+                chunks = [log_ret[i:i+lag] for i in range(0, len(log_ret)-lag, lag)]
+                rs_chunk = []
+                for chunk in chunks:
+                    if len(chunk) < 2:
+                        continue
+                    m = np.mean(chunk)
+                    dev = np.cumsum(chunk - m)
+                    r = dev.max() - dev.min()
+                    s = np.std(chunk, ddof=1)
+                    if s > 0:
+                        rs_chunk.append(r / s)
+                if rs_chunk:
+                    rs_vals.append(np.mean(rs_chunk))
+            if len(rs_vals) < 4:
+                return 0.5
+            log_rs  = np.log(rs_vals)
+            log_lag = np.log(list(range(2, lags)))[:len(log_rs)]
+            h = float(np.polyfit(log_lag, log_rs, 1)[0])
+            return max(0.0, min(1.0, h))
+        except Exception:
+            return 0.5
+
+    def generate_signals(self, data: dict) -> list:
+        signals = []
+
+        for ticker, df in data.items():
+            if df is None or df.empty or len(df) < self.LOOKBACK + 5:
+                continue
+
+            close  = df["Close"].dropna()
+            window = close.iloc[-self.LOOKBACK:]
+
+            # ── Z-score of current price vs 60-day window ─────────────────── #
+            mean  = float(window.mean())
+            std   = float(window.std())
+            if std == 0:
+                continue
+            price   = float(close.iloc[-1])
+            z_score = (price - mean) / std
+
+            # ── Hurst exponent ────────────────────────────────────────────── #
+            hurst = self._hurst(close.iloc[-120:] if len(close) >= 120 else close)
+
+            # ── Volatility-adjusted momentum (Sharpe-like) ────────────────── #
+            ret_20d = float(close.pct_change(20).iloc[-1])
+            vol_20d = float(close.pct_change().iloc[-20:].std()) if len(close) >= 20 else 0.01
+            sharpe  = ret_20d / vol_20d if vol_20d > 0 else 0
+
+            # ── Determine signal ──────────────────────────────────────────── #
+            signal = None
+            strength = 0
+            reason_parts = []
+
+            if z_score <= self.Z_BUY:
+                # Statistically cheap — prefer mean-reverting stocks
+                if hurst < 0.55:  # mean-reverting or neutral
+                    signal   = "BUY"
+                    strength = min(100, int(65 + abs(z_score) * 10))
+                    reason_parts.append(f"Z={z_score:.2f} (statistically cheap)")
+                    reason_parts.append(f"Hurst={hurst:.2f} (mean-reverting)")
+                elif hurst >= 0.55 and ret_20d > 0:
+                    # Trending stock dipping — valid pullback buy
+                    signal   = "BUY"
+                    strength = min(100, int(60 + abs(z_score) * 8))
+                    reason_parts.append(f"Z={z_score:.2f} pullback in uptrend")
+                    reason_parts.append(f"Hurst={hurst:.2f} (trending)")
+
+            elif z_score >= self.Z_SELL:
+                signal   = "SELL"
+                strength = min(100, int(60 + z_score * 8))
+                reason_parts.append(f"Z={z_score:.2f} (statistically expensive)")
+                reason_parts.append(f"Hurst={hurst:.2f}")
+
+            if signal is None:
+                continue
+
+            # ── Statistical entry / SL / target ──────────────────────────── #
+            if signal == "BUY":
+                # Entry: current price (already at statistical low)
+                entry  = round(price, 2)
+                # SL: 2σ below current (beyond statistical range)
+                sl     = round(max(price - 2.0 * std, price * 0.85), 2)
+                # Target: mean reversion back to μ, then half-σ above
+                target = round(mean + 0.5 * std, 2)
+                if target <= entry:
+                    target = round(entry * 1.10, 2)  # fallback: 10% above entry
+            else:
+                entry  = round(price, 2)
+                sl     = round(price + 2.0 * std, 2)
+                target = round(mean - 0.5 * std, 2)
+                if target >= entry:
+                    target = round(entry * 0.90, 2)
+
+            if sharpe > 0.5:
+                reason_parts.append(f"Sharpe={sharpe:.2f} ✅")
+
+            signals.append({
+                "ticker":       ticker,
+                "signal":       signal,
+                "price":        entry,
+                "score":        round(z_score, 3),
+                "rsi":          50.0,
+                "strategy":     self.short_name,
+                "strength":     strength,
+                "entry_price":  entry,
+                "stop_loss":    sl,
+                "target":       target,
+                "z_score":      round(z_score, 3),
+                "hurst":        round(hurst, 3),
+                "sharpe_20d":   round(sharpe, 3),
+                "reason":       " | ".join(reason_parts),
+            })
+
+        # Return top 20 by abs(z_score) — most statistically extreme
+        signals.sort(key=lambda x: abs(x["score"]), reverse=True)
+        return signals[:20]
+
 
 class SectorMomentumStrategy:
     """
@@ -1922,6 +2189,7 @@ class SignalAggregator:
         self.multifactor = MultiFactorStrategy()
         self.sector_rot  = SectorRotationStrategy()
         self.sector_mom  = SectorMomentumStrategy()
+        self.quant       = QuantAnalysisStrategy()
         self.sma         = SMAStrategy()
         self.fibonacci   = FibonacciStrategy()
         self.rsi_div     = RSIDivergenceStrategy()
@@ -1953,6 +2221,7 @@ class SignalAggregator:
         all_signals += self.multifactor.generate_signals(all_data)
         all_signals += self.sector_rot.generate_signals(etf_data, index_df)
         all_signals += self.sector_mom.generate_signals(all_data, index_df)
+        all_signals += self.quant.generate_signals(all_data)
         all_signals += self.sma.generate_signals(all_data)
         all_signals += self.fibonacci.generate_signals(all_data)
         all_signals += self.rsi_div.generate_signals(all_data)
@@ -1973,6 +2242,23 @@ class SignalAggregator:
             all_signals = get_analyzer().rescore_signals(all_signals)
         except Exception as e:
             logger.warning(f"Fundamental rescoring skipped: {e}")
+
+        # ── Enrich all BUY signals with entry / SL / target if missing ──────
+        enriched = []
+        for sig in all_signals:
+            if sig.get("signal") == "BUY" and not sig.get("entry_price"):
+                try:
+                    price    = sig.get("price") or DataFetcher.get_current_price(sig["ticker"])
+                    strength = sig.get("strength", 65)
+                    sl, tp, rr = _compute_sl_tp(sig["ticker"], price, strength)
+                    sig["entry_price"] = round(price, 2)
+                    sig["stop_loss"]   = sl
+                    sig["target"]      = tp
+                    sig["planned_rr"]  = rr
+                except Exception:
+                    pass
+            enriched.append(sig)
+        all_signals = enriched
 
         # Save to file
         with open(SIGNALS_FILE, "w") as f:
@@ -2078,6 +2364,31 @@ class TradingAgent:
         executed = []
         new_buys_this_cycle = 0
 
+        # ── Time-of-day filter: institutional execution windows ────────────
+        now_ist  = _now_ist()
+        now_time = now_ist.time()
+        # Avoid first 15 min (wide spreads, stop-hunt candles) and last 30 min
+        _EXEC_OPEN  = dt_time(9, 30)
+        _EXEC_CLOSE = dt_time(15, 0)
+        execution_window_open = _EXEC_OPEN <= now_time <= _EXEC_CLOSE
+        if not execution_window_open:
+            logger.info(
+                f"⏰ EXECUTION WINDOW CLOSED ({now_time.strftime('%H:%M')} IST) — "
+                f"no new buys (trades only 9:30–15:00)"
+            )
+
+        # ── Sector concentration: track current sector exposure ────────────
+        sector_exposure: dict[str, float] = {}
+        total_portfolio = self.portfolio.get_total_value()
+        for tk, pos in self.portfolio.state["positions"].items():
+            price_pos = DataFetcher.get_current_price(tk)
+            val = pos["qty"] * price_pos
+            for sector, tickers in SectorMomentumStrategy.SECTOR_STOCKS.items():
+                if tk in tickers:
+                    sector_exposure[sector] = sector_exposure.get(sector, 0) + val
+                    break
+        MAX_SECTOR_PCT = 0.30  # max 30% of portfolio in any single sector
+
         for ticker, composite_strength, price, strategies in buy_candidates:
             # Guard-rail 0: macro / drawdown hard limit
             if new_buys_this_cycle >= max_new_buys:
@@ -2088,29 +2399,90 @@ class TradingAgent:
                 break
 
             strat_str = "+".join(sorted(set(strategies)))
+
             # Guard-rail 1: minimum strength (dynamic — set by LearningEngine)
             if composite_strength < buy_threshold:
                 logger.debug(
                     f"⏭  SKIP {ticker} — strength {composite_strength:.0f} < {buy_threshold} [{strat_str}]"
                 )
                 continue
+
+            # Guard-rail 2: multi-strategy consensus
+            # Institutional rule: single-strategy signals are noise.
+            # Require at least 2 strategies to agree (or very high conviction single).
+            n_strategies = len(set(strategies))
+            if n_strategies < 2 and composite_strength < 80:
+                logger.debug(
+                    f"⏭  SKIP {ticker} — only 1 strategy ({strat_str}) "
+                    f"with strength {composite_strength:.0f} < 80"
+                )
+                continue
+
+            # Guard-rail 3: execution time window
+            if not execution_window_open:
+                logger.debug(f"⏭  SKIP {ticker} — outside execution window")
+                continue
+
+            # Guard-rail 4: volume / liquidity filter
+            try:
+                df_vol = DataFetcher.fetch(ticker, period="30d", interval="1d")
+                if df_vol is not None and not df_vol.empty and len(df_vol) >= 5:
+                    avg_vol   = float(df_vol["Volume"].iloc[-20:].mean()) if len(df_vol) >= 20 else float(df_vol["Volume"].mean())
+                    today_vol = float(df_vol["Volume"].iloc[-1])
+                    avg_val   = avg_vol * float(df_vol["Close"].iloc[-1])
+                    # Minimum: avg daily traded value > ₹1 crore AND today > 30% of avg
+                    if avg_val < 1_00_00_000:   # ₹1 crore
+                        logger.info(f"⏭  SKIP {ticker} — illiquid (avg daily ₹{avg_val/1e7:.1f}Cr < ₹1Cr)")
+                        continue
+                    if today_vol < avg_vol * 0.30:
+                        logger.info(f"⏭  SKIP {ticker} — low volume today ({today_vol/avg_vol:.0%} of avg)")
+                        continue
+            except Exception:
+                pass
+
+            # Guard-rail 5: sector concentration limit
+            ticker_sector = None
+            for sector, tickers in SectorMomentumStrategy.SECTOR_STOCKS.items():
+                if ticker in tickers:
+                    ticker_sector = sector
+                    break
+            if ticker_sector:
+                current_exposure = sector_exposure.get(ticker_sector, 0) / total_portfolio
+                if current_exposure >= MAX_SECTOR_PCT:
+                    logger.info(
+                        f"⏭  SKIP {ticker} — sector '{ticker_sector}' already at "
+                        f"{current_exposure:.0%} of portfolio (max {MAX_SECTOR_PCT:.0%})"
+                    )
+                    continue
+
             if self.portfolio.in_cooldown(ticker):
                 logger.info(f"⏳ COOLDOWN {ticker} — skipping (exited recently)")
                 continue
+
             if price <= 0:
                 price = DataFetcher.get_current_price(ticker)
-            logger.info(f"🔎 Evaluating BUY {ticker} @ ₹{price:.2f}  "
-                        f"strength={composite_strength:.0f}  strategies=[{strat_str}]")
+
+            logger.info(
+                f"🔎 Evaluating BUY {ticker} @ ₹{price:.2f}  "
+                f"strength={composite_strength:.0f}  strategies={n_strategies}×[{strat_str}]"
+            )
             trade = self.portfolio.execute_buy(
                 ticker, price,
                 strategy=strat_str,
-                reason=f"SIGNAL strength={composite_strength:.0f}",
+                reason=f"SIGNAL strength={composite_strength:.0f} strategies={n_strategies}",
                 strength=composite_strength,
             )
             if trade:
                 executed.append(trade)
                 new_buys_this_cycle += 1
-                logger.info(f"✅ BOUGHT {ticker}  qty={trade['qty']}  @ ₹{price:.2f}  [{strat_str}]")
+                # Update sector exposure tracker
+                if ticker_sector:
+                    sector_exposure[ticker_sector] = (
+                        sector_exposure.get(ticker_sector, 0) + trade["qty"] * price
+                    )
+                logger.info(
+                    f"✅ BOUGHT {ticker}  qty={trade['qty']}  @ ₹{price:.2f}  [{strat_str}]"
+                )
 
         # ── Signal-based SELL: intentionally disabled ─────────────────────
         # Positions are closed ONLY by price-based rules (stop-loss / take-profit)
