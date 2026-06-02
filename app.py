@@ -1009,8 +1009,10 @@ def _run_cycle_safe() -> None:
             import logging as _logging
             _logging.getLogger(__name__).warning(f"F&O cycle error: {_fe}")
 
-    except (ValueError, RuntimeError) as exc:
-        print(f"[BG] Error in cycle: {exc}")
+    except Exception as exc:
+        import traceback as _tb
+        import logging as _logging
+        _logging.getLogger("engine").error(f"❌ Agent cycle crashed: {exc}\n{_tb.format_exc()}")
     finally:
         _state.running = False
 
