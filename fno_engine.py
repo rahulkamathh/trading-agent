@@ -1569,9 +1569,14 @@ class FNOAgent:
 
         logger.info("[FNO] === F&O Cycle Start ===")
         stops    = self.portfolio.check_expiry_and_stops()
-        condors  = self.iron_condor.run(self.portfolio)
+        # SpreadStrategy and IronCondorStrategy DISABLED:
+        # Both write (sell) options which require margin accounts and create
+        # theoretically unlimited loss exposure — not appropriate for paper
+        # trading without real broker margin controls.
+        # Only LONG options (buying calls/puts) are permitted.
+        condors  = []   # self.iron_condor.run(self.portfolio)
+        spreads  = []   # self.spreads.run(equity_signals, self.portfolio)
         directs  = self.directional.run(equity_signals, self.portfolio)
-        spreads  = self.spreads.run(equity_signals, self.portfolio)
         hedges   = self.hedge.run(equity_positions, self.portfolio, equity_drawdown_pct)
 
         total_value = self.portfolio.get_total_value()

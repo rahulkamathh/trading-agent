@@ -1168,6 +1168,82 @@ if __name__ == "__main__":
     threading.Thread(target=_hourly_fno_loop, daemon=True, name="hourly-fno").start()
     print("  ⚡  Hourly F&O signal generator started")
 
+    # ── Real-time F&O position monitor (60s loop) ─────────────────────────
+    # Uses Angel One live prices to recompute Greeks every minute and trigger
+    # stops/alerts faster than the 15-min equity cycle.
+    def _fno_realtime_monitor():
+        import time as _time
+        from zoneinfo import ZoneInfo
+        _IST = ZoneInfo("Asia/Kolkata")
+
+        while True:
+            try:
+                now = datetime.now(_IST).time()
+                # Only run during market hours
+                from datetime import time as _dt_time
+                if not (_dt_time(9, 15) <= now <= _dt_time(15, 35)):
+                    _time.sleep(60)
+                    continue
+
+                from fno_engine import get_fno_agent   # noqa: PLC0415
+                from angelone_feed import get_feed     # noqa: PLC0415
+                from fno_engine import BlackScholes, days_to_expiry, RISK_FREE_RATE  # noqa: PLC0415
+                from datetime import date as _date    # noqa: PLC0415
+
+                fno      = get_fno_agent()
+                feed     = get_feed()
+                portfolio = fno.portfolio
+                positions = dict(portfolio.state.get("positions", {}))
+
+                for pid, pos in positions.items():
+                    if pos.get("instrument_type") != "OPTION":
+                        continue
+                    if pos.get("position") != "LONG":
+                        continue   # only manage long options in real-time
+
+                    underlying = pos["underlying"]
+                    # Try live price first, fall back to last known
+                    spot = feed.get_price(underlying) if feed.is_connected() else None
+                    if not spot or spot <= 0:
+                        continue
+
+                    try:
+                        T  = days_to_expiry(_date.fromisoformat(pos["expiry"]))
+                        iv = pos.get("iv", 0.25)
+                        curr_prem = BlackScholes.price(
+                            spot, pos["strike"], T, RISK_FREE_RATE, iv, pos["option_type"]
+                        )
+                        entry_prem = pos["entry_premium"]
+
+                        pnl_pct = (curr_prem - entry_prem) / entry_prem if entry_prem else 0
+
+                        # Intraday stop: exit if premium falls 40% from entry
+                        if pnl_pct <= -0.40:
+                            portfolio.close_option(pid, reason="REALTIME_STOP_40PCT")
+                            logger.info(
+                                f"[FNO-RT] 🛑 Stop hit {underlying} {pos['strike']}{pos['option_type'][0].upper()} "
+                                f"prem={curr_prem:.2f} ({pnl_pct:.0%}) — closed"
+                            )
+
+                        # Intraday target: exit if premium gains 80%
+                        elif pnl_pct >= 0.80:
+                            portfolio.close_option(pid, reason="REALTIME_TARGET_80PCT")
+                            logger.info(
+                                f"[FNO-RT] ✅ Target hit {underlying} {pos['strike']}{pos['option_type'][0].upper()} "
+                                f"prem={curr_prem:.2f} ({pnl_pct:.0%}) — closed"
+                            )
+
+                    except Exception as _pos_err:
+                        logger.debug(f"[FNO-RT] Error checking {pid}: {_pos_err}")
+
+            except Exception as _e:
+                logger.warning(f"[FNO-RT] Monitor error: {_e}")
+
+            _time.sleep(60)   # check every 60 seconds
+
+    threading.Thread(target=_fno_realtime_monitor, daemon=True, name="fno-rt-monitor").start()
+    print("  📡  Real-time F&O position monitor started (60s loop, Angel One prices)")
+
     print("\n" + "=" * 60)
     print("  🇮🇳  Indian Institutional Trading Agent  —  Paper Mode")
     print("=" * 60)
