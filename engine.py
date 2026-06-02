@@ -354,6 +354,20 @@ class DataFetcher:
         try:
             df = yf.download(ticker, period=period, interval=interval, auto_adjust=True, progress=False)
             if df.empty:
+                # Fallback: try Angel One historical data API
+                try:
+                    from angelone_feed import get_feed as _get_feed  # noqa: PLC0415
+                    _feed = _get_feed()
+                    if _feed.is_connected():
+                        df_ao = _feed.get_historical(ticker, period=period, interval=interval)
+                        if df_ao is not None and not df_ao.empty:
+                            logger.info(f"[DataFetcher] yfinance empty for {ticker} — using Angel One historical data")
+                            cls._fail_counts.pop(ticker, None)
+                            cls._cache[key] = df_ao
+                            return df_ao
+                except Exception as _ao_err:
+                    logger.debug(f"[DataFetcher] Angel One fallback failed for {ticker}: {_ao_err}")
+
                 count = cls._fail_counts.get(ticker, 0) + 1
                 cls._fail_counts[ticker] = count
                 if count >= cls._FAIL_THRESHOLD:

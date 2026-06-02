@@ -318,6 +318,55 @@ class LiveFeed:
         self._connected = False
         logger.warning("[LiveFeed] WebSocket closed")
 
+    def get_historical(self, ticker: str, period: str = "1y", interval: str = "1d") -> "Optional[pd.DataFrame]":
+        """
+        Fetch OHLCV history from Angel One SmartAPI as a fallback to yfinance.
+        Returns a DataFrame with columns [Open, High, Low, Close, Volume] or None on failure.
+        """
+        if not self._smart or not self._connected:
+            return None
+        try:
+            import pandas as pd  # noqa: PLC0415
+            from datetime import datetime, timedelta  # noqa: PLC0415
+
+            # Map ticker to Angel One token
+            sym = ticker.replace(".NS", "").replace(".BO", "")
+            token = NSE_CM_TOKENS.get(sym) or NSE_CM_TOKENS.get(ticker)
+            if not token:
+                return None
+
+            # Map period → fromdate
+            period_days = {"5d": 5, "1mo": 30, "3mo": 90, "6mo": 180,
+                           "1y": 365, "2y": 730, "5y": 1825}.get(period, 365)
+            to_dt   = datetime.now()
+            from_dt = to_dt - timedelta(days=period_days)
+
+            # Map interval to Angel One resolution
+            res_map = {"1m": "ONE_MINUTE", "5m": "FIVE_MINUTE", "15m": "FIFTEEN_MINUTE",
+                       "1h": "ONE_HOUR", "1d": "ONE_DAY", "1wk": "ONE_WEEK"}
+            resolution = res_map.get(interval, "ONE_DAY")
+
+            params = {
+                "exchange": "NSE",
+                "symboltoken": token,
+                "interval": resolution,
+                "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
+                "todate": to_dt.strftime("%Y-%m-%d %H:%M"),
+            }
+            resp = self._smart.getCandleData(params)
+            if not resp or not resp.get("data"):
+                return None
+
+            df = pd.DataFrame(resp["data"], columns=["Date", "Open", "High", "Low", "Close", "Volume"])
+            df["Date"] = pd.to_datetime(df["Date"])
+            df = df.set_index("Date").sort_index()
+            for col in ["Open", "High", "Low", "Close", "Volume"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            return df.dropna()
+        except Exception as exc:
+            logger.debug(f"[LiveFeed] Historical fetch failed for {ticker}: {exc}")
+            return None
+
     def _run(self) -> None:
         """Main feed loop with exponential-backoff reconnect."""
         backoff = 5
