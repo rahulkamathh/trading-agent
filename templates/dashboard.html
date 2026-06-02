@@ -4370,6 +4370,11 @@ window.addEventListener('DOMContentLoaded', () => {
   setInterval(() => {
     if (_currentView === 'groupfeed' && _gfSelectedId) loadGroupFeed();
   }, 10000);
+
+  // ── F&O Desk: auto-refresh every 30s when on that page ──
+  setInterval(() => {
+    if (_currentView === 'fno') loadFNO();
+  }, 30000);
 });
 
 // ══════════════════════════════════════════════
