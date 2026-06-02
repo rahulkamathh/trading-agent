@@ -440,6 +440,9 @@
     <div class="nav-item" data-view="calendar" onclick="showView('calendar')">
       <span class="nav-icon">📅</span> P&amp;L Calendar
     </div>
+    <div class="nav-item" data-view="fno" onclick="showView('fno')">
+      <span class="nav-icon">⚡</span> F&amp;O Desk
+    </div>
   </div>
 </nav>
 
@@ -1299,6 +1302,93 @@
     </div>
   </div>
 
+  <!-- ╔╗ F&O Desk page ╚╝ -->
+  <div id="page-fno" class="page-section hidden">
+    <div class="page-header">
+      <span class="page-title">⚡ F&amp;O Desk</span>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="btn btn-ghost" onclick="loadFNO()" style="font-size:12px;">↻ Refresh</button>
+        <button class="btn btn-red" onclick="resetFNO()" style="font-size:12px;">Reset F&amp;O</button>
+      </div>
+    </div>
+
+    <!-- KPI strip -->
+    <div id="fnoKpis" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px;"></div>
+
+    <!-- Portfolio Greeks -->
+    <div class="card" style="margin-bottom:16px;">
+      <div class="section-header"><span class="section-title">📐 Portfolio Greeks</span><span style="font-size:11px;color:var(--muted)">Net exposure across all open positions</span></div>
+      <div id="fnoGreeks" style="display:flex;gap:24px;flex-wrap:wrap;padding-top:4px;"></div>
+    </div>
+
+    <!-- Open positions -->
+    <div class="card" style="margin-bottom:16px;">
+      <div class="section-header"><span class="section-title">📂 Open F&amp;O Positions</span><span id="fnoOpenCount" style="font-size:12px;color:var(--muted)"></span></div>
+      <div class="table-wrap">
+        <table id="fnoTable">
+          <thead><tr>
+            <th>Instrument</th><th>Type</th><th>Expiry</th><th>Days</th>
+            <th>Lots</th><th>Entry ₹</th><th>Current ₹</th>
+            <th>MTM</th><th>Δ Delta</th><th>Θ Theta/day</th><th>Strategy</th><th>Action</th>
+          </tr></thead>
+          <tbody id="fnoBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Option Pricer -->
+    <div class="card" style="margin-bottom:16px;">
+      <div class="section-header"><span class="section-title">🔢 Option Pricer</span><span style="font-size:11px;color:var(--muted)">Black-Scholes theoretical pricing</span></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px;">
+        <div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">Underlying</div>
+          <select id="pricerTicker" style="background:#0d1117;border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px;">
+            <option value="^NSEI">Nifty 50</option>
+            <option value="^NSEBANK">Bank Nifty</option>
+            <option value="RELIANCE.NS">RELIANCE</option>
+            <option value="TCS.NS">TCS</option>
+            <option value="HDFCBANK.NS">HDFCBANK</option>
+            <option value="INFY.NS">INFY</option>
+            <option value="ICICIBANK.NS">ICICIBANK</option>
+            <option value="SBIN.NS">SBIN</option>
+          </select>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">Strike</div>
+          <input id="pricerStrike" type="number" placeholder="e.g. 24000" style="background:#0d1117;border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px;width:120px;">
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">Type</div>
+          <select id="pricerType" style="background:#0d1117;border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px;">
+            <option value="call">Call (CE)</option>
+            <option value="put">Put (PE)</option>
+          </select>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">Expiry</div>
+          <select id="pricerMonthly" style="background:#0d1117;border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px;">
+            <option value="false">Weekly</option>
+            <option value="true">Monthly</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" onclick="runPricer()" style="font-size:13px;">Calculate</button>
+      </div>
+      <div id="pricerResult" style="display:none;background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:14px;">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;" id="pricerGrid"></div>
+      </div>
+    </div>
+
+    <!-- F&O Trade Log -->
+    <div class="card">
+      <div class="section-header"><span class="section-title">📝 F&amp;O Trade Log</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Time</th><th>Action</th><th>Instrument</th><th>Strike</th><th>Expiry</th><th>Lots</th><th>Premium ₹</th><th>P&amp;L ₹</th><th>Strategy</th></tr></thead>
+          <tbody id="fnoTradeBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 
 </div><!-- /container -->
 
@@ -1381,7 +1471,7 @@ function closeSidebar() {
 // ══════════════════════════════════════════════
 let _currentView = 'overview';
 
-const _ALL_PAGES = ['overview','positions','signals','trades','controls','report','telegram','groupfeed','news','penny','screener','agentlog','learning','calendar'];
+const _ALL_PAGES = ['overview','positions','signals','trades','controls','report','telegram','groupfeed','news','penny','screener','agentlog','learning','calendar','fno'];
 const _lazyLoaded = new Set();
 
 function showView(view) {
@@ -1425,6 +1515,8 @@ function showView(view) {
         loadRiskStatus();
       } else if (view === 'calendar') {
         loadPnlCalendar();
+      } else if (view === 'fno') {
+        loadFNO();
       }
     }
   }
@@ -4049,6 +4141,152 @@ window.addEventListener('DOMContentLoaded', () => {
     if (_currentView === 'groupfeed' && _gfSelectedId) loadGroupFeed();
   }, 10000);
 });
+
+// ══════════════════════════════════════════════
+// F&O Desk
+// ══════════════════════════════════════════════
+async function loadFNO() {
+  try {
+    const [dashR, tradesR] = await Promise.all([
+      fetch('/api/fno/dashboard'),
+      fetch('/api/fno/trades'),
+    ]);
+    const dash   = await dashR.json();
+    const trades = await tradesR.json();
+    if (!dash.ok) return;
+    const d = dash.data;
+
+    // ── KPI strip ──
+    const kpis = [
+      { label: 'F&O Value',    val: fmt(d.portfolio_value), color: cls(d.portfolio_value - d.initial) },
+      { label: 'F&O P&L',      val: fmt((d.realised_pnl||0)+(d.unrealised_pnl||0)), color: cls((d.realised_pnl||0)+(d.unrealised_pnl||0)) },
+      { label: 'Realised',     val: fmt(d.realised_pnl||0),   color: cls(d.realised_pnl||0) },
+      { label: 'Unrealised',   val: fmt(d.unrealised_pnl||0), color: cls(d.unrealised_pnl||0) },
+      { label: 'Cash (F&O)',   val: fmt(d.cash),              color: '' },
+      { label: 'Open Positions',val: d.open_count,            color: '' },
+    ];
+    document.getElementById('fnoKpis').innerHTML = kpis.map(k => `
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 16px;min-width:120px;">
+        <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">${k.label}</div>
+        <div style="font-size:17px;font-weight:700;margin-top:3px" class="${k.color}">${k.val}</div>
+      </div>`).join('');
+
+    // ── Greeks ──
+    const g = d.greeks || {};
+    const greekItems = [
+      { name: 'Δ Delta',  val: g.delta?.toFixed(2) ?? '—', tip: 'Net directional exposure. 1 delta ≈ owning 1 share.' },
+      { name: 'Γ Gamma',  val: g.gamma?.toFixed(4) ?? '—', tip: 'Rate of delta change per ₹1 move.' },
+      { name: 'Θ Theta',  val: g.theta?.toFixed(2) ?? '—', tip: 'Daily time decay in ₹.' },
+      { name: 'ν Vega',   val: g.vega?.toFixed(2)  ?? '—', tip: 'P&L change per 1% move in IV.' },
+    ];
+    document.getElementById('fnoGreeks').innerHTML = greekItems.map(gi => `
+      <div title="${gi.tip}" style="cursor:help;">
+        <div style="font-size:12px;color:var(--muted)">${gi.name}</div>
+        <div style="font-size:20px;font-weight:700;color:var(--text)">${gi.val}</div>
+        <div style="font-size:10px;color:var(--muted);max-width:160px">${gi.tip}</div>
+      </div>`).join('');
+
+    // ── Positions table ──
+    const positions = d.positions || [];
+    document.getElementById('fnoOpenCount').textContent = `${positions.length} open`;
+    const tbody = document.getElementById('fnoBody');
+    if (!positions.length) {
+      tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:var(--muted);padding:30px">No open F&O positions</td></tr>';
+    } else {
+      tbody.innerHTML = positions.map(p => {
+        const mtmCls  = p.mtm >= 0 ? 'pos' : 'neg';
+        const dltCls  = p.delta > 0 ? 'pos' : p.delta < 0 ? 'neg' : 'neu';
+        const thtCls  = p.theta < 0 ? 'neg' : 'pos';
+        const entry   = p.entry_premium ?? p.entry_price ?? '—';
+        const curr    = p.curr_premium  ?? p.curr_price  ?? '—';
+        return `<tr>
+          <td><b>${p.instrument}</b></td>
+          <td><span style="font-size:11px;background:#1f3a5f;color:#58a6ff;padding:2px 7px;border-radius:10px">${p.type}</span></td>
+          <td>${p.expiry}</td>
+          <td>${p.days_left ?? '—'}</td>
+          <td>${p.qty_lots}</td>
+          <td>₹${typeof entry === 'number' ? entry.toFixed(2) : entry}</td>
+          <td>₹${typeof curr === 'number' ? curr.toFixed(2) : curr}</td>
+          <td class="${mtmCls}">₹${(p.mtm??0).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+          <td class="${dltCls}">${p.delta?.toFixed(3) ?? '—'}</td>
+          <td class="${thtCls}">${p.theta?.toFixed(2) ?? '—'}</td>
+          <td style="font-size:11px;color:var(--muted)">${p.strategy ?? '—'}</td>
+          <td><button class="btn btn-red" style="font-size:11px;padding:3px 10px"
+            onclick="closeFNOPosition('${p.position_id}')">Close</button></td>
+        </tr>`;
+      }).join('');
+    }
+
+    // ── Trade log ──
+    const tradeList = trades.ok ? (trades.trades || []) : [];
+    document.getElementById('fnoTradeBody').innerHTML = tradeList.slice(0, 50).map(t => {
+      const pnlCls = (t.pnl ?? 0) >= 0 ? 'pos' : 'neg';
+      return `<tr>
+        <td style="font-size:11px">${(t.time||'').slice(0,16).replace('T',' ')}</td>
+        <td><span style="font-size:11px;font-weight:700">${t.action||'—'}</span></td>
+        <td>${t.underlying||'—'}</td>
+        <td>${t.strike ?? t.entry_price ?? '—'}</td>
+        <td>${t.expiry ?? '—'}</td>
+        <td>${t.qty_lots ?? '—'}</td>
+        <td>₹${(t.premium ?? t.entry_price ?? 0).toFixed?.(2) ?? '—'}</td>
+        <td class="${pnlCls}">${t.pnl != null ? '₹' + t.pnl.toFixed(0) : '—'}</td>
+        <td style="font-size:11px;color:var(--muted)">${t.strategy ?? '—'}</td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:20px">No F&O trades yet</td></tr>';
+
+  } catch(e) { console.error('FNO load error', e); }
+}
+
+async function closeFNOPosition(pid) {
+  if (!confirm('Close this F&O position at market?')) return;
+  const r = await fetch('/api/fno/close_position', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({position_id: pid}),
+  });
+  const d = await r.json();
+  if (d.ok) { toast('Position closed  P&L: ₹' + (d.trade?.pnl?.toFixed(0) ?? '—')); loadFNO(); }
+  else toast('Error: ' + d.error, 'error');
+}
+
+async function resetFNO() {
+  if (!confirm('Reset F&O portfolio to ₹2,00,000? All positions will be cleared.')) return;
+  await fetch('/api/fno/reset', {method:'POST'});
+  toast('F&O portfolio reset'); loadFNO();
+}
+
+async function runPricer() {
+  const ticker  = document.getElementById('pricerTicker').value;
+  const strike  = document.getElementById('pricerStrike').value;
+  const optType = document.getElementById('pricerType').value;
+  const monthly = document.getElementById('pricerMonthly').value;
+  if (!strike) { toast('Enter a strike price', 'error'); return; }
+
+  const r = await fetch(`/api/fno/option_price?ticker=${encodeURIComponent(ticker)}&strike=${strike}&type=${optType}&monthly=${monthly}`);
+  const d = await r.json();
+  if (!d.ok) { toast('Pricer error: ' + d.error, 'error'); return; }
+
+  const g = d.greeks || {};
+  const items = [
+    { label: 'Spot',           val: `₹${d.spot?.toLocaleString('en-IN')}` },
+    { label: 'Strike',         val: `₹${d.strike?.toLocaleString('en-IN')}` },
+    { label: 'Expiry',         val: d.expiry },
+    { label: 'Days to Expiry', val: d.days_to_expiry },
+    { label: 'IV (HV30)',      val: `${((d.iv||0)*100).toFixed(1)}%` },
+    { label: '📌 Premium',     val: `₹${d.price?.toFixed(2)}`, big: true },
+    { label: 'Δ Delta',        val: g.delta?.toFixed(4) },
+    { label: 'Γ Gamma',        val: g.gamma?.toFixed(6) },
+    { label: 'Θ Theta/day',    val: `₹${g.theta?.toFixed(2)}` },
+    { label: 'ν Vega/1%IV',   val: `₹${g.vega?.toFixed(2)}` },
+  ];
+
+  document.getElementById('pricerResult').style.display = 'block';
+  document.getElementById('pricerGrid').innerHTML = items.map(it => `
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:10px;">
+      <div style="font-size:10px;color:var(--muted)">${it.label}</div>
+      <div style="font-size:${it.big?'18':'14'}px;font-weight:${it.big?700:600};color:${it.big?'var(--blue)':'var(--text)'};margin-top:2px">${it.val ?? '—'}</div>
+    </div>`).join('');
+}
 </script>
 </body>
 </html>

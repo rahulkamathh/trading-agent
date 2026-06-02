@@ -505,6 +505,111 @@ def api_market_status():
     })
 
 
+# ── F&O API endpoints ────────────────────────────────────────────────────────
+
+@app.route("/api/fno/dashboard")
+def api_fno_dashboard():
+    """Full F&O dashboard data."""
+    try:
+        from fno_engine import get_fno_agent  # pylint: disable=import-outside-toplevel
+        return jsonify({"ok": True, "data": get_fno_agent().get_dashboard_data()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+@app.route("/api/fno/positions")
+def api_fno_positions():
+    try:
+        from fno_engine import get_fno_agent  # pylint: disable=import-outside-toplevel
+        return jsonify({"ok": True, "positions": get_fno_agent().portfolio.get_positions_display()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+@app.route("/api/fno/greeks")
+def api_fno_greeks():
+    try:
+        from fno_engine import get_fno_agent  # pylint: disable=import-outside-toplevel
+        return jsonify({"ok": True, "greeks": get_fno_agent().portfolio.portfolio_greeks()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+@app.route("/api/fno/trades")
+def api_fno_trades():
+    try:
+        from fno_engine import FNO_TRADE_FILE  # pylint: disable=import-outside-toplevel
+        import json as _j
+        trades = []
+        if FNO_TRADE_FILE.exists():
+            with open(FNO_TRADE_FILE) as _f:
+                trades = _j.load(_f)
+        return jsonify({"ok": True, "trades": list(reversed(trades[-100:]))})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+@app.route("/api/fno/close_position", methods=["POST"])
+def api_fno_close_position():
+    data = request.get_json() or {}
+    pid  = data.get("position_id", "").strip()
+    if not pid:
+        return jsonify({"ok": False, "error": "position_id required"}), 400
+    try:
+        from fno_engine import get_fno_agent  # pylint: disable=import-outside-toplevel
+        fno = get_fno_agent()
+        pos = fno.portfolio.state["positions"].get(pid)
+        if not pos:
+            return jsonify({"ok": False, "error": "Position not found"}), 404
+        if pos["instrument_type"] == "OPTION":
+            t = fno.portfolio.close_option(pid, reason="MANUAL_CLOSE")
+        else:
+            t = fno.portfolio.close_future(pid, reason="MANUAL_CLOSE")
+        return jsonify({"ok": True, "trade": t})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+@app.route("/api/fno/reset", methods=["POST"])
+def api_fno_reset():
+    from fno_engine import get_fno_agent  # pylint: disable=import-outside-toplevel
+    get_fno_agent().portfolio.reset()
+    return jsonify({"ok": True, "message": "F&O portfolio reset to ₹2,00,000"})
+
+@app.route("/api/fno/option_price")
+def api_fno_option_price():
+    """Compute theoretical option price for any input."""
+    try:
+        from fno_engine import BlackScholes, historical_vol, days_to_expiry, get_expiry  # pylint: disable=import-outside-toplevel
+        import datetime as _dt
+        ticker  = request.args.get("ticker", "^NSEI")
+        strike  = float(request.args.get("strike", 0))
+        opt_type= request.args.get("type", "call").lower()
+        monthly = request.args.get("monthly", "false").lower() == "true"
+
+        if strike <= 0:
+            return jsonify({"ok": False, "error": "strike required"}), 400
+
+        expiry = get_expiry(ticker, monthly=monthly)
+        T      = days_to_expiry(expiry)
+        iv     = historical_vol(ticker)
+
+        import yfinance as _yf
+        spot_data = _yf.download(ticker, period="2d", interval="1d", progress=False)
+        if isinstance(spot_data.columns, __import__("pandas").MultiIndex):
+            spot_data.columns = spot_data.columns.get_level_values(0)
+        spot = float(spot_data["Close"].iloc[-1]) if not spot_data.empty else 0
+
+        from fno_engine import RISK_FREE_RATE  # pylint: disable=import-outside-toplevel
+        price  = BlackScholes.price(spot, strike, T, RISK_FREE_RATE, iv, opt_type)
+        greeks = BlackScholes.greeks(spot, strike, T, RISK_FREE_RATE, iv, opt_type)
+
+        return jsonify({
+            "ok": True,
+            "spot": round(spot, 2), "strike": strike,
+            "expiry": expiry.isoformat(), "days_to_expiry": int(T * 365),
+            "iv": iv, "price": round(price, 2),
+            "greeks": greeks,
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 @app.route("/api/report")
 def api_report():
     """Return the latest closing report."""
@@ -833,13 +938,42 @@ def api_penny_positions():
 
 
 def _run_cycle_safe() -> None:
-    """Run one agent cycle, guarded against concurrent calls."""
+    """Run one agent cycle (equity + F&O), guarded against concurrent calls."""
     if _state.running:
         return
     _state.running = True
     try:
-        summary = get_agent().run_cycle()
+        agent   = get_agent()
+        summary = agent.run_cycle()
         _state.last_cycle = summary
+
+        # ── F&O cycle: pass equity signals + positions ─────────────────── #
+        try:
+            from fno_engine import get_fno_agent  # pylint: disable=import-outside-toplevel
+            fno     = get_fno_agent()
+            eq_pos  = agent.portfolio.get_positions_display()
+            eq_val  = agent.portfolio.get_total_value()
+            initial = agent.portfolio.state.get("initial", 1_000_000)
+            eq_drawdown = max(0.0, (initial - eq_val) / initial * 100)
+
+            # Pull latest signals from file
+            from engine import SIGNALS_FILE  # pylint: disable=import-outside-toplevel
+            import json as _json
+            eq_signals = []
+            if SIGNALS_FILE.exists():
+                with open(SIGNALS_FILE) as _f:
+                    eq_signals = _json.load(_f).get("signals", [])
+
+            fno_summary = fno.run_cycle(
+                equity_signals=eq_signals,
+                equity_positions=eq_pos,
+                equity_drawdown_pct=eq_drawdown,
+            )
+            summary["fno"] = fno_summary
+        except Exception as _fe:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(f"F&O cycle error: {_fe}")
+
     except (ValueError, RuntimeError) as exc:
         print(f"[BG] Error in cycle: {exc}")
     finally:
