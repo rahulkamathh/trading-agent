@@ -1456,6 +1456,15 @@ class Portfolio:
             if price <= 0:
                 continue
 
+            # ── Penny stock exit: close any position priced under ₹50 ──── #
+            # These slipped in before the price filter was added. Exit cleanly.
+            if price < 50:
+                logger.info(f"PENNY EXIT {ticker} @ ₹{price:.2f} — below ₹50 minimum")
+                trade = self.execute_sell(ticker, price, reason="PENNY_STOCK_EXIT")
+                if trade:
+                    triggered.append(trade)
+                continue
+
             entry    = pos["avg_price"]
             pnl_pct  = (price / entry - 1) * 100
             prev_sl  = pos["stop_loss"]
