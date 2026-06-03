@@ -2745,18 +2745,15 @@ class TradingAgent:
         unreal_pnl  = port.get_unrealised_pnl()
         real_pnl    = port.state.get("realised_pnl", 0)
         total_pnl   = unreal_pnl + real_pnl
-        # P&L % based on original ₹10L trading capital (top-ups don't inflate the baseline)
-        total_pnl_pct = (total_pnl / 10_00_000) * 100
+        # P&L % based on total deployed capital (₹13L = ₹10L + ₹2L F&O + ₹1L commodity)
+        total_pnl_pct = (total_pnl / INITIAL_CAPITAL) * 100
 
         # Equity curve: reconstruct from trades + append live value
-        # Use 10L as the curve start — that's when trading began.
-        # Top-ups (₹2L F&O + ₹1L commodity) are reflected in current value,
-        # not as a higher starting point on the chart.
         equity_curve = _build_equity_curve(
             trades,
             current_value=total_val,
             created_at=port.state.get("created_at"),
-            start_value=10_00_000,
+            start_value=INITIAL_CAPITAL,  # ₹13L total deployed capital
         )
 
         # Strategy performance: closed P&L + unrealised from open positions
