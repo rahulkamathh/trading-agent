@@ -299,7 +299,7 @@ EQUITY_CASH_FLOOR= FNO_RESERVE + COMMODITY_RESERVE  # ₹3L minimum cash equity 
 MAX_POSITION_PCT = 0.08        # max 8% per position
 STOP_LOSS_PCT    = 0.07        # 7% stop loss
 TAKE_PROFIT_PCT  = 0.20        # 20% take profit
-MAX_POSITIONS    = 25          # max concurrent positions
+MAX_POSITIONS    = 17          # locked at current 17 — cash reserved for F&O/commodity
 
 # ── Execution guard-rails ──────────────────────────────────────────────────
 MIN_BUY_STRENGTH = 65   # signal strength threshold to open a position (0–100)

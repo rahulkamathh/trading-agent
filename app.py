@@ -471,8 +471,11 @@ def api_add_capital():
     if amount <= 0:
         return jsonify({"ok": False, "error": "amount must be > 0"}), 400
     port = get_agent().portfolio
-    port.state["cash"]    += amount
-    port.state["initial"]  = port.state.get("initial", INITIAL_CAPITAL)
+    port.state["cash"]          += amount
+    port.state["initial"]        = port.state.get("initial", INITIAL_CAPITAL)
+    # Reset today's baseline so the capital addition doesn't show as profit
+    port.state["day_start_value"] = round(port.get_total_value(), 2)
+    port.state["day_start_date"]  = _ist_now().strftime("%Y-%m-%d")
     port._save()
     return jsonify({
         "ok":      True,
@@ -481,6 +484,17 @@ def api_add_capital():
         "initial": port.state["initial"],
         "message": f"Added ₹{amount:,.0f} — cash now ₹{port.state['cash']:,.0f}",
     })
+
+
+@app.route("/api/fix_today_baseline", methods=["POST"])
+def api_fix_today_baseline():
+    """Reset today's P&L baseline to current portfolio value. Call once after any capital addition."""
+    port = get_agent().portfolio
+    current = round(port.get_total_value(), 2)
+    port.state["day_start_value"] = current
+    port.state["day_start_date"]  = _ist_now().strftime("%Y-%m-%d")
+    port._save()
+    return jsonify({"ok": True, "day_start_value": current, "message": "Today baseline reset"})
 
 
 @app.route("/api/set_interval", methods=["POST"])
