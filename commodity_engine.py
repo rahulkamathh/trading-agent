@@ -5,7 +5,7 @@ Gold, Silver, Crude Oil, Natural Gas, Copper via yfinance futures.
 Unified cash pool with equity portfolio.
 """
 from __future__ import annotations
-import json, logging, time
+import json, logging, time, threading
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -16,7 +16,13 @@ _IST = ZoneInfo("Asia/Kolkata")
 DATA_DIR = Path(__file__).parent / "data"
 COMMODITY_FILE = DATA_DIR / "commodity_portfolio.json"
 COMMODITY_TRADES_FILE = DATA_DIR / "commodity_trades.json"
+COMMODITY_SIGNALS_FILE = DATA_DIR / "commodity_signals.json"
 DATA_DIR.mkdir(exist_ok=True)
+
+# Signal cache — refreshed by the background loop, not on every dashboard hit
+_signals_cache: list = []
+_signals_ts: float = 0.0
+_signals_lock = threading.Lock()
 
 COMMODITIES = {
     "GOLD":       {"name":"Gold",          "yf":"GC=F",  "emoji":"🥇", "mult":32.1507,  "unit":"$/oz",    "lot_unit":"1 kg",      "margin_pct":0.05},
@@ -47,16 +53,19 @@ def get_usd_inr() -> float:
 
 def get_price(symbol: str) -> float | None:
     cached = _PRICE_CACHE.get(symbol)
+    # Use cache if fresh (5 min). If stale, try fetching but always return something.
     if cached and time.time() - cached[1] < 300:
         return cached[0]
     try:
-        df = yf.download(COMMODITIES[symbol]["yf"], period="5d", interval="1h", auto_adjust=True, progress=False)
+        df = yf.download(COMMODITIES[symbol]["yf"], period="5d", interval="1h",
+                         auto_adjust=True, progress=False)
         if df is not None and not df.empty:
             p = float(df["Close"].iloc[-1])
             _PRICE_CACHE[symbol] = (p, time.time())
             return p
     except Exception:
         pass
+    # Return stale cache rather than None — dashboard shows last known price
     return cached[0] if cached else None
 
 def lot_value_inr(symbol: str, price_usd: float) -> float:
@@ -121,7 +130,34 @@ def generate_signals() -> list:
             })
         except Exception as e:
             logger.warning(f"[Commodity] Signal failed {sym}: {e}")
+
+    # Cache to disk + memory so dashboard never shows blank
+    global _signals_cache, _signals_ts
+    if signals:
+        with _signals_lock:
+            _signals_cache = signals
+            _signals_ts = time.time()
+        try:
+            COMMODITY_SIGNALS_FILE.write_text(json.dumps(signals, indent=2))
+        except Exception:
+            pass
     return signals
+
+
+def get_cached_signals() -> list:
+    """Return in-memory cache, then disk cache, then empty list — never blocks."""
+    with _signals_lock:
+        if _signals_cache:
+            return _signals_cache
+    # Try disk cache
+    try:
+        if COMMODITY_SIGNALS_FILE.exists():
+            cached = json.loads(COMMODITY_SIGNALS_FILE.read_text())
+            if cached:
+                return cached
+    except Exception:
+        pass
+    return []
 
 class CommodityPortfolio:
     def __init__(self, equity_portfolio=None):
@@ -461,8 +497,10 @@ class CommodityAgent:
                                             reason=reason, strategy="EVENT_DRIVEN")
 
     def get_dashboard_data(self):
-        signals  = generate_signals()
-        trades   = []
+        # Use cached signals — never call generate_signals() live on a dashboard hit
+        # (that would make 5 yfinance API calls and rate-limit Railway)
+        signals = get_cached_signals()
+        trades  = []
         if COMMODITY_TRADES_FILE.exists():
             try: trades = json.loads(COMMODITY_TRADES_FILE.read_text())[-50:]
             except Exception: pass
