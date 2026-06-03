@@ -520,6 +520,19 @@ class FNOPortfolio:
             return 0.0
 
     def _get_spot(self, ticker: str) -> float:
+        """Get live spot price. Tries Angel One WebSocket feed first, falls back to yfinance."""
+        # 1. Angel One live feed (tick-accurate, already streaming)
+        try:
+            from angelone_feed import get_feed as _get_feed  # noqa: PLC0415
+            _feed = _get_feed()
+            if _feed.is_connected():
+                live = _feed.get_price(ticker)
+                if live and live > 0:
+                    return float(live)
+        except Exception:
+            pass
+
+        # 2. yfinance fallback (~15min delayed)
         try:
             data = yf.download(ticker, period="2d", interval="1d",
                                auto_adjust=True, progress=False)
@@ -976,32 +989,63 @@ class FNOPortfolio:
                     closed.append(t)
                 continue
 
-            # Option P&L stops — only during market hours 9:15–15:00
-            # After 3PM, BS prices become unreliable as liquidity dries up
+            # Option P&L stops — only during market hours 9:30–15:00
+            # Not in first 15 min (price discovery) or after 3PM (liquidity dries up)
             now_t = _now_ist().time()
             from datetime import time as _dtt2  # noqa: PLC0415
-            stops_active = _dtt2(9, 15) <= now_t <= _dtt2(15, 0)
+            stops_active = _dtt2(9, 30) <= now_t <= _dtt2(15, 0)
 
             if pos["instrument_type"] == "OPTION" and pos["position"] == "LONG" and stops_active:
-                mtm = self._mtm_value(pos)
-                cost = pos["entry_premium"] * pos["qty"] * get_lot_size(pos["underlying"])
-                pnl_pct = mtm / cost if cost != 0 else 0
+                # Minimum hold: 2 hours after opening to avoid noise at open
+                entry_dt_str = pos.get("entry_date", "")
+                if entry_dt_str:
+                    try:
+                        entry_dt = datetime.fromisoformat(entry_dt_str)
+                        if entry_dt.tzinfo is None:
+                            entry_dt = entry_dt.replace(tzinfo=_IST)
+                        age_hours = (_now_ist() - entry_dt).total_seconds() / 3600
+                        if age_hours < 2.0:
+                            continue  # too new — skip stop check
+                    except Exception:
+                        pass
 
-                if pnl_pct <= -0.50:   # Stop: lost 50% of premium
-                    logger.warning(f"[FNO] OPTION STOP {pid}  lost {pnl_pct:.0%}")
+                # Get actual traded premium via Angel One LTP first, BS as fallback
+                spot = self._get_spot(pos["underlying"])
+                curr_prem = None
+                try:
+                    from angelone_feed import get_feed as _gf  # noqa: PLC0415
+                    _fd = _gf()
+                    if _fd.is_connected() and _fd._smart:
+                        ltp = _fd.get_option_ltp(
+                            pos["underlying"], pos["strike"],
+                            date.fromisoformat(pos["expiry"]), pos["option_type"]
+                        )
+                        if ltp and ltp > 0:
+                            curr_prem = ltp
+                except Exception:
+                    pass
+
+                if curr_prem is None:
+                    T  = days_to_expiry(date.fromisoformat(pos["expiry"]))
+                    iv = pos.get("iv", 0.25)
+                    curr_prem = BlackScholes.price(spot, pos["strike"], T, RISK_FREE_RATE, iv, pos["option_type"])
+
+                entry_prem = pos.get("entry_premium", 0)
+                cost       = entry_prem * pos["qty"] * get_lot_size(pos["underlying"])
+                pnl        = (curr_prem - entry_prem) * pos["qty"] * get_lot_size(pos["underlying"])
+                pnl_pct    = pnl / cost if cost != 0 else 0
+
+                if pnl_pct <= -0.50:   # Stop: lost 50% of premium paid
+                    logger.warning(f"[FNO] STOP {pid}  prem={curr_prem:.2f} ({pnl_pct:.0%})")
                     t = self.close_option(pid, reason="STOP_LOSS_50PCT")
                     if t:
-                        # Override reason based on actual P&L (model MTM can lie)
-                        actual_pnl = t.get("pnl", 0)
-                        t["reason"] = "STOP_LOSS" if actual_pnl < 0 else "STOP_LOSS_50PCT"
+                        t["reason"] = "STOP_LOSS" if t.get("pnl", 0) < 0 else "STOP_LOSS_50PCT"
                         closed.append(t)
-                elif pnl_pct >= 0.80:  # Target: up 80%
-                    logger.info(f"[FNO] OPTION TARGET {pid}  gained {pnl_pct:.0%}")
+                elif pnl_pct >= 0.80:  # Target: premium up 80%
+                    logger.info(f"[FNO] TARGET {pid}  prem={curr_prem:.2f} ({pnl_pct:.0%})")
                     t = self.close_option(pid, reason="TAKE_PROFIT_80PCT")
                     if t:
-                        # If actual P&L is negative despite model saying +80%, label correctly
-                        actual_pnl = t.get("pnl", 0)
-                        t["reason"] = "TAKE_PROFIT" if actual_pnl >= 0 else "MODEL_EXIT_LOSS"
+                        t["reason"] = "TAKE_PROFIT" if t.get("pnl", 0) >= 0 else "MODEL_EXIT_LOSS"
                         closed.append(t)
 
         return closed

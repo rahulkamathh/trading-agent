@@ -1232,13 +1232,28 @@ if __name__ == "__main__":
                             if age_hours < 2.0:
                                 continue  # too young — skip stop check
 
-                        T  = days_to_expiry(_date.fromisoformat(pos["expiry"]))
-                        iv = pos.get("iv", 0.25)
-                        curr_prem = BlackScholes.price(
-                            spot, pos["strike"], T, RISK_FREE_RATE, iv, pos["option_type"]
-                        )
-                        entry_prem = pos["entry_premium"]
+                        # Try Angel One option LTP first (actual traded price)
+                        curr_prem = None
+                        try:
+                            if feed.is_connected() and feed._smart:
+                                ltp = feed.get_option_ltp(
+                                    underlying, pos["strike"],
+                                    _date.fromisoformat(pos["expiry"]), pos["option_type"]
+                                )
+                                if ltp and ltp > 0:
+                                    curr_prem = ltp
+                        except Exception:
+                            pass
 
+                        # Fall back to Black-Scholes if Angel One unavailable
+                        if curr_prem is None:
+                            T  = days_to_expiry(_date.fromisoformat(pos["expiry"]))
+                            iv = pos.get("iv", 0.25)
+                            curr_prem = BlackScholes.price(
+                                spot, pos["strike"], T, RISK_FREE_RATE, iv, pos["option_type"]
+                            )
+
+                        entry_prem = pos["entry_premium"]
                         pnl_pct = (curr_prem - entry_prem) / entry_prem if entry_prem else 0
 
                         # Intraday stop: exit if premium falls 50% from entry (after 2h hold)
