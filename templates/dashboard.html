@@ -385,6 +385,9 @@
     <div class="nav-item active" data-view="overview" onclick="showView('overview')">
       <span class="nav-icon">📊</span> Dashboard
     </div>
+    <div class="nav-item" data-view="portfolio" onclick="showView('portfolio')">
+      <span class="nav-icon">🏦</span> Portfolio
+    </div>
     <div class="nav-item" data-view="charts" onclick="showView('charts')">
       <span class="nav-icon">📈</span> Charts
     </div>
@@ -521,6 +524,132 @@
 
 <!-- ── Main content wrapper ── -->
 <div class="container">
+
+  <!-- ══ Portfolio Breakdown page ══ -->
+  <div id="page-portfolio" class="page-section hidden">
+    <style>
+      .port-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; }
+      .port-aum { font-size:28px; font-weight:700; letter-spacing:-0.5px; }
+      .port-aum-label { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:1px; margin-bottom:4px; }
+      .port-change { font-size:13px; margin-top:4px; }
+      .desk-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:24px; }
+      @media(max-width:800px){ .desk-grid { grid-template-columns:1fr; } }
+      .desk-card { background:#161b22; border:1px solid #30363d; border-radius:10px; padding:18px; position:relative; overflow:hidden; }
+      .desk-card::before { content:''; position:absolute; top:0; left:0; right:0; height:3px; }
+      .desk-card.equity::before { background:linear-gradient(90deg,#1f6feb,#388bfd); }
+      .desk-card.fno::before    { background:linear-gradient(90deg,#f78166,#ff7b72); }
+      .desk-card.commodity::before { background:linear-gradient(90deg,#3fb950,#56d364); }
+      .desk-card-title { font-size:10px; text-transform:uppercase; letter-spacing:1.5px; color:var(--muted); margin-bottom:12px; display:flex; align-items:center; gap:6px; }
+      .desk-card-value { font-size:22px; font-weight:700; margin-bottom:4px; }
+      .desk-card-sub { font-size:11px; color:var(--muted); margin-bottom:14px; }
+      .desk-stat-row { display:flex; gap:0; border-top:1px solid #21262d; padding-top:12px; }
+      .desk-stat { flex:1; text-align:center; }
+      .desk-stat:not(:last-child) { border-right:1px solid #21262d; }
+      .desk-stat-v { font-size:13px; font-weight:600; }
+      .desk-stat-l { font-size:10px; color:var(--muted); margin-top:2px; }
+      .allocation-bar { height:8px; border-radius:4px; background:#21262d; overflow:hidden; display:flex; margin:12px 0 20px; gap:2px; }
+      .alloc-seg { height:100%; border-radius:2px; transition:width .4s; }
+      .alloc-legend { display:flex; gap:20px; font-size:11px; color:var(--muted); margin-bottom:24px; }
+      .alloc-dot { width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:4px; }
+      .port-section-title { font-size:12px; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin:0 0 10px; font-weight:600; }
+      .port-table { width:100%; border-collapse:collapse; font-size:12px; }
+      .port-table th { color:var(--muted); font-weight:500; padding:6px 8px; text-align:left; border-bottom:1px solid #21262d; font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
+      .port-table td { padding:8px 8px; border-bottom:1px solid #161b22; vertical-align:middle; }
+      .port-table tr:last-child td { border-bottom:none; }
+      .port-table tr:hover td { background:#161b22; }
+      .tag-eq { background:#1f6feb22; color:#388bfd; border:1px solid #1f6feb44; font-size:10px; padding:2px 6px; border-radius:4px; }
+      .tag-fno { background:#f7816622; color:#f78166; border:1px solid #f7816644; font-size:10px; padding:2px 6px; border-radius:4px; }
+      .tag-comm { background:#3fb95022; color:#56d364; border:1px solid #3fb95044; font-size:10px; padding:2px 6px; border-radius:4px; }
+      .port-pnl-pos { color:var(--green); }
+      .port-pnl-neg { color:var(--red); }
+      .port-cash-bar { background:#161b22; border:1px solid #30363d; border-radius:10px; padding:16px 20px; margin-bottom:24px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
+      .port-cash-num { font-size:20px; font-weight:700; color:#388bfd; }
+      .port-cash-label { font-size:11px; color:var(--muted); margin-bottom:2px; }
+      .port-cash-pct { font-size:12px; color:var(--muted); }
+    </style>
+
+    <!-- AUM header -->
+    <div class="port-header">
+      <div>
+        <div class="port-aum-label">Total Portfolio Value</div>
+        <div class="port-aum" id="port-aum">—</div>
+        <div class="port-change" id="port-change">—</div>
+      </div>
+      <button class="btn btn-ghost" onclick="loadPortfolio()" style="font-size:12px">↻ Refresh</button>
+    </div>
+
+    <!-- Allocation bar -->
+    <div class="allocation-bar" id="port-alloc-bar">
+      <div class="alloc-seg" id="alloc-eq"  style="background:#1f6feb;width:60%"></div>
+      <div class="alloc-seg" id="alloc-fno" style="background:#f78166;width:20%"></div>
+      <div class="alloc-seg" id="alloc-comm"style="background:#3fb950;width:10%"></div>
+      <div class="alloc-seg" id="alloc-cash"style="background:#484f58;width:10%"></div>
+    </div>
+    <div class="alloc-legend">
+      <span><span class="alloc-dot" style="background:#1f6feb"></span>Equity <span id="alloc-eq-pct">—</span></span>
+      <span><span class="alloc-dot" style="background:#f78166"></span>F&amp;O <span id="alloc-fno-pct">—</span></span>
+      <span><span class="alloc-dot" style="background:#3fb950"></span>Commodities <span id="alloc-comm-pct">—</span></span>
+      <span><span class="alloc-dot" style="background:#484f58"></span>Cash <span id="alloc-cash-pct">—</span></span>
+    </div>
+
+    <!-- 3 desk cards -->
+    <div class="desk-grid">
+      <!-- Equity -->
+      <div class="desk-card equity">
+        <div class="desk-card-title">📈 Equity Desk</div>
+        <div class="desk-card-value" id="port-eq-total">—</div>
+        <div class="desk-card-sub" id="port-eq-unreal">—</div>
+        <div class="desk-stat-row">
+          <div class="desk-stat"><div class="desk-stat-v" id="port-eq-pos">—</div><div class="desk-stat-l">Positions</div></div>
+          <div class="desk-stat"><div class="desk-stat-v" id="port-eq-cost">—</div><div class="desk-stat-l">Cost Basis</div></div>
+          <div class="desk-stat"><div class="desk-stat-v" id="port-eq-cash">—</div><div class="desk-stat-l">Free Cash</div></div>
+        </div>
+      </div>
+      <!-- F&O -->
+      <div class="desk-card fno">
+        <div class="desk-card-title">⚡ F&amp;O Desk</div>
+        <div class="desk-card-value" id="port-fno-total">—</div>
+        <div class="desk-card-sub" id="port-fno-unreal">—</div>
+        <div class="desk-stat-row">
+          <div class="desk-stat"><div class="desk-stat-v" id="port-fno-pos">—</div><div class="desk-stat-l">Open Legs</div></div>
+          <div class="desk-stat"><div class="desk-stat-v" id="port-fno-margin">—</div><div class="desk-stat-l">Premium</div></div>
+          <div class="desk-stat"><div class="desk-stat-v" id="port-fno-real">—</div><div class="desk-stat-l">Realised</div></div>
+        </div>
+      </div>
+      <!-- Commodity -->
+      <div class="desk-card commodity">
+        <div class="desk-card-title">🥇 Commodity Desk</div>
+        <div class="desk-card-value" id="port-comm-total">—</div>
+        <div class="desk-card-sub" id="port-comm-unreal">—</div>
+        <div class="desk-stat-row">
+          <div class="desk-stat"><div class="desk-stat-v" id="port-comm-pos">—</div><div class="desk-stat-l">Positions</div></div>
+          <div class="desk-stat"><div class="desk-stat-v" id="port-comm-margin">—</div><div class="desk-stat-l">Margin</div></div>
+          <div class="desk-stat"><div class="desk-stat-v" id="port-comm-real">—</div><div class="desk-stat-l">Realised</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cash position -->
+    <div class="port-cash-bar">
+      <div>
+        <div class="port-cash-label">Available Cash (shared pool)</div>
+        <div class="port-cash-num" id="port-free-cash">—</div>
+      </div>
+      <div class="port-cash-pct" id="port-cash-note">—</div>
+    </div>
+
+    <!-- All positions table -->
+    <div class="port-section-title">All Open Positions</div>
+    <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;overflow:auto">
+      <table class="port-table" id="port-all-table">
+        <thead><tr>
+          <th>Desk</th><th>Instrument</th><th>Type</th><th>Qty / Lots</th>
+          <th>Avg / Entry</th><th>Current</th><th>P&amp;L</th><th>P&amp;L %</th><th>Strategy</th>
+        </tr></thead>
+        <tbody id="port-all-body"><tr><td colspan="9" style="text-align:center;padding:24px;color:var(--muted)">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
 
   <!-- ══ Dashboard page ══ -->
   <div id="page-overview" class="page-section">
@@ -1587,7 +1716,7 @@ function closeSidebar() {
 // ══════════════════════════════════════════════
 let _currentView = 'overview';
 
-const _ALL_PAGES = ['overview','positions','signals','trades','controls','report','telegram','groupfeed','news','events','commodity','penny','screener','agentlog','learning','calendar','fno'];
+const _ALL_PAGES = ['overview','portfolio','positions','signals','trades','controls','report','telegram','groupfeed','news','events','commodity','penny','screener','agentlog','learning','calendar','fno'];
 const _lazyLoaded = new Set();
 
 function showView(view) {
@@ -1626,6 +1755,8 @@ function showView(view) {
         startLogPolling();
       } else if (view === 'learning') {
         loadLearning();
+      } else if (view === 'portfolio') {
+        loadPortfolio();
       } else if (view === 'controls') {
         loadNotifierStatus();
         loadRiskStatus();
@@ -4783,6 +4914,139 @@ async function runPricer() {
       <div style="font-size:${it.big?'18':'14'}px;font-weight:${it.big?700:600};color:${it.big?'var(--blue)':'var(--text)'};margin-top:2px">${it.val ?? '—'}</div>
     </div>`).join('');
 }
+
+// ── Portfolio Breakdown ──────────────────────────────────────────────────────
+async function loadPortfolio() {
+  try {
+    const r = await fetch('/api/portfolio_summary');
+    const d = await r.json();
+    if (!d.ok) return;
+    const s = d.summary, eq = d.equity, fno = d.fno, comm = d.commodity;
+    const INITIAL = 1200000;
+
+    // AUM header
+    const aumPnl    = s.total_aum - INITIAL;
+    const aumPnlPct = (aumPnl / INITIAL * 100).toFixed(2);
+    document.getElementById('port-aum').textContent = fmt(s.total_aum);
+    const changeEl = document.getElementById('port-change');
+    changeEl.textContent = `${aumPnl >= 0 ? '+' : ''}${fmt(aumPnl)} (${aumPnl >= 0 ? '+' : ''}${aumPnlPct}%) all-time`;
+    changeEl.style.color = aumPnl >= 0 ? 'var(--green)' : 'var(--red)';
+
+    // Allocation bar — segments: equity value, fno margin, commodity margin, free cash
+    const eqSeg  = eq.equity_val;
+    const fnoSeg = fno.margin_used;
+    const comSeg = comm.margin_used;
+    const cashSeg= eq.cash;
+    const total  = eqSeg + fnoSeg + comSeg + cashSeg || 1;
+    const pct = v => Math.max(1, (v / total * 100)).toFixed(1);
+    document.getElementById('alloc-eq').style.width   = pct(eqSeg)  + '%';
+    document.getElementById('alloc-fno').style.width  = pct(fnoSeg) + '%';
+    document.getElementById('alloc-comm').style.width = pct(comSeg) + '%';
+    document.getElementById('alloc-cash').style.width = pct(cashSeg)+ '%';
+    document.getElementById('alloc-eq-pct').textContent   = pct(eqSeg)  + '%';
+    document.getElementById('alloc-fno-pct').textContent  = pct(fnoSeg) + '%';
+    document.getElementById('alloc-comm-pct').textContent = pct(comSeg) + '%';
+    document.getElementById('alloc-cash-pct').textContent = pct(cashSeg)+ '%';
+
+    // Desk cards — Equity
+    document.getElementById('port-eq-total').textContent = fmt(eq.total);
+    const eqU = document.getElementById('port-eq-unreal');
+    eqU.textContent = `Unrealised ${eq.unrealised >= 0 ? '+' : ''}${fmt(eq.unrealised)}`;
+    eqU.style.color = eq.unrealised >= 0 ? 'var(--green)' : 'var(--red)';
+    document.getElementById('port-eq-pos').textContent  = eq.count;
+    document.getElementById('port-eq-cost').textContent = fmt(eq.cost_basis);
+    document.getElementById('port-eq-cash').textContent = fmt(eq.cash);
+
+    // F&O card
+    const fnoNet = fno.unrealised + fno.realised;
+    document.getElementById('port-fno-total').textContent = (fnoNet >= 0 ? '+' : '') + fmt(fnoNet);
+    document.getElementById('port-fno-total').style.color = fnoNet >= 0 ? 'var(--green)' : 'var(--red)';
+    const fnoU = document.getElementById('port-fno-unreal');
+    fnoU.textContent = `Unrealised ${fno.unrealised >= 0 ? '+' : ''}${fmt(fno.unrealised)}`;
+    fnoU.style.color = fno.unrealised >= 0 ? 'var(--green)' : 'var(--red)';
+    document.getElementById('port-fno-pos').textContent    = fno.count;
+    document.getElementById('port-fno-margin').textContent = fmt(fno.margin_used);
+    document.getElementById('port-fno-real').textContent   = (fno.realised >= 0 ? '+' : '') + fmt(fno.realised);
+
+    // Commodity card
+    const commNet = comm.unrealised + comm.realised;
+    document.getElementById('port-comm-total').textContent = (commNet >= 0 ? '+' : '') + fmt(commNet);
+    document.getElementById('port-comm-total').style.color = commNet >= 0 ? 'var(--green)' : 'var(--red)';
+    const commU = document.getElementById('port-comm-unreal');
+    commU.textContent = `Unrealised ${comm.unrealised >= 0 ? '+' : ''}${fmt(comm.unrealised)}`;
+    commU.style.color = comm.unrealised >= 0 ? 'var(--green)' : 'var(--red)';
+    document.getElementById('port-comm-pos').textContent    = comm.count;
+    document.getElementById('port-comm-margin').textContent = fmt(comm.margin_used);
+    document.getElementById('port-comm-real').textContent   = (comm.realised >= 0 ? '+' : '') + fmt(comm.realised);
+
+    // Cash bar
+    document.getElementById('port-free-cash').textContent = fmt(s.free_cash);
+    document.getElementById('port-cash-note').textContent =
+      `${(s.free_cash / s.total_aum * 100).toFixed(1)}% of AUM · Available for all desks`;
+
+    // Unified positions table
+    const rows = [];
+
+    // Equity rows
+    (eq.positions || []).forEach(p => {
+      const pnl = p.pnl || 0;
+      const pnlPct = p.pnl_pct || 0;
+      const curr = p.current_price || p.avg_price;
+      rows.push(`<tr>
+        <td><span class="tag-eq">EQ</span></td>
+        <td style="font-weight:600">${p.ticker?.replace('.NS','') || p.symbol || '—'}</td>
+        <td style="color:var(--muted);font-size:11px">Equity</td>
+        <td>${p.qty?.toLocaleString()}</td>
+        <td>${fmt(p.avg_price)}</td>
+        <td>${fmt(curr)}</td>
+        <td class="${pnl>=0?'port-pnl-pos':'port-pnl-neg'}">${pnl>=0?'+':''}${fmt(pnl)}</td>
+        <td class="${pnlPct>=0?'port-pnl-pos':'port-pnl-neg'}">${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%</td>
+        <td style="color:var(--muted);font-size:11px">${p.strategy||'—'}</td>
+      </tr>`);
+    });
+
+    // F&O rows
+    (fno.positions || []).forEach(p => {
+      const pnl = p.mtm || 0;
+      const pnlPct = p.entry_premium > 0 ? (pnl / (p.entry_premium * (p.lot_size||1)) * 100) : 0;
+      rows.push(`<tr>
+        <td><span class="tag-fno">F&amp;O</span></td>
+        <td style="font-weight:600">${(p.underlying||'').replace('.NS','')} ${p.strike}${p.option_type==='CE'?'C':'P'}</td>
+        <td style="color:var(--muted);font-size:11px">${p.option_type==='CE'?'CALL':'PUT'}</td>
+        <td>${p.lots || 1} lot${p.lots>1?'s':''}</td>
+        <td>${fmt(p.entry_premium)}</td>
+        <td>${fmt(p.curr_premium||p.entry_premium)}</td>
+        <td class="${pnl>=0?'port-pnl-pos':'port-pnl-neg'}">${pnl>=0?'+':''}${fmt(pnl)}</td>
+        <td class="${pnlPct>=0?'port-pnl-pos':'port-pnl-neg'}">${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%</td>
+        <td style="color:var(--muted);font-size:11px">${p.strategy||'—'}</td>
+      </tr>`);
+    });
+
+    // Commodity rows
+    (comm.positions || []).forEach(p => {
+      const pnl = p.pnl || 0;
+      rows.push(`<tr>
+        <td><span class="tag-comm">COMM</span></td>
+        <td style="font-weight:600">${p.emoji||''} ${p.name||p.symbol}</td>
+        <td style="color:var(--muted);font-size:11px">${p.direction||'LONG'}</td>
+        <td>${p.qty_lots} lot${p.qty_lots>1?'s':''}</td>
+        <td>$${p.entry_usd?.toFixed(2)||'—'} / ${fmt(p.entry_inr)}</td>
+        <td>$${p.curr_usd?.toFixed(2)||'—'} / ${fmt(p.curr_inr)}</td>
+        <td class="${pnl>=0?'port-pnl-pos':'port-pnl-neg'}">${pnl>=0?'+':''}${fmt(pnl)}</td>
+        <td class="${p.pnl_pct>=0?'port-pnl-pos':'port-pnl-neg'}">${p.pnl_pct>=0?'+':''}${(p.pnl_pct||0).toFixed(2)}%</td>
+        <td style="color:var(--muted);font-size:11px">${p.strategy||'—'}</td>
+      </tr>`);
+    });
+
+    const tbody = document.getElementById('port-all-body');
+    tbody.innerHTML = rows.length
+      ? rows.join('')
+      : '<tr><td colspan="9" style="text-align:center;padding:24px;color:var(--muted)">No open positions across any desk</td></tr>';
+
+  } catch(e) { console.error('Portfolio load error', e); }
+}
+
+setInterval(() => { if (_currentView === 'portfolio') loadPortfolio(); }, 30000);
 </script>
 </body>
 </html>
