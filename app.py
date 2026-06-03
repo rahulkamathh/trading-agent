@@ -463,6 +463,51 @@ def api_reset():
     return jsonify({"ok": True, "message": "Portfolio reset to ₹10,00,000"})
 
 
+# ── Live trading controls ─────────────────────────────────────────────────────
+
+@app.route("/api/trader/status")
+def api_trader_status():
+    """Return live trading status, halt state, today's orders."""
+    from angelone_trader import get_trader  # pylint: disable=import-outside-toplevel
+    t = get_trader()
+    return jsonify({
+        "ok":        True,
+        "is_live":   t.is_live,
+        "halted":    t.halted,
+        "halt_reason": None,  # exposed only to dashboard, not publicly
+        "mode":      "LIVE" if t.is_live else "PAPER",
+        "orders_today": len(t.get_order_book()),
+    })
+
+@app.route("/api/trader/halt", methods=["POST"])
+def api_trader_halt():
+    """Emergency halt — blocks all new orders immediately."""
+    from angelone_trader import get_trader  # pylint: disable=import-outside-toplevel
+    body = request.get_json(force=True) or {}
+    get_trader().halt(body.get("reason", "Manual halt from dashboard"))
+    return jsonify({"ok": True, "message": "Trading halted"})
+
+@app.route("/api/trader/resume", methods=["POST"])
+def api_trader_resume():
+    """Lift trading halt."""
+    from angelone_trader import get_trader  # pylint: disable=import-outside-toplevel
+    get_trader().resume()
+    return jsonify({"ok": True, "message": "Trading resumed"})
+
+@app.route("/api/trader/sync", methods=["POST"])
+def api_trader_sync():
+    """Reconcile agent positions with actual Angel One account."""
+    from angelone_trader import get_trader  # pylint: disable=import-outside-toplevel
+    result = get_trader().sync_portfolio(get_agent().portfolio)
+    return jsonify(result)
+
+@app.route("/api/trader/orders")
+def api_trader_orders():
+    """Return today's live order log."""
+    from angelone_trader import get_trader  # pylint: disable=import-outside-toplevel
+    return jsonify({"ok": True, "orders": get_trader().get_order_book()})
+
+
 @app.route("/api/add_capital", methods=["POST"])
 def api_add_capital():
     """Add capital to the portfolio cash balance. Body: {amount: 300000}"""

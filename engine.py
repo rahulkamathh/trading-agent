@@ -1326,6 +1326,12 @@ class Portfolio:
             f"BUY  {ticker:20s} qty={qty} @ ₹{price:.2f}  "
             f"SL=₹{stop_loss:.2f}  TP=₹{target:.2f}  RR=1:{planned_rr}  [{strategy}]"
         )
+        # ── Live order execution (only when LIVE_TRADING=true) ───────────── #
+        try:
+            from angelone_trader import get_trader  # pylint: disable=import-outside-toplevel
+            get_trader().buy(ticker, qty, price, segment="equity")
+        except Exception as _le:
+            logger.debug(f"[Trader] buy call skipped: {_le}")
         # ── Notify ──────────────────────────────────────────────────────────
         try:
             # Extract source group name if this is a Telegram-triggered trade
@@ -1412,6 +1418,12 @@ class Portfolio:
         rr_str   = f"  RR={actual_rr:+.2f}(planned 1:{planned_rr})" if planned_rr else ""
         type_str = f"  [{trade_type}/{hold_days}d]"
         logger.info(f"SELL {ticker:20s} qty={qty} @ ₹{price:.2f}  pnl=₹{pnl:.2f}  [{reason}]{rr_str}{type_str}")
+        # ── Live order execution (only when LIVE_TRADING=true) ───────────── #
+        try:
+            from angelone_trader import get_trader  # pylint: disable=import-outside-toplevel
+            get_trader().sell(ticker, qty, price, segment="equity")
+        except Exception as _le:
+            logger.debug(f"[Trader] sell call skipped: {_le}")
         # ── Notify ──────────────────────────────────────────────────────────
         try:
             avg_price = pos["avg_price"]
