@@ -588,6 +588,17 @@ def api_fno_close_position():
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 
+@app.route("/api/events")
+def api_events():
+    """Return recent detected geopolitical/macro events."""
+    try:
+        from event_engine import get_recent_events  # pylint: disable=import-outside-toplevel
+        hours = float(request.args.get("hours", 24))
+        return jsonify({"ok": True, "events": get_recent_events(hours)})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 @app.route("/api/fno/hourly_signals")
 def api_fno_hourly_signals():
     try:
@@ -1256,6 +1267,56 @@ if __name__ == "__main__":
 
     threading.Thread(target=_fno_realtime_monitor, daemon=True, name="fno-rt-monitor").start()
     print("  📡  Real-time F&O position monitor started (60s loop, Angel One prices)")
+
+    # ── Geopolitical / macro event monitor (5-min loop) ───────────────────────
+    def _event_monitor_loop():
+        import time as _time
+        while True:
+            try:
+                from event_engine import run_event_scan  # noqa: PLC0415
+                from fno_engine import get_fno_agent     # noqa: PLC0415
+                agent_obj  = get_agent()
+                fno_obj    = get_fno_agent()
+                results    = run_event_scan(agent_obj.portfolio, fno_obj.portfolio)
+
+                for r in results:
+                    event   = r["event"]
+                    actions = r["actions"]
+                    if not actions and event["severity"] == "MEDIUM":
+                        continue  # don't spam for medium events with no actions
+
+                    # Telegram alert
+                    try:
+                        from notifier import get_notifier  # noqa: PLC0415
+                        _send_event_alert(get_notifier(), event, actions)
+                    except Exception as _ne:
+                        logger.warning(f"[EventMonitor] Notifier error: {_ne}")
+
+            except Exception as _e:
+                logger.warning(f"[EventMonitor] Error: {_e}")
+
+            _time.sleep(300)  # check every 5 minutes
+
+    def _send_event_alert(notifier, event: dict, actions: list):
+        severity_emoji = {"CRITICAL": "🚨", "HIGH": "⚠️", "MEDIUM": "📋"}.get(event["severity"], "📋")
+        impact_lines = "\n".join(
+            f"  {'🟢' if i['direction']=='BUY' else '🔴'} {i['sector']}: {i['direction']} — {i['reason']}"
+            for i in event["impact"][:6]
+        )
+        actions_text = "\n".join(f"  {a}" for a in actions) if actions else "  (monitoring — no positions affected)"
+        msg = (
+            f"<b>{severity_emoji} Market Event Detected</b>\n\n"
+            f"<b>{event['event_id'].replace('_', ' ').title()}</b>\n"
+            f"Severity: {event['severity']}\n\n"
+            f"📰 Trigger: <i>{event['trigger_headline'][:200]}</i>\n\n"
+            f"<b>Sector Impact:</b>\n{impact_lines}\n\n"
+            f"<b>Actions Taken:</b>\n{actions_text}\n\n"
+            f"🕐 {datetime.now(ZoneInfo('Asia/Kolkata')).strftime('%d %b %Y, %H:%M IST')}"
+        )
+        notifier._tg.send_async(msg)
+
+    threading.Thread(target=_event_monitor_loop, daemon=True, name="event-monitor").start()
+    print("  🌐  Geopolitical/macro event monitor started (5-min loop)")
 
     print("\n" + "=" * 60)
     print("  🇮🇳  Indian Institutional Trading Agent  —  Paper Mode")

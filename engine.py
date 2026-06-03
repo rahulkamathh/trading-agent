@@ -2757,7 +2757,7 @@ class TradingAgent:
             },
             "positions":      port.get_positions_display(),
             "trades":         list(reversed(trades[-50:])),   # last 50
-            "signals":        _diversify_signals(signals, max_per_strategy=5, total=50),
+            "signals":        _diversify_signals(signals, max_per_strategy=10, total=150),
             "signals_updated": signals_updated,
             "equity_curve":   equity_curve,
             "strategy_perf":  strat_perf,

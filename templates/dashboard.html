@@ -415,6 +415,10 @@
     <div class="nav-item" data-view="news" onclick="showView('news')">
       <span class="nav-icon">📰</span> News Feed
     </div>
+    <div class="nav-item" data-view="events" onclick="showView('events')">
+      <span class="nav-icon">🌐</span> Events
+      <span id="eventsBadge" style="margin-left:auto;font-size:10px;background:#3d1f1f;color:#f85149;padding:1px 6px;border-radius:8px;display:none"></span>
+    </div>
     <div class="nav-item" data-view="penny" onclick="showView('penny')">
       <span class="nav-icon">💎</span> Penny Stocks
     </div>
@@ -1348,6 +1352,21 @@
     </div>
   </div>
 
+  <!-- ╔╗ Events page ╚╝ -->
+  <div id="page-events" class="page-section hidden">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <h2 style="margin:0">🌐 Geopolitical &amp; Macro Events</h2>
+      <button class="btn btn-ghost" onclick="loadEvents()" style="font-size:12px">↻ Refresh</button>
+    </div>
+    <p style="color:var(--muted);font-size:12px;margin-bottom:16px">
+      Monitors news every 5 minutes for geopolitical, macro, and commodity events that affect Indian markets.
+      When detected, automatically closes exposed equity positions and buys Nifty PUT hedges for CRITICAL events.
+    </p>
+    <div id="eventsContainer">
+      <div style="color:var(--muted);text-align:center;padding:40px">Loading events…</div>
+    </div>
+  </div>
+
   <!-- ╔╗ F&O Desk page ╚╝ -->
   <div id="page-fno" class="page-section hidden">
     <div class="page-header">
@@ -1517,7 +1536,7 @@ function closeSidebar() {
 // ══════════════════════════════════════════════
 let _currentView = 'overview';
 
-const _ALL_PAGES = ['overview','positions','signals','trades','controls','report','telegram','groupfeed','news','penny','screener','agentlog','learning','calendar','fno'];
+const _ALL_PAGES = ['overview','positions','signals','trades','controls','report','telegram','groupfeed','news','events','penny','screener','agentlog','learning','calendar','fno'];
 const _lazyLoaded = new Set();
 
 function showView(view) {
@@ -1563,6 +1582,8 @@ function showView(view) {
         loadPnlCalendar();
       } else if (view === 'fno') {
         loadFNO();
+      } else if (view === 'events') {
+        loadEvents();
       }
     }
   }
@@ -4375,7 +4396,65 @@ window.addEventListener('DOMContentLoaded', () => {
   setInterval(() => {
     if (_currentView === 'fno') loadFNO();
   }, 30000);
+
+  // ── Events: auto-refresh every 5 min when on that page ──
+  setInterval(() => {
+    if (_currentView === 'events') loadEvents();
+  }, 300000);
 });
+
+// ══════════════════════════════════════════════
+// ══════════════════════════════════════════════
+// Events page
+// ══════════════════════════════════════════════
+async function loadEvents() {
+  try {
+    const r = await fetch('/api/events?hours=48');
+    const d = await r.json();
+    const container = document.getElementById('eventsContainer');
+    if (!d.ok || !d.events || d.events.length === 0) {
+      container.innerHTML = `<div style="color:var(--muted);text-align:center;padding:40px">
+        No events detected in the last 48 hours.<br>
+        <span style="font-size:12px">The engine checks every 5 minutes during market hours.</span>
+      </div>`;
+      document.getElementById('eventsBadge').style.display = 'none';
+      return;
+    }
+    // Badge count
+    const critical = d.events.filter(e => e.severity === 'CRITICAL').length;
+    const badge = document.getElementById('eventsBadge');
+    if (critical > 0) { badge.textContent = critical; badge.style.display = ''; }
+    else badge.style.display = 'none';
+
+    const sevColor = { CRITICAL: '#f85149', HIGH: '#d29922', MEDIUM: '#58a6ff' };
+    const sevEmoji = { CRITICAL: '🚨', HIGH: '⚠️', MEDIUM: '📋' };
+
+    container.innerHTML = d.events.slice().reverse().map(ev => {
+      const actionsHtml = (ev.actions || []).length
+        ? `<div style="margin-top:10px;padding:8px;background:#0d1117;border-radius:6px;font-size:12px">
+            ${ev.actions.map(a => `<div style="margin:3px 0">${a}</div>`).join('')}
+          </div>`
+        : `<div style="color:var(--muted);font-size:12px;margin-top:6px">Monitoring — no positions affected</div>`;
+
+      const color = sevColor[ev.severity] || '#58a6ff';
+      const emoji = sevEmoji[ev.severity] || '📋';
+      const time  = ev.time ? ev.time.replace('T',' ').slice(0,16) + ' IST' : '—';
+
+      return `<div style="background:var(--card);border:1px solid var(--border);border-left:3px solid ${color};border-radius:8px;padding:16px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-weight:700;font-size:14px">${emoji} ${(ev.event_id||'').replace(/_/g,' ')}</span>
+          <span style="font-size:11px;padding:2px 8px;border-radius:12px;background:${color}22;color:${color}">${ev.severity}</span>
+        </div>
+        <div style="color:var(--muted);font-size:12px;margin-bottom:8px;font-style:italic">"${(ev.headline||'').slice(0,200)}"</div>
+        <div style="font-size:11px;color:var(--muted)">${time} · ${ev.keyword_hits||0} keyword hits</div>
+        ${actionsHtml}
+      </div>`;
+    }).join('');
+  } catch(e) {
+    document.getElementById('eventsContainer').innerHTML =
+      `<div style="color:var(--red);padding:20px">Error loading events: ${e.message}</div>`;
+  }
+}
 
 // ══════════════════════════════════════════════
 // F&O Desk
