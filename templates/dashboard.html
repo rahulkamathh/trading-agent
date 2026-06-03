@@ -4927,7 +4927,8 @@ async function loadPortfolio() {
     const d = await r.json();
     if (!d.ok) { console.error('portfolio_summary error', d.error); return; }
     const s = d.summary, eq = d.equity, fno = d.fno, comm = d.commodity;
-    const INITIAL = 1300000; // ₹13L
+    // Use actual initial capital from portfolio state (handles top-ups correctly)
+    const INITIAL = s.initial_capital || eq.initial || 1300000;
 
     // AUM header
     const aumPnl    = s.total_aum - INITIAL;

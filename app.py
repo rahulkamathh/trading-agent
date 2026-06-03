@@ -605,73 +605,88 @@ def api_market_status():
 @app.route("/api/portfolio_summary")
 def api_portfolio_summary():
     """Aggregated view: Equity + F&O + Commodity in one response."""
+    import traceback  # pylint: disable=import-outside-toplevel
+
+    # ── Equity ───────────────────────────────────────────────────────────────
     try:
         agent  = get_agent()
         eq_pos = agent.portfolio.get_positions_display()
-        # get_positions_display returns: ticker, qty, avg_price, ltp, value, pnl, pnl_pct, strategy
         eq_cash   = round(agent.portfolio.state["cash"], 2)
-        eq_equity = round(sum(p.get("value", p.get("avg_price", 0) * p.get("qty", 0)) for p in eq_pos), 2)
+        eq_equity = round(sum(p.get("value", 0) for p in eq_pos), 2)
         eq_unreal = round(sum(p.get("pnl", 0) for p in eq_pos), 2)
         eq_total  = round(eq_cash + eq_equity, 2)
         eq_cost   = round(sum(p.get("avg_price", 0) * p.get("qty", 0) for p in eq_pos), 2)
+        # Use the actual initial capital recorded in portfolio state (handles top-ups correctly)
+        eq_initial = agent.portfolio.state.get("initial", INITIAL_CAPITAL)
+    except Exception:
+        app.logger.error("portfolio_summary equity error:\n" + traceback.format_exc())
+        eq_pos, eq_cash, eq_equity, eq_unreal, eq_total, eq_cost, eq_initial = [], 0, 0, 0, 0, 0, INITIAL_CAPITAL
 
-        # F&O
-        fno_data      = {}
-        fno_positions = []
-        fno_unreal    = 0.0
-        fno_realised  = 0.0
-        try:
-            fno_data      = get_fno_agent().get_dashboard_data()
-            fno_positions = fno_data.get("positions", [])
-            fno_unreal    = fno_data.get("unrealised_pnl", 0)
-            fno_realised  = fno_data.get("realised_pnl", 0)
-        except Exception: pass
+    # ── F&O ──────────────────────────────────────────────────────────────────
+    fno_positions, fno_unreal, fno_realised, fno_greeks = [], 0.0, 0.0, {}
+    try:
+        from fno_engine import get_fno_agent as _get_fno  # pylint: disable=import-outside-toplevel
+        fno_d        = _get_fno().get_dashboard_data()
+        fno_positions = fno_d.get("positions", [])
+        fno_unreal    = float(fno_d.get("unrealised_pnl", 0) or 0)
+        fno_realised  = float(fno_d.get("realised_pnl", 0) or 0)
+        fno_greeks    = fno_d.get("greeks", {})
+    except Exception:
+        app.logger.error("portfolio_summary F&O error:\n" + traceback.format_exc())
 
-        # Commodity
-        comm_data      = {}
-        comm_positions = []
-        comm_unreal    = 0.0
-        comm_realised  = 0.0
-        try:
-            from commodity_engine import get_commodity_agent  # pylint: disable=import-outside-toplevel
-            comm_data      = get_commodity_agent().get_dashboard_data()
-            comm_positions = comm_data.get("positions", [])
-            comm_unreal    = comm_data.get("unrealised_pnl", 0)
-            comm_realised  = comm_data.get("realised_pnl", 0)
-        except Exception: pass
+    # ── Commodity ────────────────────────────────────────────────────────────
+    comm_positions, comm_unreal, comm_realised, comm_prices = [], 0.0, 0.0, {}
+    try:
+        from commodity_engine import get_commodity_agent as _get_comm  # pylint: disable=import-outside-toplevel
+        comm_d         = _get_comm().get_dashboard_data()
+        comm_positions = comm_d.get("positions", [])
+        comm_unreal    = float(comm_d.get("unrealised_pnl", 0) or 0)
+        comm_realised  = float(comm_d.get("realised_pnl", 0) or 0)
+        comm_prices    = comm_d.get("prices", {})
+    except Exception:
+        app.logger.error("portfolio_summary Commodity error:\n" + traceback.format_exc())
 
-        fno_margin  = round(sum(p.get("cost", 0) for p in fno_positions), 2)
-        comm_margin = round(sum(p.get("margin", 0) for p in comm_positions), 2)
-        total_aum   = round(eq_total + fno_unreal + comm_unreal, 2)
+    # F&O margin = sum of premiums paid (entry_premium × qty × lot_size) still open
+    fno_margin  = round(sum(
+        p.get("entry_premium", 0) * p.get("qty_lots", 1) for p in fno_positions
+    ), 2)
+    comm_margin = round(sum(p.get("margin", 0) for p in comm_positions), 2)
 
-        return jsonify({
-            "ok": True,
-            "summary": {
-                "total_aum":        total_aum,
-                "total_unrealised": round(eq_unreal + fno_unreal + comm_unreal, 2),
-                "total_realised":   round(fno_realised + comm_realised, 2),
-                "free_cash":        eq_cash,
-            },
-            "equity": {
-                "cash": eq_cash, "equity_val": eq_equity, "cost_basis": eq_cost,
-                "unrealised": eq_unreal, "total": eq_total,
-                "positions": eq_pos, "count": len(eq_pos),
-            },
-            "fno": {
-                "margin_used": fno_margin, "unrealised": round(fno_unreal, 2),
-                "realised": round(fno_realised, 2),
-                "positions": fno_positions, "count": len(fno_positions),
-                "greeks": fno_data.get("greeks", {}),
-            },
-            "commodity": {
-                "margin_used": comm_margin, "unrealised": round(comm_unreal, 2),
-                "realised": round(comm_realised, 2),
-                "positions": comm_positions, "count": len(comm_positions),
-                "prices": comm_data.get("prices", {}),
-            },
-        })
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
+    # True AUM: equity cash + equity stock value + fno unrealised + commodity unrealised
+    total_aum = round(eq_total + fno_unreal + comm_unreal, 2)
+
+    return jsonify({
+        "ok": True,
+        "summary": {
+            "total_aum":        total_aum,
+            "initial_capital":  eq_initial,
+            "total_unrealised": round(eq_unreal + fno_unreal + comm_unreal, 2),
+            "total_realised":   round(fno_realised + comm_realised, 2),
+            "free_cash":        eq_cash,
+        },
+        "equity": {
+            "cash": eq_cash, "equity_val": eq_equity, "cost_basis": eq_cost,
+            "unrealised": eq_unreal, "total": eq_total,
+            "positions": eq_pos, "count": len(eq_pos),
+            "initial": eq_initial,
+        },
+        "fno": {
+            "margin_used": fno_margin,
+            "unrealised":  round(fno_unreal, 2),
+            "realised":    round(fno_realised, 2),
+            "positions":   fno_positions,
+            "count":       len(fno_positions),
+            "greeks":      fno_greeks,
+        },
+        "commodity": {
+            "margin_used": comm_margin,
+            "unrealised":  round(comm_unreal, 2),
+            "realised":    round(comm_realised, 2),
+            "positions":   comm_positions,
+            "count":       len(comm_positions),
+            "prices":      comm_prices,
+        },
+    })
 
 
 # ── F&O API endpoints ────────────────────────────────────────────────────────
