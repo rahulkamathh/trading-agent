@@ -1351,7 +1351,9 @@ class Portfolio:
             return None
 
         # Enforce minimum hold period — never exit same day as entry (prevents signal flip-flop)
-        if reason not in ("STOP_LOSS", "TAKE_PROFIT"):
+        if reason not in ("STOP_LOSS", "TAKE_PROFIT", "PENNY_STOCK_EXIT",
+                          "HEDGE_LIQUIDATION", "DEAD_MONEY", "GAP_DOWN",
+                          "PARTIAL_PROFIT", "ROTATION_EXIT"):
             try:
                 entry_dt  = datetime.fromisoformat(pos["entry_date"])
                 held_days = (_now_ist() - entry_dt).days
