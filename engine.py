@@ -292,7 +292,7 @@ PORTFOLIO_FILE = DATA_DIR / "portfolio.json"
 TRADE_LOG_FILE = DATA_DIR / "trade_log.json"
 SIGNALS_FILE   = DATA_DIR / "signals.json"
 
-INITIAL_CAPITAL  = 1_000_000   # ₹10 lakhs
+INITIAL_CAPITAL  = 1_200_000   # ₹12 lakhs (₹10L equity + ₹2L F&O allocation)
 MAX_POSITION_PCT = 0.08        # max 8% per position
 STOP_LOSS_PCT    = 0.07        # 7% stop loss
 TAKE_PROFIT_PCT  = 0.20        # 20% take profit

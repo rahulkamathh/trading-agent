@@ -419,6 +419,9 @@
       <span class="nav-icon">🌐</span> Events
       <span id="eventsBadge" style="margin-left:auto;font-size:10px;background:#3d1f1f;color:#f85149;padding:1px 6px;border-radius:8px;display:none"></span>
     </div>
+    <div class="nav-item" data-view="commodity" onclick="showView('commodity')">
+      <span class="nav-icon">🥇</span> Commodities
+    </div>
     <div class="nav-item" data-view="penny" onclick="showView('penny')">
       <span class="nav-icon">💎</span> Penny Stocks
     </div>
@@ -1367,6 +1370,54 @@
     </div>
   </div>
 
+  <!-- ╔╗ Commodity Desk page ╚╝ -->
+  <div id="page-commodity" class="page-section hidden">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <h2 style="margin:0">🥇 Commodity Desk</h2>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-ghost" onclick="loadCommodity()" style="font-size:12px">↻ Refresh</button>
+        <button class="btn" style="background:#b91c1c;font-size:12px" onclick="resetCommodity()">Reset</button>
+      </div>
+    </div>
+
+    <!-- KPI bar -->
+    <div id="commodityKpis" style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:20px"></div>
+
+    <!-- Live prices -->
+    <div style="margin-bottom:20px">
+      <h3 style="margin:0 0 12px;font-size:14px;color:var(--muted)">Live MCX Prices</h3>
+      <div id="commodityPrices" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px"></div>
+    </div>
+
+    <!-- Open positions -->
+    <div style="margin-bottom:20px">
+      <h3 style="margin:0 0 12px;font-size:14px;color:var(--muted)">Open Positions</h3>
+      <div id="commodityPositions">
+        <div style="color:var(--muted);text-align:center;padding:20px">No open positions</div>
+      </div>
+    </div>
+
+    <!-- Signals -->
+    <div style="margin-bottom:20px">
+      <h3 style="margin:0 0 12px;font-size:14px;color:var(--muted)">Signals</h3>
+      <div id="commoditySignals">
+        <div style="color:var(--muted);text-align:center;padding:20px">No signals yet</div>
+      </div>
+    </div>
+
+    <!-- Trade log -->
+    <div>
+      <h3 style="margin:0 0 12px;font-size:14px;color:var(--muted)">Trade Log</h3>
+      <table>
+        <thead><tr>
+          <th>Time</th><th>Action</th><th>Commodity</th><th>Lots</th>
+          <th>Entry ₹</th><th>Exit ₹</th><th>P&L ₹</th><th>Reason</th>
+        </tr></thead>
+        <tbody id="commodityTradeBody"></tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- ╔╗ F&O Desk page ╚╝ -->
   <div id="page-fno" class="page-section hidden">
     <div class="page-header">
@@ -1536,7 +1587,7 @@ function closeSidebar() {
 // ══════════════════════════════════════════════
 let _currentView = 'overview';
 
-const _ALL_PAGES = ['overview','positions','signals','trades','controls','report','telegram','groupfeed','news','events','penny','screener','agentlog','learning','calendar','fno'];
+const _ALL_PAGES = ['overview','positions','signals','trades','controls','report','telegram','groupfeed','news','events','commodity','penny','screener','agentlog','learning','calendar','fno'];
 const _lazyLoaded = new Set();
 
 function showView(view) {
@@ -1584,6 +1635,8 @@ function showView(view) {
         loadFNO();
       } else if (view === 'events') {
         loadEvents();
+      } else if (view === 'commodity') {
+        loadCommodity();
       }
     }
   }
@@ -4457,6 +4510,135 @@ async function loadEvents() {
 }
 
 // ══════════════════════════════════════════════
+// Commodity Desk
+// ══════════════════════════════════════════════
+async function loadCommodity() {
+  try {
+    const r = await fetch('/api/commodity/dashboard');
+    const d = await r.json();
+    if (!d.ok) return;
+
+    const totalPnl = (d.realised_pnl || 0) + (d.unrealised_pnl || 0);
+    const pnlColor = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
+
+    // KPIs
+    const kpis = [
+      { label: 'Value',      val: fmt(d.portfolio_value), color: totalPnl >= 0 ? 'var(--green)' : 'var(--red)' },
+      { label: 'Total P&L',  val: fmt(totalPnl),          color: pnlColor },
+      { label: 'Realised',   val: fmt(d.realised_pnl||0), color: (d.realised_pnl||0) >= 0 ? 'var(--green)' : 'var(--red)' },
+      { label: 'Unrealised', val: fmt(d.unrealised_pnl||0), color: (d.unrealised_pnl||0) >= 0 ? 'var(--green)' : 'var(--red)' },
+      { label: 'Cash',       val: fmt(d.cash),             color: 'var(--fg)' },
+    ];
+    document.getElementById('commodityKpis').innerHTML = kpis.map(k =>
+      `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px">
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">${k.label}</div>
+        <div style="font-size:18px;font-weight:700;color:${k.color};margin-top:4px">${k.val}</div>
+      </div>`
+    ).join('');
+
+    // Live prices
+    const prices = d.live_prices || {};
+    document.getElementById('commodityPrices').innerHTML = Object.entries(prices).map(([sym, info]) => {
+      const p = info.price || 0;
+      return `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px">
+        <div style="font-size:18px">${info.emoji||'📦'} <b>${info.name}</b></div>
+        <div style="font-size:20px;font-weight:700;margin-top:6px">₹${p.toLocaleString('en-IN', {maximumFractionDigits:0})}</div>
+        <div style="font-size:11px;color:var(--muted)">${info.unit} · Lot: ${info.lot_size}</div>
+      </div>`;
+    }).join('');
+
+    // Open positions
+    const pos = d.open_positions || [];
+    document.getElementById('commodityPositions').innerHTML = pos.length === 0
+      ? '<div style="color:var(--muted);text-align:center;padding:20px">No open positions</div>'
+      : `<table><thead><tr>
+          <th>Commodity</th><th>Direction</th><th>Lots</th><th>Entry ₹</th>
+          <th>Current ₹</th><th>Stop ₹</th><th>Target ₹</th><th>P&L ₹</th><th>Action</th>
+        </tr></thead><tbody>
+        ${pos.map(p => {
+          const pc = p.pnl >= 0 ? 'pos' : 'neg';
+          return `<tr>
+            <td>${p.emoji||''} <b>${p.name}</b></td>
+            <td><span style="padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;
+              background:${p.direction==='BUY'?'#1a4731':'#3d1f1f'};color:${p.direction==='BUY'?'var(--green)':'var(--red)'}">
+              ${p.direction}</span></td>
+            <td>${p.qty_lots}</td>
+            <td>₹${(p.entry_price||0).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+            <td>₹${(p.current_price||0).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+            <td class="neg">₹${(p.stop_loss||0).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+            <td class="pos">₹${(p.target||0).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+            <td class="${pc}">${p.pnl>=0?'+':''}₹${(p.pnl||0).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+            <td><button class="btn" style="background:#b91c1c;font-size:11px;padding:3px 10px"
+              onclick="closeCommodity('${p.symbol}')">Close</button></td>
+          </tr>`;
+        }).join('')}</tbody></table>`;
+
+    // Signals
+    const sigs = d.signals || [];
+    document.getElementById('commoditySignals').innerHTML = sigs.length === 0
+      ? '<div style="color:var(--muted);text-align:center;padding:20px">No signals — runs every 15 min</div>'
+      : `<table><thead><tr><th>Commodity</th><th>Signal</th><th>Strength</th><th>Price ₹</th><th>Source</th><th>Reason</th></tr></thead><tbody>
+        ${sigs.map(s => {
+          const isB = s.signal === 'BUY';
+          return `<tr>
+            <td><b>${s.name}</b></td>
+            <td><span style="padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;
+              background:${isB?'#1a4731':'#3d1f1f'};color:${isB?'var(--green)':'var(--red)'}">
+              ${s.signal}</span></td>
+            <td><div style="display:flex;align-items:center;gap:5px">
+              <div style="width:50px;height:4px;background:#21262d;border-radius:2px">
+                <div style="width:${s.strength}%;height:100%;background:${isB?'var(--green)':'var(--red)'}"></div>
+              </div>${s.strength}</div></td>
+            <td>₹${(s.price_inr||0).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+            <td><span style="font-size:11px;padding:2px 6px;border-radius:8px;background:#21262d">${s.source}</span></td>
+            <td style="font-size:11px;color:var(--muted)">${s.reason||'—'}</td>
+          </tr>`;
+        }).join('')}</tbody></table>`;
+
+    // Trade log
+    const trades = (d.trades||[]).slice().reverse();
+    document.getElementById('commodityTradeBody').innerHTML = trades.length === 0
+      ? '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:20px">No trades yet</td></tr>'
+      : trades.map(t => {
+          const isBuy = t.action?.includes('BUY');
+          const pnl   = t.pnl || 0;
+          const isOpen = t.action?.startsWith('OPEN');
+          return `<tr>
+            <td style="font-size:11px">${(t.time||'').slice(0,16).replace('T',' ')}</td>
+            <td><span style="font-size:11px;padding:2px 6px;border-radius:8px;
+              background:${isBuy?'#1a4731':'#3d1f1f'};color:${isBuy?'var(--green)':'var(--red)'}">
+              ${t.action||'—'}</span></td>
+            <td><b>${t.name||t.symbol||'—'}</b></td>
+            <td>${t.qty_lots||1}</td>
+            <td>₹${(t.price_inr||t.entry_price||0).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+            <td>${t.exit_price ? '₹'+t.exit_price.toLocaleString('en-IN',{maximumFractionDigits:0}) : '—'}</td>
+            <td class="${pnl>=0?'pos':'neg'}">${isOpen?'—':(pnl>=0?'+':'')+'₹'+(Math.abs(pnl)||0).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+            <td style="font-size:11px;color:var(--muted)">${t.reason||'—'}</td>
+          </tr>`;
+        }).join('');
+
+  } catch(e) {
+    console.error('Commodity load error:', e);
+  }
+}
+
+async function closeCommodity(symbol) {
+  if (!confirm(`Close ${symbol} position?`)) return;
+  const r = await fetch('/api/commodity/close', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbol})});
+  const d = await r.json();
+  toast(d.ok ? `Closed ${symbol}  P&L: ₹${d.trade?.pnl?.toFixed(0)??'—'}` : d.error, d.ok?'success':'error');
+  loadCommodity();
+}
+
+async function resetCommodity() {
+  if (!confirm('Reset commodity portfolio to ₹2,00,000?')) return;
+  await fetch('/api/commodity/reset', {method:'POST'});
+  toast('Commodity portfolio reset'); loadCommodity();
+}
+
+setInterval(() => { if (_currentView === 'commodity') loadCommodity(); }, 30000);
+
+// ══════════════════════════════════════════════
 // F&O Desk
 // ══════════════════════════════════════════════
 async function loadFNO() {
@@ -4476,7 +4658,7 @@ async function loadFNO() {
       { label: 'F&O P&L',      val: fmt((d.realised_pnl||0)+(d.unrealised_pnl||0)), color: cls((d.realised_pnl||0)+(d.unrealised_pnl||0)) },
       { label: 'Realised',     val: fmt(d.realised_pnl||0),   color: cls(d.realised_pnl||0) },
       { label: 'Unrealised',   val: fmt(d.unrealised_pnl||0), color: cls(d.unrealised_pnl||0) },
-      { label: 'Cash (F&O)',   val: fmt(d.cash),              color: '' },
+      { label: 'Equity Cash',  val: fmt(d.cash),              color: '' },
       { label: 'Open Positions',val: d.open_count,            color: '' },
     ];
     document.getElementById('fnoKpis').innerHTML = kpis.map(k => `

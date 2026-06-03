@@ -599,6 +599,38 @@ def api_events():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
+@app.route("/api/commodity/dashboard")
+def api_commodity_dashboard():
+    try:
+        from commodity_engine import get_commodity_agent  # pylint: disable=import-outside-toplevel
+        return jsonify({"ok": True, **get_commodity_agent().get_dashboard_data()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/commodity/close", methods=["POST"])
+def api_commodity_close():
+    symbol = request.json.get("symbol", "").upper()
+    try:
+        from commodity_engine import get_commodity_agent  # pylint: disable=import-outside-toplevel
+        trade = get_commodity_agent().portfolio.close_position(symbol, reason="MANUAL")
+        if trade:
+            return jsonify({"ok": True, "trade": trade})
+        return jsonify({"ok": False, "error": "No open position for that symbol"})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/commodity/reset", methods=["POST"])
+def api_commodity_reset():
+    try:
+        from commodity_engine import get_commodity_agent  # pylint: disable=import-outside-toplevel
+        get_commodity_agent().portfolio.reset()
+        return jsonify({"ok": True})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 @app.route("/api/fno/hourly_signals")
 def api_fno_hourly_signals():
     try:
@@ -1051,7 +1083,7 @@ def _generate_closing_report() -> None:
         "generated_at":   _ist_now().isoformat(),
         "portfolio_value": round(port_value, 2),
         "day_pnl":        round(day_pnl, 2),
-        "day_pnl_pct":    round(day_pnl / 1_000_000 * 100, 4),
+        "day_pnl_pct":    round(day_pnl / INITIAL_CAPITAL * 100, 4),
         "trades_today":   today_trades,
         "trades_count":   len(today_trades),
         "open_positions": len(positions),
@@ -1332,6 +1364,22 @@ if __name__ == "__main__":
 
     threading.Thread(target=_event_monitor_loop, daemon=True, name="event-monitor").start()
     print("  🌐  Geopolitical/macro event monitor started (5-min loop)")
+
+    # ── Commodity desk scheduler (15-min loop) ────────────────────────────────
+    def _commodity_loop():
+        import time as _time
+        while True:
+            try:
+                from commodity_engine import get_commodity_agent  # noqa: PLC0415
+                from event_engine import get_recent_events         # noqa: PLC0415
+                recent_events = get_recent_events(hours=6)
+                get_commodity_agent().run_cycle(active_events=recent_events)
+            except Exception as _e:
+                logger.warning(f"[CommodityLoop] Error: {_e}")
+            _time.sleep(900)  # every 15 minutes
+
+    threading.Thread(target=_commodity_loop, daemon=True, name="commodity-loop").start()
+    print("  🥇  Commodity desk started (15-min loop, MCX paper trading)")
 
     print("\n" + "=" * 60)
     print("  🇮🇳  Indian Institutional Trading Agent  —  Paper Mode")

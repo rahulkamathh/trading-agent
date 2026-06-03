@@ -399,18 +399,46 @@ class FNOPortfolio:
     Computes portfolio-level Greeks in real time.
     """
 
-    def __init__(self):
+    def __init__(self, equity_portfolio=None):
+        """
+        equity_portfolio: if provided, F&O cash operations go through the
+        equity portfolio's cash balance (unified account model).
+        If None, uses standalone F&O cash (legacy mode).
+        """
+        self._equity = equity_portfolio
         self.state = self._load()
 
     def _default_state(self) -> dict:
         return {
-            "cash":          FNO_INITIAL_CAPITAL,
+            "cash":          0,   # unused when _equity is set; kept for compatibility
             "initial":       FNO_INITIAL_CAPITAL,
-            "positions":     {},    # key: position_id → position dict
+            "positions":     {},
             "realised_pnl":  0.0,
             "created_at":    _now_ist().isoformat(),
             "last_updated":  _now_ist().isoformat(),
         }
+
+    def _eq_cash(self) -> float:
+        """Return available cash — from equity portfolio if unified, else own."""
+        if self._equity is not None:
+            return self._equity.state["cash"]
+        return self.state["cash"]
+
+    def _deduct_cash(self, amount: float):
+        """Deduct cash from the right pool."""
+        if self._equity is not None:
+            self._equity.state["cash"] -= amount
+            self._equity._save()
+        else:
+            self.state["cash"] -= amount
+
+    def _return_cash(self, amount: float):
+        """Return cash to the right pool."""
+        if self._equity is not None:
+            self._equity.state["cash"] += amount
+            self._equity._save()
+        else:
+            self.state["cash"] += amount
 
     def _load(self) -> dict:
         if FNO_PORTFOLIO_FILE.exists():
@@ -475,23 +503,54 @@ class FNOPortfolio:
 
     def can_afford(self, cost: float) -> bool:
         """True if we have enough cash and cost is within single-trade risk limit."""
-        if self.state["cash"] < cost:
+        if self._eq_cash() < cost:
             return False
-        if cost > self.state.get("initial", FNO_INITIAL_CAPITAL) * FNO_MAX_RISK_PER_TRADE:
+        # Max 10% of total equity capital per F&O trade
+        total_capital = (self._equity.get_total_value() if self._equity else
+                         self.state.get("initial", FNO_INITIAL_CAPITAL))
+        if cost > total_capital * FNO_MAX_RISK_PER_TRADE:
             return False
         return True
 
     def get_unrealised_pnl(self) -> float:
-        """Sum of unrealised P&L across all open positions."""
-        return round(sum(self._mtm_value(pos) for pos in self.state["positions"].values()), 2)
+        """Sum of (current_premium - entry_premium) × qty — actual P&L on open positions."""
+        total = 0.0
+        for pos in self.state["positions"].values():
+            try:
+                spot   = self._get_spot(pos["underlying"])
+                T      = days_to_expiry(date.fromisoformat(pos["expiry"]))
+                iv     = pos.get("iv", 0.25)
+                curr   = BlackScholes.price(spot, pos["strike"], T, RISK_FREE_RATE, iv, pos["option_type"])
+                entry  = pos.get("entry_premium", 0)
+                qty    = pos["qty"] * get_lot_size(pos["underlying"])
+                direction = 1 if pos["position"] == "LONG" else -1
+                total += direction * (curr - entry) * qty
+            except Exception:
+                pass
+        return round(total, 2)
+
+    def get_current_positions_value(self) -> float:
+        """Current market value of all open positions (curr_premium × qty)."""
+        total = 0.0
+        for pos in self.state["positions"].values():
+            try:
+                spot   = self._get_spot(pos["underlying"])
+                T      = days_to_expiry(date.fromisoformat(pos["expiry"]))
+                iv     = pos.get("iv", 0.25)
+                curr   = BlackScholes.price(spot, pos["strike"], T, RISK_FREE_RATE, iv, pos["option_type"])
+                qty    = pos["qty"] * get_lot_size(pos["underlying"])
+                direction = 1 if pos["position"] == "LONG" else -1
+                total += direction * curr * qty
+            except Exception:
+                pass
+        return round(total, 2)
 
     def get_total_value(self) -> float:
         """
-        True portfolio value = cash + unrealised P&L.
-        Cash already reflects premiums paid (debited at open).
-        Unrealised P&L = (curr_premium - entry_premium) × qty for each position.
+        In unified mode: total equity value already includes cash (tracked in equity portfolio).
+        Here we return cash + open position current values for F&O desk display.
         """
-        return round(self.state["cash"] + self.get_unrealised_pnl(), 2)
+        return round(self._eq_cash() + self.get_current_positions_value(), 2)
 
     def _mtm_value(self, pos: dict) -> float:
         """Current mark-to-market value of one position."""
@@ -503,19 +562,15 @@ class FNOPortfolio:
                 direction = 1 if pos["position"] == "LONG" else -1
                 return round(direction * (spot - entry) * qty, 2)
             else:
-                # Option MTM = change in premium value (P&L), not total current value
+                # MTM = P&L on this position = (curr - entry) × qty
+                # Used for the dashboard MTM column (shows gain/loss, not absolute value)
                 T      = days_to_expiry(date.fromisoformat(pos["expiry"]))
                 iv     = pos.get("iv", 0.25)
-                curr_premium = BlackScholes.price(
-                    spot, pos["strike"], T,
-                    RISK_FREE_RATE, iv, pos["option_type"]
-                )
+                curr_premium  = BlackScholes.price(spot, pos["strike"], T, RISK_FREE_RATE, iv, pos["option_type"])
                 entry_premium = pos.get("entry_premium", 0)
                 qty = pos["qty"] * get_lot_size(pos["underlying"])
                 direction = 1 if pos["position"] == "LONG" else -1
-                # P&L = (current - entry) * qty for LONG; (entry - current) * qty for SHORT
-                pnl = direction * (curr_premium - entry_premium) * qty
-                return round(pnl, 2)
+                return round(direction * (curr_premium - entry_premium) * qty, 2)
         except Exception:
             return 0.0
 
@@ -600,8 +655,8 @@ class FNOPortfolio:
         total_qty = qty_lots * lot
         cost    = premium * total_qty   # premium paid (LONG) or received (SHORT)
 
-        if position == "LONG" and cost > self.state["cash"]:
-            logger.warning(f"[FNO] Insufficient cash for {underlying} {option_type} — need ₹{cost:.0f}")
+        if position == "LONG" and cost > self._eq_cash():
+            logger.warning(f"[FNO] Insufficient cash for {underlying} {option_type} — need ₹{cost:.0f}, have ₹{self._eq_cash():.0f}")
             return None
 
         pid = f"{underlying}_{strike}_{expiry}_{option_type}_{position}_{int(time.time())}"
@@ -612,8 +667,8 @@ class FNOPortfolio:
             "underlying":     underlying,
             "strike":         strike,
             "expiry":         expiry.isoformat(),
-            "option_type":    option_type,   # call | put
-            "position":       position,       # LONG | SHORT
+            "option_type":    option_type,
+            "position":       position,
             "qty":            qty_lots,
             "entry_premium":  round(premium, 2),
             "entry_spot":     round(spot, 2),
@@ -625,13 +680,12 @@ class FNOPortfolio:
         self.state["positions"][pid] = pos
 
         if position == "LONG":
-            self.state["cash"] -= cost
+            self._deduct_cash(cost)
         else:
-            # Short option: collect premium, reserve margin (approx 20% of notional)
             margin = spot * lot * qty_lots * 0.20
-            self.state["cash"] -= margin
+            self._deduct_cash(margin)
             pos["margin_blocked"] = round(margin, 2)
-            self.state["cash"] += cost   # premium received
+            self._return_cash(cost)  # premium received upfront for SHORT
 
         self._save()
         trade = {
@@ -802,11 +856,11 @@ class FNOPortfolio:
 
         if pos["position"] == "LONG":
             pnl = (curr_premium - entry) * qty
-            self.state["cash"] += curr_premium * qty
+            self._return_cash(curr_premium * qty)   # return current value (entry was already deducted)
         else:
             pnl = (entry - curr_premium) * qty
-            self.state["cash"] += pos.get("margin_blocked", 0)
-            self.state["cash"] -= curr_premium * qty   # buy back cost
+            self._return_cash(pos.get("margin_blocked", 0))
+            self._deduct_cash(curr_premium * qty)   # buy back cost
 
         self.state["realised_pnl"] += pnl
         del self.state["positions"][position_id]
@@ -850,7 +904,7 @@ class FNOPortfolio:
             return None
         lot    = get_lot_size(underlying)
         margin = spot * lot * qty_lots * 0.15   # ~15% SPAN margin
-        if margin > self.state["cash"]:
+        if margin > self._eq_cash():
             logger.warning(f"[FNO] Insufficient margin for {underlying} futures")
             return None
 
@@ -869,7 +923,7 @@ class FNOPortfolio:
             "entry_date":     _now_ist().isoformat(),
         }
         self.state["positions"][pid] = pos
-        self.state["cash"] -= margin
+        self._deduct_cash(margin)
         self._save()
 
         trade = {
@@ -900,7 +954,7 @@ class FNOPortfolio:
         sign  = 1 if pos["position"] == "LONG" else -1
         pnl   = sign * (spot - pos["entry_price"]) * qty
 
-        self.state["cash"]        += pos.get("margin_blocked", 0) + pnl
+        self._return_cash(pos.get("margin_blocked", 0) + pnl)
         self.state["realised_pnl"] += pnl
         del self.state["positions"][position_id]
         self._save()
@@ -1716,8 +1770,8 @@ class FNOAgent:
     Called from the main TradingAgent.run_cycle().
     """
 
-    def __init__(self):
-        self.portfolio     = FNOPortfolio()
+    def __init__(self, equity_portfolio=None):
+        self.portfolio     = FNOPortfolio(equity_portfolio=equity_portfolio)
         self.directional   = DirectionalOptionsStrategy()
         self.spreads       = SpreadStrategy()
         self.iron_condor   = IronCondorStrategy()
@@ -1775,13 +1829,14 @@ class FNOAgent:
     def get_dashboard_data(self) -> dict:
         return {
             "portfolio_value": self.portfolio.get_total_value(),
-            "cash":            self.portfolio.state["cash"],
-            "initial":         self.portfolio.state["initial"],
+            "cash":            self.portfolio._eq_cash(),          # unified cash
+            "initial":         self.portfolio.state.get("initial", FNO_INITIAL_CAPITAL),
             "realised_pnl":    self.portfolio.state["realised_pnl"],
             "unrealised_pnl":  self.portfolio.get_unrealised_pnl(),
             "positions":       self.portfolio.get_positions_display(),
             "greeks":          self.portfolio.portfolio_greeks(),
             "open_count":      len(self.portfolio.state["positions"]),
+            "unified":         self.portfolio._equity is not None,
         }
 
 
@@ -1791,8 +1846,17 @@ class FNOAgent:
 
 _fno_agent: FNOAgent | None = None
 
-def get_fno_agent() -> FNOAgent:
+def get_fno_agent(equity_portfolio=None) -> FNOAgent:
     global _fno_agent
     if _fno_agent is None:
-        _fno_agent = FNOAgent()
+        if equity_portfolio is None:
+            try:
+                from engine import get_agent as _get_eq  # noqa: PLC0415
+                equity_portfolio = _get_eq().portfolio
+            except Exception:
+                pass
+        _fno_agent = FNOAgent(equity_portfolio=equity_portfolio)
+    elif equity_portfolio is not None and _fno_agent.portfolio._equity is None:
+        # Wire in equity portfolio if it wasn't available at construction time
+        _fno_agent.portfolio._equity = equity_portfolio
     return _fno_agent
