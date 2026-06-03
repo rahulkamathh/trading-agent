@@ -4920,9 +4920,9 @@ async function loadPortfolio() {
   try {
     const r = await fetch('/api/portfolio_summary');
     const d = await r.json();
-    if (!d.ok) return;
+    if (!d.ok) { console.error('portfolio_summary error', d.error); return; }
     const s = d.summary, eq = d.equity, fno = d.fno, comm = d.commodity;
-    const INITIAL = 1200000;
+    const INITIAL = 1300000; // ₹13L
 
     // AUM header
     const aumPnl    = s.total_aum - INITIAL;
@@ -4932,114 +4932,119 @@ async function loadPortfolio() {
     changeEl.textContent = `${aumPnl >= 0 ? '+' : ''}${fmt(aumPnl)} (${aumPnl >= 0 ? '+' : ''}${aumPnlPct}%) all-time`;
     changeEl.style.color = aumPnl >= 0 ? 'var(--green)' : 'var(--red)';
 
-    // Allocation bar — segments: equity value, fno margin, commodity margin, free cash
-    const eqSeg  = eq.equity_val;
-    const fnoSeg = fno.margin_used;
-    const comSeg = comm.margin_used;
-    const cashSeg= eq.cash;
-    const total  = eqSeg + fnoSeg + comSeg + cashSeg || 1;
+    // Allocation bar
+    const eqSeg   = eq.equity_val  || 0;
+    const fnoSeg  = fno.margin_used || 0;
+    const comSeg  = comm.margin_used || 0;
+    const cashSeg = eq.cash || 0;
+    const total   = Math.max(eqSeg + fnoSeg + comSeg + cashSeg, 1);
     const pct = v => Math.max(1, (v / total * 100)).toFixed(1);
-    document.getElementById('alloc-eq').style.width   = pct(eqSeg)  + '%';
-    document.getElementById('alloc-fno').style.width  = pct(fnoSeg) + '%';
-    document.getElementById('alloc-comm').style.width = pct(comSeg) + '%';
-    document.getElementById('alloc-cash').style.width = pct(cashSeg)+ '%';
+    document.getElementById('alloc-eq').style.width    = pct(eqSeg)  + '%';
+    document.getElementById('alloc-fno').style.width   = pct(fnoSeg) + '%';
+    document.getElementById('alloc-comm').style.width  = pct(comSeg) + '%';
+    document.getElementById('alloc-cash').style.width  = pct(cashSeg)+ '%';
     document.getElementById('alloc-eq-pct').textContent   = pct(eqSeg)  + '%';
     document.getElementById('alloc-fno-pct').textContent  = pct(fnoSeg) + '%';
     document.getElementById('alloc-comm-pct').textContent = pct(comSeg) + '%';
     document.getElementById('alloc-cash-pct').textContent = pct(cashSeg)+ '%';
 
-    // Desk cards — Equity
-    document.getElementById('port-eq-total').textContent = fmt(eq.total);
+    // Equity desk card
+    document.getElementById('port-eq-total').textContent = fmt(eq.total || 0);
     const eqU = document.getElementById('port-eq-unreal');
-    eqU.textContent = `Unrealised ${eq.unrealised >= 0 ? '+' : ''}${fmt(eq.unrealised)}`;
-    eqU.style.color = eq.unrealised >= 0 ? 'var(--green)' : 'var(--red)';
-    document.getElementById('port-eq-pos').textContent  = eq.count;
-    document.getElementById('port-eq-cost').textContent = fmt(eq.cost_basis);
-    document.getElementById('port-eq-cash').textContent = fmt(eq.cash);
+    const eqUnr = eq.unrealised || 0;
+    eqU.textContent = `Unrealised ${eqUnr >= 0 ? '+' : ''}${fmt(eqUnr)}`;
+    eqU.style.color = eqUnr >= 0 ? 'var(--green)' : 'var(--red)';
+    document.getElementById('port-eq-pos').textContent   = eq.count || 0;
+    document.getElementById('port-eq-cost').textContent  = fmt(eq.cost_basis || 0);
+    document.getElementById('port-eq-cash').textContent  = fmt(eq.cash || 0);
 
-    // F&O card
-    const fnoNet = fno.unrealised + fno.realised;
-    document.getElementById('port-fno-total').textContent = (fnoNet >= 0 ? '+' : '') + fmt(fnoNet);
-    document.getElementById('port-fno-total').style.color = fnoNet >= 0 ? 'var(--green)' : 'var(--red)';
+    // F&O desk card
+    const fnoUnr = fno.unrealised || 0;
+    const fnoReal = fno.realised || 0;
+    const fnoNet  = fnoUnr + fnoReal;
+    const fnoEl = document.getElementById('port-fno-total');
+    fnoEl.textContent = (fnoNet >= 0 ? '+' : '') + fmt(fnoNet);
+    fnoEl.style.color = fnoNet >= 0 ? 'var(--green)' : 'var(--red)';
     const fnoU = document.getElementById('port-fno-unreal');
-    fnoU.textContent = `Unrealised ${fno.unrealised >= 0 ? '+' : ''}${fmt(fno.unrealised)}`;
-    fnoU.style.color = fno.unrealised >= 0 ? 'var(--green)' : 'var(--red)';
-    document.getElementById('port-fno-pos').textContent    = fno.count;
-    document.getElementById('port-fno-margin').textContent = fmt(fno.margin_used);
-    document.getElementById('port-fno-real').textContent   = (fno.realised >= 0 ? '+' : '') + fmt(fno.realised);
+    fnoU.textContent = `Unrealised ${fnoUnr >= 0 ? '+' : ''}${fmt(fnoUnr)}`;
+    fnoU.style.color = fnoUnr >= 0 ? 'var(--green)' : 'var(--red)';
+    document.getElementById('port-fno-pos').textContent    = fno.count || 0;
+    document.getElementById('port-fno-margin').textContent = fmt(fnoSeg);
+    document.getElementById('port-fno-real').textContent   = (fnoReal >= 0 ? '+' : '') + fmt(fnoReal);
 
-    // Commodity card
-    const commNet = comm.unrealised + comm.realised;
-    document.getElementById('port-comm-total').textContent = (commNet >= 0 ? '+' : '') + fmt(commNet);
-    document.getElementById('port-comm-total').style.color = commNet >= 0 ? 'var(--green)' : 'var(--red)';
+    // Commodity desk card
+    const commUnr  = comm.unrealised || 0;
+    const commReal = comm.realised || 0;
+    const commNet  = commUnr + commReal;
+    const commEl = document.getElementById('port-comm-total');
+    commEl.textContent = (commNet >= 0 ? '+' : '') + fmt(commNet);
+    commEl.style.color = commNet >= 0 ? 'var(--green)' : 'var(--red)';
     const commU = document.getElementById('port-comm-unreal');
-    commU.textContent = `Unrealised ${comm.unrealised >= 0 ? '+' : ''}${fmt(comm.unrealised)}`;
-    commU.style.color = comm.unrealised >= 0 ? 'var(--green)' : 'var(--red)';
-    document.getElementById('port-comm-pos').textContent    = comm.count;
-    document.getElementById('port-comm-margin').textContent = fmt(comm.margin_used);
-    document.getElementById('port-comm-real').textContent   = (comm.realised >= 0 ? '+' : '') + fmt(comm.realised);
+    commU.textContent = `Unrealised ${commUnr >= 0 ? '+' : ''}${fmt(commUnr)}`;
+    commU.style.color = commUnr >= 0 ? 'var(--green)' : 'var(--red)';
+    document.getElementById('port-comm-pos').textContent    = comm.count || 0;
+    document.getElementById('port-comm-margin').textContent = fmt(comSeg);
+    document.getElementById('port-comm-real').textContent   = (commReal >= 0 ? '+' : '') + fmt(commReal);
 
     // Cash bar
-    document.getElementById('port-free-cash').textContent = fmt(s.free_cash);
+    const freeCash = s.free_cash || 0;
+    document.getElementById('port-free-cash').textContent = fmt(freeCash);
     document.getElementById('port-cash-note').textContent =
-      `${(s.free_cash / s.total_aum * 100).toFixed(1)}% of AUM · Available for all desks`;
+      `${s.total_aum > 0 ? (freeCash / s.total_aum * 100).toFixed(1) : 0}% of AUM · Available for all desks`;
 
     // Unified positions table
     const rows = [];
 
-    // Equity rows
+    // Equity — fields: ticker, qty, avg_price, ltp, value, pnl, pnl_pct, strategy
     (eq.positions || []).forEach(p => {
-      const pnl = p.pnl || 0;
-      const pnlPct = p.pnl_pct || 0;
-      const curr = p.current_price || p.avg_price;
+      const pnl = p.pnl || 0, pnlPct = p.pnl_pct || 0;
       rows.push(`<tr>
         <td><span class="tag-eq">EQ</span></td>
-        <td style="font-weight:600">${p.ticker?.replace('.NS','') || p.symbol || '—'}</td>
+        <td style="font-weight:600"><a href="https://www.tradingview.com/chart/?symbol=NSE:${(p.ticker||'').replace('.NS','')}" target="_blank" style="color:inherit;text-decoration:none">${(p.ticker||'').replace('.NS','')}</a></td>
         <td style="color:var(--muted);font-size:11px">Equity</td>
-        <td>${p.qty?.toLocaleString()}</td>
+        <td>${(p.qty||0).toLocaleString()}</td>
         <td>${fmt(p.avg_price)}</td>
-        <td>${fmt(curr)}</td>
+        <td>${fmt(p.ltp || p.avg_price)}</td>
         <td class="${pnl>=0?'port-pnl-pos':'port-pnl-neg'}">${pnl>=0?'+':''}${fmt(pnl)}</td>
         <td class="${pnlPct>=0?'port-pnl-pos':'port-pnl-neg'}">${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%</td>
         <td style="color:var(--muted);font-size:11px">${p.strategy||'—'}</td>
       </tr>`);
     });
 
-    // F&O rows
+    // F&O — fields: instrument, type, expiry, days_left, qty_lots, entry_premium, curr_premium, mtm, pnl_pct, delta, strategy
     (fno.positions || []).forEach(p => {
-      const pnl = p.mtm || 0;
-      const pnlPct = p.entry_premium > 0 ? (pnl / (p.entry_premium * (p.lot_size||1)) * 100) : 0;
+      const pnl = p.mtm || 0, pnlPct = p.pnl_pct || 0;
+      const typeStr = (p.type||'').includes('CALL') ? 'CALL' : 'PUT';
       rows.push(`<tr>
         <td><span class="tag-fno">F&amp;O</span></td>
-        <td style="font-weight:600">${(p.underlying||'').replace('.NS','')} ${p.strike}${p.option_type==='CE'?'C':'P'}</td>
-        <td style="color:var(--muted);font-size:11px">${p.option_type==='CE'?'CALL':'PUT'}</td>
-        <td>${p.lots || 1} lot${p.lots>1?'s':''}</td>
+        <td style="font-weight:600">${p.instrument||'—'}</td>
+        <td style="color:var(--muted);font-size:11px">${typeStr} · ${p.days_left||'?'}d left</td>
+        <td>${p.qty_lots||1} lot${(p.qty_lots||1)>1?'s':''}</td>
         <td>${fmt(p.entry_premium)}</td>
         <td>${fmt(p.curr_premium||p.entry_premium)}</td>
         <td class="${pnl>=0?'port-pnl-pos':'port-pnl-neg'}">${pnl>=0?'+':''}${fmt(pnl)}</td>
+        <td class="${pnlPct>=0?'port-pnl-pos':'port-pnl-neg'}">${pnlPct>=0?'+':''}${pnlPct.toFixed(1)}%</td>
+        <td style="color:var(--muted);font-size:11px">${p.strategy||'—'}</td>
+      </tr>`);
+    });
+
+    // Commodity — fields: symbol, name, emoji, direction, qty_lots, entry_usd, curr_usd, entry_inr, curr_inr, pnl, pnl_pct, strategy
+    (comm.positions || []).forEach(p => {
+      const pnl = p.pnl || 0, pnlPct = p.pnl_pct || 0;
+      rows.push(`<tr>
+        <td><span class="tag-comm">COMM</span></td>
+        <td style="font-weight:600">${p.emoji||''} ${p.name||p.symbol||'—'}</td>
+        <td style="color:var(--muted);font-size:11px">${p.direction||'LONG'}</td>
+        <td>${p.qty_lots||1} lot${(p.qty_lots||1)>1?'s':''}</td>
+        <td>$${(p.entry_usd||0).toFixed(2)} / ${fmt(p.entry_inr)}</td>
+        <td>$${(p.curr_usd||0).toFixed(2)} / ${fmt(p.curr_inr)}</td>
+        <td class="${pnl>=0?'port-pnl-pos':'port-pnl-neg'}">${pnl>=0?'+':''}${fmt(pnl)}</td>
         <td class="${pnlPct>=0?'port-pnl-pos':'port-pnl-neg'}">${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%</td>
         <td style="color:var(--muted);font-size:11px">${p.strategy||'—'}</td>
       </tr>`);
     });
 
-    // Commodity rows
-    (comm.positions || []).forEach(p => {
-      const pnl = p.pnl || 0;
-      rows.push(`<tr>
-        <td><span class="tag-comm">COMM</span></td>
-        <td style="font-weight:600">${p.emoji||''} ${p.name||p.symbol}</td>
-        <td style="color:var(--muted);font-size:11px">${p.direction||'LONG'}</td>
-        <td>${p.qty_lots} lot${p.qty_lots>1?'s':''}</td>
-        <td>$${p.entry_usd?.toFixed(2)||'—'} / ${fmt(p.entry_inr)}</td>
-        <td>$${p.curr_usd?.toFixed(2)||'—'} / ${fmt(p.curr_inr)}</td>
-        <td class="${pnl>=0?'port-pnl-pos':'port-pnl-neg'}">${pnl>=0?'+':''}${fmt(pnl)}</td>
-        <td class="${p.pnl_pct>=0?'port-pnl-pos':'port-pnl-neg'}">${p.pnl_pct>=0?'+':''}${(p.pnl_pct||0).toFixed(2)}%</td>
-        <td style="color:var(--muted);font-size:11px">${p.strategy||'—'}</td>
-      </tr>`);
-    });
-
-    const tbody = document.getElementById('port-all-body');
-    tbody.innerHTML = rows.length
+    document.getElementById('port-all-body').innerHTML = rows.length
       ? rows.join('')
       : '<tr><td colspan="9" style="text-align:center;padding:24px;color:var(--muted)">No open positions across any desk</td></tr>';
 

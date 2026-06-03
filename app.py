@@ -536,11 +536,12 @@ def api_portfolio_summary():
     try:
         agent  = get_agent()
         eq_pos = agent.portfolio.get_positions_display()
+        # get_positions_display returns: ticker, qty, avg_price, ltp, value, pnl, pnl_pct, strategy
         eq_cash   = round(agent.portfolio.state["cash"], 2)
-        eq_equity = round(sum(p.get("current_value", p.get("avg_price",0)*p.get("qty",0)) for p in eq_pos), 2)
+        eq_equity = round(sum(p.get("value", p.get("avg_price", 0) * p.get("qty", 0)) for p in eq_pos), 2)
         eq_unreal = round(sum(p.get("pnl", 0) for p in eq_pos), 2)
         eq_total  = round(eq_cash + eq_equity, 2)
-        eq_cost   = round(sum(p.get("avg_price",0) * p.get("qty",0) for p in eq_pos), 2)
+        eq_cost   = round(sum(p.get("avg_price", 0) * p.get("qty", 0) for p in eq_pos), 2)
 
         # F&O
         fno_data      = {}
