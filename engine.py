@@ -293,6 +293,9 @@ TRADE_LOG_FILE = DATA_DIR / "trade_log.json"
 SIGNALS_FILE   = DATA_DIR / "signals.json"
 
 INITIAL_CAPITAL  = 1_300_000   # ₹13 lakhs (₹10L equity + ₹2L F&O + ₹1L commodity)
+FNO_RESERVE      = 2_00_000   # ₹2L ring-fenced for F&O premiums — equity cannot touch this
+COMMODITY_RESERVE= 1_00_000   # ₹1L ring-fenced for commodity margins — equity cannot touch this
+EQUITY_CASH_FLOOR= FNO_RESERVE + COMMODITY_RESERVE  # ₹3L minimum cash equity must leave intact
 MAX_POSITION_PCT = 0.08        # max 8% per position
 STOP_LOSS_PCT    = 0.07        # 7% stop loss
 TAKE_PROFIT_PCT  = 0.20        # 20% take profit
@@ -1235,7 +1238,7 @@ class Portfolio:
         if self.in_cooldown(ticker):
             logger.debug(f"SKIP {ticker} — in cooldown after recent exit")
             return False
-        # Minimum cash check: need at least the floor position size
+        # Cash check: need at least min position size available
         total_val = self.get_total_value()
         min_floor = total_val * 0.005   # 0.5% floor
         return self.state["cash"] >= min_floor and price > 0

@@ -1329,6 +1329,18 @@ def _background_loop() -> None:
 # ── Entry point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # ── Ensure initial capital reflects all top-ups (₹13L total) ─────────────
+    try:
+        from engine import get_agent as _ga, INITIAL_CAPITAL  # pylint: disable=import-outside-toplevel
+        _port = _ga().portfolio
+        if _port.state.get("initial", 0) < INITIAL_CAPITAL:
+            _port.state["initial"] = INITIAL_CAPITAL
+            _port._save()
+            print(f"  💰  Updated portfolio initial capital to ₹{INITIAL_CAPITAL:,.0f}")
+        print(f"  ✅  Portfolio: cash=₹{_port.state['cash']:,.0f}  initial=₹{_port.state['initial']:,.0f}")
+    except Exception as _te:
+        print(f"  ⚠️  Capital check failed: {_te}")
+
     # ── Start Angel One live feed (if credentials are present in .env) ────────
     feed = get_feed()
     if feed.is_configured():
