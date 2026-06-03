@@ -286,12 +286,116 @@ class CommodityPortfolio:
         return closed
 
 
+def _hedge_signals(equity_portfolio) -> list:
+    """
+    Generate commodity hedge signals by analysing the equity portfolio.
+
+    Hedge rules (institutional logic):
+    1. GOLD hedge  — buy Gold when equity drawdown > 4% OR India VIX > 20
+    2. CRUDE hedge — buy Crude when >20% of equity is energy stocks AND crude trending up
+    3. SILVER hedge— buy Silver when Gold already held as hedge (diversify safe haven)
+    4. NATGAS hedge— sell NatGas (go short) when energy positions are oversized and gas trending down
+    5. Cash-raise  — if hedge needed but cash < margin, liquidate the weakest equity position first
+    """
+    if not equity_portfolio:
+        return []
+
+    signals = []
+    positions = equity_portfolio.state.get("positions", {})
+    total_val = equity_portfolio.get_total_value()
+    initial   = equity_portfolio.state.get("initial", 1_300_000)
+    drawdown  = (total_val - initial) / initial   # negative = loss
+
+    # ── Rule 1: Gold hedge on drawdown or high VIX ──────────────────────── #
+    try:
+        vix_df = yf.download("^INDIAVIX", period="3d", interval="1d", progress=False, auto_adjust=True)
+        vix = float(vix_df["Close"].iloc[-1]) if not vix_df.empty else 0
+    except Exception:
+        vix = 0
+
+    if drawdown < -0.04 or vix > 20:
+        reason = (f"Equity drawdown {drawdown*100:.1f}%" if drawdown < -0.04
+                  else f"India VIX elevated at {vix:.1f}")
+        signals.append({"symbol": "GOLD", "direction": "BUY", "strength": 90,
+                         "reason": f"HEDGE: {reason}", "strategy": "HEDGE"})
+
+    # ── Rule 2: Crude hedge when energy-heavy ───────────────────────────── #
+    energy_tickers = {"ONGC.NS", "BPCL.NS", "IOC.NS", "HINDPETRO.NS",
+                      "RELIANCE.NS", "OIL.NS", "MRPL.NS", "GAIL.NS"}
+    energy_val = sum(
+        equity_portfolio.get_position_value(t)
+        for t in positions if t in energy_tickers
+    )
+    energy_pct = energy_val / total_val if total_val else 0
+
+    if energy_pct > 0.20:
+        # Only buy crude if it's in uptrend
+        crude_p = get_price("CRUDEOIL")
+        try:
+            crude_df = yf.download("CL=F", period="30d", interval="1d", progress=False, auto_adjust=True)
+            crude_trend = "UP" if float(crude_df["Close"].iloc[-1]) > float(crude_df["Close"].ewm(span=20).mean().iloc[-1]) else "DOWN"
+        except Exception:
+            crude_trend = "UNKNOWN"
+        if crude_trend == "UP":
+            signals.append({"symbol": "CRUDEOIL", "direction": "BUY", "strength": 80,
+                             "reason": f"HEDGE: Energy exposure {energy_pct*100:.0f}% of portfolio, crude trending up",
+                             "strategy": "HEDGE"})
+
+    # ── Rule 3: Silver as secondary safe haven when Gold hedge is active ── #
+    # (detected by checking if GOLD hedge was just added)
+    if any(s["symbol"] == "GOLD" for s in signals):
+        signals.append({"symbol": "SILVER", "direction": "BUY", "strength": 75,
+                         "reason": "HEDGE: Silver diversification alongside Gold safe-haven",
+                         "strategy": "HEDGE"})
+
+    return signals
+
+
+def _liquidate_weakest_equity(equity_portfolio, needed_cash: float) -> bool:
+    """
+    If free cash is insufficient for a hedge, sell the weakest-performing
+    equity position to raise the required capital.
+    Returns True if a position was liquidated.
+    """
+    positions = equity_portfolio.state.get("positions", {})
+    if not positions:
+        return False
+
+    # Rank positions by unrealised P&L % (sell the biggest loser first)
+    ranked = []
+    for ticker, pos in positions.items():
+        try:
+            from engine import DataFetcher  # pylint: disable=import-outside-toplevel
+            price = DataFetcher.get_current_price(ticker)
+            if not price: continue
+            pnl_pct = (price - pos["avg_price"]) / pos["avg_price"]
+            ranked.append((pnl_pct, ticker, price, pos))
+        except Exception:
+            continue
+
+    if not ranked:
+        return False
+
+    ranked.sort(key=lambda x: x[0])  # worst first
+    pnl_pct, ticker, price, pos = ranked[0]
+
+    # Only liquidate if it's a loser or has been held < 3% gain (dead money)
+    if pnl_pct > 0.05:
+        logger.info(f"[Commodity Hedge] Weakest equity {ticker} is +{pnl_pct*100:.1f}% — not liquidating")
+        return False
+
+    proceeds = price * pos["qty"]
+    logger.info(f"[Commodity Hedge] Liquidating {ticker} ({pnl_pct*100:+.1f}%) to raise ₹{proceeds:,.0f} for hedge")
+    equity_portfolio.execute_sell(ticker, price, reason="HEDGE_LIQUIDATION")
+    return True
+
+
 class CommodityAgent:
     def __init__(self, equity_portfolio=None):
         self.portfolio = CommodityPortfolio(equity_portfolio=equity_portfolio)
 
     def run_cycle(self, active_events=None):
-        # Process any active geopolitical/macro events first
+        # ── 1. Event-driven signals ──────────────────────────────────────── #
         if active_events:
             for ev in (active_events if isinstance(active_events, list) else [active_events]):
                 for action in ev.get("actions", []):
@@ -300,19 +404,54 @@ class CommodityAgent:
                     if sym and direction and sym in COMMODITIES:
                         self.execute_event_signal(sym, direction, ev.get("headline", "Event-driven"))
 
-        stops   = self.portfolio.check_stops()
-        signals = generate_signals()
+        # ── 2. Stop losses / take profits on existing positions ─────────── #
+        stops = self.portfolio.check_stops()
+
+        # ── 3. Hedge signals from equity portfolio analysis ──────────────── #
+        hedge_executed = 0
+        eq = self.portfolio._equity
+        if eq:
+            hedge_sigs = _hedge_signals(eq)
+            for sig in hedge_sigs:
+                sym = sig["symbol"]
+                if self.portfolio.has_position(sym):
+                    continue
+                p = get_price(sym)
+                if not p:
+                    continue
+                mgn = margin_inr(sym, p)
+                # If not enough cash, try to liquidate a weak equity position
+                if self.portfolio._cash() < mgn:
+                    logger.info(f"[Commodity Hedge] Insufficient cash (₹{self.portfolio._cash():,.0f}) for {sym} margin ₹{mgn:,.0f} — attempting equity liquidation")
+                    freed = _liquidate_weakest_equity(eq, mgn)
+                    if not freed:
+                        logger.info(f"[Commodity Hedge] Could not free cash for {sym} — skipping")
+                        continue
+                t = self.portfolio.open_position(
+                    symbol=sym, direction="LONG" if sig["direction"] == "BUY" else "SHORT",
+                    qty_lots=1, price_usd=p, reason=sig["reason"], strategy="HEDGE")
+                if t:
+                    hedge_executed += 1
+                    logger.info(f"[Commodity Hedge] Opened {sym} hedge — {sig['reason']}")
+
+        # ── 4. Momentum signals ──────────────────────────────────────────── #
+        signals  = generate_signals()
         executed = 0
         for sig in signals:
-            if sig["direction"] == "NEUTRAL" or sig["strength"] < 70: continue
-            if self.portfolio.has_position(sig["symbol"]): continue
+            if sig["direction"] == "NEUTRAL" or sig["strength"] < 70:
+                continue
+            if self.portfolio.has_position(sig["symbol"]):
+                continue
             t = self.portfolio.open_position(
                 symbol=sig["symbol"],
-                direction="LONG" if sig["direction"]=="BUY" else "SHORT",
+                direction="LONG" if sig["direction"] == "BUY" else "SHORT",
                 qty_lots=1, price_usd=sig["price_usd"],
                 reason=sig["reason"], strategy="COMMODITY_MOMENTUM")
-            if t: executed += 1
-        return {"stops_closed": len(stops), "signals": signals, "executed": executed}
+            if t:
+                executed += 1
+
+        return {"stops_closed": len(stops), "signals": signals,
+                "executed": executed, "hedge_executed": hedge_executed}
 
     def execute_event_signal(self, symbol, direction, reason):
         p = get_price(symbol)
