@@ -463,6 +463,26 @@ def api_reset():
     return jsonify({"ok": True, "message": "Portfolio reset to ₹10,00,000"})
 
 
+@app.route("/api/add_capital", methods=["POST"])
+def api_add_capital():
+    """Add capital to the portfolio cash balance. Body: {amount: 300000}"""
+    body    = request.get_json(force=True) or {}
+    amount  = float(body.get("amount", 0))
+    if amount <= 0:
+        return jsonify({"ok": False, "error": "amount must be > 0"}), 400
+    port = get_agent().portfolio
+    port.state["cash"]    += amount
+    port.state["initial"]  = port.state.get("initial", INITIAL_CAPITAL)
+    port._save()
+    return jsonify({
+        "ok":      True,
+        "added":   amount,
+        "cash":    round(port.state["cash"], 2),
+        "initial": port.state["initial"],
+        "message": f"Added ₹{amount:,.0f} — cash now ₹{port.state['cash']:,.0f}",
+    })
+
+
 @app.route("/api/set_interval", methods=["POST"])
 def api_set_interval():
     """Set the auto-run interval in seconds (minimum 60)."""
