@@ -2745,13 +2745,18 @@ class TradingAgent:
         unreal_pnl  = port.get_unrealised_pnl()
         real_pnl    = port.state.get("realised_pnl", 0)
         total_pnl   = unreal_pnl + real_pnl
-        total_pnl_pct = (total_pnl / INITIAL_CAPITAL) * 100
+        # P&L % based on original ₹10L trading capital (top-ups don't inflate the baseline)
+        total_pnl_pct = (total_pnl / 10_00_000) * 100
 
         # Equity curve: reconstruct from trades + append live value
+        # Use 10L as the curve start — that's when trading began.
+        # Top-ups (₹2L F&O + ₹1L commodity) are reflected in current value,
+        # not as a higher starting point on the chart.
         equity_curve = _build_equity_curve(
             trades,
             current_value=total_val,
             created_at=port.state.get("created_at"),
+            start_value=10_00_000,
         )
 
         # Strategy performance: closed P&L + unrealised from open positions
@@ -2869,15 +2874,19 @@ def _calc_today_pnl(trades: list, current_value: float, equity_curve: list,
     }
 
 
-def _build_equity_curve(trades: list, current_value: float = None, created_at: str = None) -> list:
+def _build_equity_curve(trades: list, current_value: float = None,
+                        created_at: str = None, start_value: float = None) -> list:
     """
     Equity curve from trade log + current live portfolio value.
-    Starts at the portfolio creation date. Always appends today's actual
-    total value (cash + unrealised positions) as the latest data point.
+    Starts at the portfolio creation date using the ACTUAL first portfolio
+    value (not INITIAL_CAPITAL, which is inflated by top-ups added later).
     """
     start_date = (created_at or _now_ist().isoformat())[:10]
-    curve = [{"date": start_date, "value": INITIAL_CAPITAL}]
-    running = INITIAL_CAPITAL
+    # Use the real starting value from trades if available, otherwise INITIAL_CAPITAL
+    # This prevents the curve from showing ₹13L when trading started at ₹10L
+    first_val = start_value if start_value else INITIAL_CAPITAL
+    curve = [{"date": start_date, "value": first_val}]
+    running = first_val
     daily = {}
     for t in trades:
         date = t["time"][:10]
