@@ -377,7 +377,15 @@ def _do_analyze_and_reply(signal: dict, group_title: str) -> None:
 
     # ── Decision ─────────────────────────────────────────────────────────── #
     THRESHOLD = 60
-    will_trade = composite >= THRESHOLD and direction == "BUY"
+
+    # Check if market is open before deciding to trade
+    try:
+        from engine import _market_open  # pylint: disable=import-outside-toplevel
+        market_is_open = _market_open()
+    except Exception:
+        market_is_open = False
+
+    will_trade = composite >= THRESHOLD and direction == "BUY" and market_is_open
 
     # ── Actually execute the trade if conviction is high enough ──────────── #
     trade_result = None
@@ -385,8 +393,9 @@ def _do_analyze_and_reply(signal: dict, group_title: str) -> None:
         try:
             from engine import get_agent, DataFetcher  # pylint: disable=import-outside-toplevel
             agent = get_agent()
-            price = entry or DataFetcher.get_current_price(ticker)
-            if price:
+            # Always use live price — never trust Telegram message price directly
+            price = DataFetcher.get_current_price(ticker)
+            if price and price > 0:
                 trade_result = agent.portfolio.execute_buy(
                     ticker, price,
                     strategy="TelegramSignal",
@@ -395,7 +404,9 @@ def _do_analyze_and_reply(signal: dict, group_title: str) -> None:
         except Exception as _te:
             logger.warning(f"[Analyzer] Trade execution error for {ticker}: {_te}")
 
-    if will_trade:
+    if not market_is_open and composite >= THRESHOLD and direction == "BUY":
+        action_str = "🕐 <b>QUEUED</b> — market closed, will evaluate at next open"
+    elif will_trade:
         if trade_result:
             qty   = trade_result.get("qty", 0)
             price = trade_result.get("price", 0)
