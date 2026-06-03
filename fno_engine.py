@@ -481,12 +481,17 @@ class FNOPortfolio:
             return False
         return True
 
+    def get_unrealised_pnl(self) -> float:
+        """Sum of unrealised P&L across all open positions."""
+        return round(sum(self._mtm_value(pos) for pos in self.state["positions"].values()), 2)
+
     def get_total_value(self) -> float:
-        """Cash + mark-to-market value of all open positions."""
-        total = self.state["cash"]
-        for pid, pos in self.state["positions"].items():
-            total += self._mtm_value(pos)
-        return round(total, 2)
+        """
+        True portfolio value = cash + unrealised P&L.
+        Cash already reflects premiums paid (debited at open).
+        Unrealised P&L = (curr_premium - entry_premium) × qty for each position.
+        """
+        return round(self.state["cash"] + self.get_unrealised_pnl(), 2)
 
     def _mtm_value(self, pos: dict) -> float:
         """Current mark-to-market value of one position."""
@@ -498,16 +503,19 @@ class FNOPortfolio:
                 direction = 1 if pos["position"] == "LONG" else -1
                 return round(direction * (spot - entry) * qty, 2)
             else:
-                # Option
+                # Option MTM = change in premium value (P&L), not total current value
                 T      = days_to_expiry(date.fromisoformat(pos["expiry"]))
                 iv     = pos.get("iv", 0.25)
                 curr_premium = BlackScholes.price(
                     spot, pos["strike"], T,
                     RISK_FREE_RATE, iv, pos["option_type"]
                 )
+                entry_premium = pos.get("entry_premium", 0)
                 qty = pos["qty"] * get_lot_size(pos["underlying"])
                 direction = 1 if pos["position"] == "LONG" else -1
-                return round(direction * curr_premium * qty, 2)
+                # P&L = (current - entry) * qty for LONG; (entry - current) * qty for SHORT
+                pnl = direction * (curr_premium - entry_premium) * qty
+                return round(pnl, 2)
         except Exception:
             return 0.0
 
@@ -1698,13 +1706,15 @@ class FNOAgent:
         directs  = self.directional.run(equity_signals, self.portfolio)
         hedges   = self.hedge.run(equity_positions, self.portfolio, equity_drawdown_pct)
 
-        total_value = self.portfolio.get_total_value()
-        greeks      = self.portfolio.portfolio_greeks()
-        pnl         = total_value - self.portfolio.state["initial"] + self.portfolio.state["realised_pnl"]
+        total_value   = self.portfolio.get_total_value()
+        greeks        = self.portfolio.portfolio_greeks()
+        unrealised    = self.portfolio.get_unrealised_pnl()
+        realised      = self.portfolio.state["realised_pnl"]
+        total_pnl     = round(unrealised + realised, 2)
 
         summary = {
             "fno_value":    total_value,
-            "fno_pnl":      round(pnl, 2),
+            "fno_pnl":      total_pnl,
             "fno_cash":     round(self.portfolio.state["cash"], 2),
             "gap_stops":    len(gap_closes),
             "stops_closed": len(stops),
@@ -1724,7 +1734,7 @@ class FNOAgent:
             "cash":            self.portfolio.state["cash"],
             "initial":         self.portfolio.state["initial"],
             "realised_pnl":    self.portfolio.state["realised_pnl"],
-            "unrealised_pnl":  self.portfolio.get_total_value() - self.portfolio.state["cash"] - self.portfolio.state["realised_pnl"],
+            "unrealised_pnl":  self.portfolio.get_unrealised_pnl(),
             "positions":       self.portfolio.get_positions_display(),
             "greeks":          self.portfolio.portfolio_greeks(),
             "open_count":      len(self.portfolio.state["positions"]),

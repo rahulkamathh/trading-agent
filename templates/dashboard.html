@@ -4472,7 +4472,7 @@ async function loadFNO() {
 
     // ── KPI strip ──
     const kpis = [
-      { label: 'F&O Value',    val: fmt(d.portfolio_value), color: cls(d.portfolio_value - d.initial) },
+      { label: 'F&O Value',    val: fmt(d.portfolio_value), color: cls(d.unrealised_pnl + (d.realised_pnl||0)) },
       { label: 'F&O P&L',      val: fmt((d.realised_pnl||0)+(d.unrealised_pnl||0)), color: cls((d.realised_pnl||0)+(d.unrealised_pnl||0)) },
       { label: 'Realised',     val: fmt(d.realised_pnl||0),   color: cls(d.realised_pnl||0) },
       { label: 'Unrealised',   val: fmt(d.unrealised_pnl||0), color: cls(d.unrealised_pnl||0) },
