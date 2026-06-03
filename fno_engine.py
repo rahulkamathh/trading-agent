@@ -1122,6 +1122,15 @@ class FNOPortfolio:
                 )
                 lot  = get_lot_size(pos["underlying"])
                 cost = pos["entry_premium"] * pos["qty"] * lot
+                entry   = pos["entry_premium"]
+                sl_prem = round(entry * 0.50, 2)      # stop: -50% premium
+                tgt_prem= round(entry * 1.80, 2)      # target: +80% premium
+                # Once up >40%, trailing stop moves to breakeven
+                if curr_prem >= entry * 1.40:
+                    sl_prem = round(max(sl_prem, entry), 2)
+                pnl_pct = round(mtm / cost * 100, 1) if cost else 0
+                pct_to_tgt = round((tgt_prem - curr_prem) / curr_prem * 100, 1) if curr_prem else 0
+                pct_to_sl  = round((curr_prem - sl_prem) / curr_prem * 100, 1) if curr_prem else 0
                 result.append({
                     "position_id":   pid,
                     "instrument":    f"{pos['underlying']} {pos['strike']}{pos['option_type'][0].upper()}",
@@ -1129,10 +1138,14 @@ class FNOPortfolio:
                     "expiry":        pos["expiry"],
                     "days_left":     int(T * 365),
                     "qty_lots":      pos["qty"],
-                    "entry_premium": pos["entry_premium"],
+                    "entry_premium": entry,
                     "curr_premium":  round(curr_prem, 2),
+                    "sl_premium":    sl_prem,
+                    "target_premium":tgt_prem,
+                    "pct_to_target": pct_to_tgt,
+                    "pct_to_sl":     pct_to_sl,
                     "mtm":           round(mtm, 2),
-                    "pnl_pct":       round(mtm / cost * 100, 1) if cost else 0,
+                    "pnl_pct":       pnl_pct,
                     "delta":         greeks["delta"],
                     "theta":         greeks["theta"],
                     "vega":          greeks["vega"],

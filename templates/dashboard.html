@@ -1578,7 +1578,7 @@
         <table id="fnoTable">
           <thead><tr>
             <th>Instrument</th><th>Type</th><th>Expiry</th><th>Days</th>
-            <th>Lots</th><th>Entry ₹</th><th>Current ₹</th>
+            <th>Lots</th><th>Entry ₹</th><th>Current ₹</th><th>SL ₹</th><th>Target ₹</th>
             <th>MTM</th><th>Δ Delta</th><th>Θ Theta/day</th><th>Strategy</th><th>Action</th>
           </tr></thead>
           <tbody id="fnoBody"></tbody>
@@ -4839,6 +4839,8 @@ async function loadFNO() {
           <td>${p.qty_lots}</td>
           <td>₹${typeof entry === 'number' ? entry.toFixed(2) : entry}</td>
           <td>₹${typeof curr === 'number' ? curr.toFixed(2) : curr}</td>
+          <td style="color:var(--red);font-size:12px" title="${p.pct_to_sl != null ? p.pct_to_sl+'% buffer' : ''}">₹${p.sl_premium?.toFixed(2) ?? '—'}</td>
+          <td style="color:var(--green);font-size:12px" title="${p.pct_to_target != null ? p.pct_to_target+'% to go' : ''}">₹${p.target_premium?.toFixed(2) ?? '—'}</td>
           <td class="${mtmCls}">₹${(p.mtm??0).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
           <td class="${dltCls}">${p.delta?.toFixed(3) ?? '—'}</td>
           <td class="${thtCls}">${p.theta?.toFixed(2) ?? '—'}</td>
