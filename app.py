@@ -572,7 +572,7 @@ def api_portfolio_summary():
         comm_margin = round(sum(p.get("margin", 0) for p in comm_positions), 2)
         total_aum   = round(eq_total + fno_unreal + comm_unreal, 2)
 
-        return _jsonify({
+        return jsonify({
             "ok": True,
             "summary": {
                 "total_aum":        total_aum,
@@ -599,7 +599,7 @@ def api_portfolio_summary():
             },
         })
     except Exception as exc:
-        return _jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 # ── F&O API endpoints ────────────────────────────────────────────────────────
