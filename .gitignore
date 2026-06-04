@@ -36,13 +36,6 @@ secrets.json
 # Telegram session (binary auth token — upload manually to Railway volume)
 data/telegram_session*
 
-# Runtime data files (Railway volume persists these)
-data/portfolio.json
-data/trade_log.json
-data/signals.json
-data/closing_report.json
-data/fundamentals.json
-data/news_cache.json
-data/commodity_cache.json
-data/telegram_groups.json
-data/telegram_signals.json
+# Runtime data files — ALL of data/ is Railway volume, never commit
+data/
+

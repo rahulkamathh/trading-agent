@@ -1037,10 +1037,18 @@
         <div style="font-size:11px;color:var(--muted);margin-top:6px" id="intervalDisplay">Current: 900s (15 min)</div>
       </div>
     </div>
-    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:24px">
-      <button class="btn btn-red" onclick="fullReset()">🔄 Full Reset (All Desks — ₹13L)</button>
-      <button class="btn btn-ghost" onclick="resetPortfolio()" style="font-size:12px">Equity only reset</button>
-      <span style="font-size:12px;color:var(--muted)">Full Reset clears equity, F&amp;O and commodity — fresh ₹13L start.</span>
+    <div style="background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:20px">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px;font-weight:600">RESET CAPITAL</div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <div style="display:flex;align-items:center;gap:6px;background:#161b22;border:1px solid var(--border);border-radius:6px;padding:6px 10px">
+          <span style="font-size:13px;color:var(--muted)">₹</span>
+          <input id="resetCapitalInput" type="number" value="1300000" min="100000" step="100000"
+            style="background:transparent;border:none;outline:none;color:var(--text);font-size:14px;width:110px;font-family:monospace"/>
+        </div>
+        <button class="btn btn-red" onclick="fullReset()">🔄 Full Reset (All Desks)</button>
+        <button class="btn btn-ghost" onclick="resetPortfolio()" style="font-size:12px">Equity only</button>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:8px">Full Reset clears equity, F&amp;O and commodity positions + trade history. Change the amount above to set your starting capital.</div>
     </div>
 
     <!-- ── Notifications ─────────────────────────────────────────────── -->
@@ -2851,18 +2859,25 @@ async function manualSell() {
   else toast(d.error, 'error');
 }
 
+function _getResetCapital() {
+  const val = parseInt(document.getElementById('resetCapitalInput')?.value || '1300000');
+  return isNaN(val) || val < 100000 ? 1300000 : val;
+}
+
 async function resetPortfolio() {
-  if (!confirm('Reset equity portfolio to ₹13,00,000? This clears equity positions and trade history only.')) return;
-  const r = await fetch('/api/reset', { method:'POST' });
+  const cap = _getResetCapital();
+  if (!confirm(`Reset equity portfolio to ₹${cap.toLocaleString('en-IN')}? Clears equity positions and trade history only.`)) return;
+  const r = await fetch('/api/reset', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({capital: cap}) });
   const d = await r.json();
   toast(d.message || 'Portfolio reset ✓', 'success');
   await loadDashboard();
 }
 
 async function fullReset() {
-  if (!confirm('FULL RESET — this will clear ALL positions across equity, F&O and commodities and restart with ₹13,00,000. Are you sure?')) return;
-  if (!confirm('Second confirmation: all trade history and positions will be permanently wiped. Continue?')) return;
-  const r = await fetch('/api/full_reset', { method:'POST' });
+  const cap = _getResetCapital();
+  if (!confirm(`FULL RESET — clears ALL positions (equity, F&O, commodities) and starts fresh with ₹${cap.toLocaleString('en-IN')}. Are you sure?`)) return;
+  if (!confirm('Second confirmation: all trade history will be permanently wiped. Continue?')) return;
+  const r = await fetch('/api/full_reset', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({capital: cap}) });
   const d = await r.json();
   toast(d.message || 'Full reset complete ✓', 'success');
   await loadDashboard();

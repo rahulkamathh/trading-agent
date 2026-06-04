@@ -457,23 +457,28 @@ def api_manual_sell():
 
 @app.route("/api/reset", methods=["POST"])
 def api_reset():
-    """Reset equity portfolio to ₹13,00,000 and clear trade history."""
-    get_agent().portfolio.reset(capital=1_300_000)
+    """Reset equity portfolio. Optional body: {"capital": 1300000}"""
+    body    = request.get_json(force=True, silent=True) or {}
+    capital = int(body.get("capital", int(os.getenv("NSE_CAPITAL", 1_300_000))))
+    get_agent().portfolio.reset(capital=capital)
     DataFetcher.clear_cache()
-    return jsonify({"ok": True, "message": "Portfolio reset to ₹13,00,000"})
+    return jsonify({"ok": True, "message": f"Portfolio reset to ₹{capital:,.0f}", "capital": capital})
 
 
 @app.route("/api/full_reset", methods=["POST"])
 def api_full_reset():
     """
-    Full system reset — clears ALL desks (equity, F&O, commodity) and starts
-    fresh with ₹13,00,000 unified capital. All positions and trade history wiped.
+    Full system reset — clears ALL desks (equity, F&O, commodity).
+    Optional body: {"capital": 1300000}
     """
     import json as _json
     from pathlib import Path as _Path
 
+    body    = request.get_json(force=True, silent=True) or {}
+    capital = int(body.get("capital", int(os.getenv("NSE_CAPITAL", 1_300_000))))
+
     # ── 1. Equity reset ───────────────────────────────────────────────────── #
-    get_agent().portfolio.reset(capital=1_300_000)
+    get_agent().portfolio.reset(capital=capital)
     DataFetcher.clear_cache()
 
     # ── 2. F&O reset (returns any open premiums first, then clears) ───────── #
@@ -486,7 +491,7 @@ def api_full_reset():
         if fno_log.exists():
             fno_log.write_text("[]")
     except Exception as _e:
-        logger.warning(f"F&O reset error: {_e}")
+        logging.getLogger(__name__).warning(f"F&O reset error: {_e}")
 
     # ── 3. Commodity reset ────────────────────────────────────────────────── #
     try:
@@ -497,19 +502,20 @@ def api_full_reset():
         if comm_log.exists():
             comm_log.write_text("[]")
     except Exception as _e:
-        logger.warning(f"Commodity reset error: {_e}")
+        logging.getLogger(__name__).warning(f"Commodity reset error: {_e}")
 
     # ── 4. Clear signals and live orders ─────────────────────────────────── #
+    _log = logging.getLogger(__name__)
     for fname in ["data/signals.json", "data/live_orders.json"]:
         p = _Path(fname)
         if p.exists():
             p.write_text("{}" if "signals" in fname else "[]")
 
-    logger.info("🔄 Full system reset — ₹13,00,000 fresh start")
+    _log.info(f"🔄 Full system reset — ₹{capital:,.0f} fresh start")
     return jsonify({
-        "ok": True,
-        "message": "All desks reset. Fresh start with ₹13,00,000.",
-        "capital": 1_300_000,
+        "ok":      True,
+        "message": f"All desks reset. Fresh start with ₹{capital:,.0f}.",
+        "capital": capital,
     })
 
 
@@ -1467,14 +1473,50 @@ def _background_loop() -> None:
 # ── Entry point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # ── Ensure initial capital reflects all top-ups (₹13L total) ─────────────
+    # ── Self-initialise on Railway volume if data files don't exist ───────────
+    import json as _j
+    from pathlib import Path as _P
+    from datetime import datetime as _dt
+
+    _data_dir = _P("data")
+    _data_dir.mkdir(exist_ok=True)
+
+    _STARTUP_CAPITAL = int(os.getenv("NSE_CAPITAL", 1_300_000))
+
+    _port_file = _data_dir / "portfolio.json"
+    if not _port_file.exists():
+        _port_file.write_text(_j.dumps({
+            "cash":            _STARTUP_CAPITAL,
+            "initial":         _STARTUP_CAPITAL,
+            "positions":       {},
+            "realised_pnl":    0.0,
+            "created_at":      _dt.now().isoformat(),
+            "last_updated":    _dt.now().isoformat(),
+            "day_start_value": _STARTUP_CAPITAL,
+            "day_start_date":  _dt.now().date().isoformat(),
+        }, indent=2))
+        print(f"  🆕  Created portfolio.json with ₹{_STARTUP_CAPITAL:,.0f} capital")
+
+    for _fname, _empty in [
+        ("trade_log.json", "[]"),
+        ("signals.json", "{}"),
+        ("fno_portfolio.json", None),
+        ("fno_trades.json", "[]"),
+        ("commodity_trades.json", "[]"),
+        ("live_orders.json", "[]"),
+    ]:
+        _fp = _data_dir / _fname
+        if not _fp.exists() and _empty is not None:
+            _fp.write_text(_empty)
+            print(f"  🆕  Created {_fname}")
+
+    # ── Ensure initial capital is correct (handles restarts after capital change)
     try:
-        from engine import get_agent as _ga, INITIAL_CAPITAL  # pylint: disable=import-outside-toplevel
+        from engine import get_agent as _ga  # pylint: disable=import-outside-toplevel
         _port = _ga().portfolio
-        if _port.state.get("initial", 0) < INITIAL_CAPITAL:
-            _port.state["initial"] = INITIAL_CAPITAL
+        if _port.state.get("initial", 0) != _STARTUP_CAPITAL:
+            _port.state["initial"] = _STARTUP_CAPITAL
             _port._save()
-            print(f"  💰  Updated portfolio initial capital to ₹{INITIAL_CAPITAL:,.0f}")
         print(f"  ✅  Portfolio: cash=₹{_port.state['cash']:,.0f}  initial=₹{_port.state['initial']:,.0f}")
     except Exception as _te:
         print(f"  ⚠️  Capital check failed: {_te}")
