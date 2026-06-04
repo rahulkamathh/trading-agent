@@ -160,7 +160,59 @@ def get_lot_size(ticker: str) -> int:
     for key in (ticker, ticker.replace(".NS", ""), ticker.replace(".NS", "") + ".NS"):
         if key in _LOT_CACHE:
             return _LOT_CACHE[key]
-    return 1   # unknown instrument — return 1 to avoid division errors
+    # Hard-coded fallback for common F&O stocks (SEBI lot sizes as of June 2026)
+    _FALLBACK_LOTS = {
+        "^NSEI": 75, "NIFTY": 75, "^NSEBANK": 30, "BANKNIFTY": 30,
+        "FINNIFTY": 40, "MIDCPNIFTY": 50,
+        "RELIANCE.NS": 250, "TCS.NS": 175, "HDFCBANK.NS": 550,
+        "INFY.NS": 400, "ICICIBANK.NS": 700, "HINDUNILVR.NS": 300,
+        "SBIN.NS": 1500, "BHARTIARTL.NS": 950, "BAJFINANCE.NS": 125,
+        "KOTAKBANK.NS": 400, "LT.NS": 375, "AXISBANK.NS": 625,
+        "ASIANPAINT.NS": 200, "MARUTI.NS": 100, "SUNPHARMA.NS": 350,
+        "TITAN.NS": 375, "WIPRO.NS": 1500, "ULTRACEMCO.NS": 100,
+        "NESTLEIND.NS": 50, "POWERGRID.NS": 4700, "NTPC.NS": 3000,
+        "M&M.NS": 700, "HCLTECH.NS": 700, "ONGC.NS": 1925,
+        "JSWSTEEL.NS": 600, "TATAMOTORS.NS": 1425, "ADANIENT.NS": 250,
+        "COALINDIA.NS": 4200, "BAJAJFINSV.NS": 500, "GRASIM.NS": 375,
+        "TECHM.NS": 600, "BPCL.NS": 1800, "CIPLA.NS": 650,
+        "DRREDDY.NS": 125, "EICHERMOT.NS": 175, "APOLLOHOSP.NS": 125,
+        "DIVISLAB.NS": 200, "TATACONSUM.NS": 1350, "INDUSINDBK.NS": 525,
+        "SBILIFE.NS": 750, "HDFCLIFE.NS": 1100, "ADANIPORTS.NS": 1250,
+        "HEROMOTOCO.NS": 300, "BAJAJ-AUTO.NS": 250, "BRITANNIA.NS": 200,
+        "TATAPOWER.NS": 3375, "ITC.NS": 3200, "VEDL.NS": 2756,
+        "GODREJCP.NS": 1000, "PIDILITIND.NS": 500, "DABUR.NS": 2750,
+        "MARICO.NS": 1800, "HAVELLS.NS": 1000, "VOLTAS.NS": 500,
+        "AMBUJACEM.NS": 2000, "GAIL.NS": 3825, "BHEL.NS": 10500,
+        "ADANIGREEN.NS": 500, "ADANITRANS.NS": 500, "SAIL.NS": 10500,
+        "UNITDSPR.NS": 1000, "ZOMATO.NS": 4500, "PAYTM.NS": 2000,
+        "NYKAA.NS": 1000, "PNB.NS": 8000, "BANKBARODA.NS": 5850,
+        "CANBK.NS": 5400, "FEDERALBNK.NS": 10000, "IDFCFIRSTB.NS": 11250,
+        "CHOLAFIN.NS": 1250, "MUTHOOTFIN.NS": 750, "BAJAJHLDNG.NS": 50,
+        "MOTHERSON.NS": 5400, "ASHOKLEY.NS": 5000, "MRF.NS": 10,
+        "BOSCHLTD.NS": 50, "ABBINDIA.NS": 100, "SIEMENS.NS": 350,
+        "AUROPHARMA.NS": 650, "BIOCON.NS": 2800, "LUPIN.NS": 850,
+        "TORNTPHARM.NS": 500, "ALKEM.NS": 200, "LALPATHLAB.NS": 250,
+        "MAXHEALTH.NS": 1050, "FORTIS.NS": 3200, "NAUKRI.NS": 125,
+        "MPHASIS.NS": 250, "LTIM.NS": 150, "PERSISTENT.NS": 150,
+        "COFORGE.NS": 200, "TATAELXSI.NS": 100, "KPIT.NS": 500,
+        "EXIDEIND.NS": 1800, "AMARA.NS": 500, "TVSMOTOR.NS": 700,
+        "BALKRISIND.NS": 400, "CUMMINS.NS": 600, "THERMAX.NS": 350,
+        "SYNGENE.NS": 1300, "CROMPTON.NS": 1800, "PIIND.NS": 250,
+        "UPL.NS": 1300, "CHAMBLFERT.NS": 3000, "COROMANDEL.NS": 500,
+        "IPCALAB.NS": 500, "SUNTV.NS": 1500, "ZEEL.NS": 6000,
+        "GODREJPROP.NS": 650, "OBEROIRLTY.NS": 400, "DLF.NS": 1650,
+        "RVNL.NS": 1525, "IRFC.NS": 5000, "HUDCO.NS": 5000,
+        "ADANIPOWER.NS": 1150, "TATACOMM.NS": 500, "MTNL.NS": 10000,
+        "IDBI.NS": 9000, "YESBANK.NS": 40000, "360ONE.NS": 500,
+        "JIOFIN.NS": 2350, "TMPV.NS": 1500, "ADANIENT": 250,
+        "SBICARD.NS": 800, "HINDPETRO.NS": 1300, "IOC.NS": 5200,
+        "PETRONET.NS": 3000, "SJVN.NS": 10000, "NHPC.NS": 6000,
+    }
+    sym = ticker.replace(".NS", "")
+    for key in (ticker, sym, sym + ".NS"):
+        if key in _FALLBACK_LOTS:
+            return _FALLBACK_LOTS[key]
+    return 50   # sensible default for unknown F&O stocks (not 1)
 
 
 def is_fno_eligible(ticker: str) -> bool:
