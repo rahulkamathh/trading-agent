@@ -393,21 +393,27 @@ class MacroRiskScorer:
         if self._vix_cache and (now - self._vix_cache[0]).seconds < self._VIX_TTL_MINUTES * 60:
             vix = self._vix_cache[1]
         else:
+            vix = 15.0  # default neutral
             try:
                 import yfinance as yf
-                hist = yf.download("^INDIAVIX", period="2d", interval="1d",
-                                   auto_adjust=True, progress=False)
-                if not hist.empty:
-                    import pandas as pd
-                    if isinstance(hist.columns, pd.MultiIndex):
-                        hist.columns = hist.columns.get_level_values(0)
-                    vix = float(hist["Close"].iloc[-1])
-                    self._vix_cache = (now, vix)
-                else:
-                    vix = 15.0   # neutral fallback
+                import concurrent.futures as _cf
+                def _fetch_vix():
+                    return yf.download("^INDIAVIX", period="2d", interval="1d",
+                                       auto_adjust=True, progress=False)
+                with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
+                    _fut = _ex.submit(_fetch_vix)
+                    try:
+                        hist = _fut.result(timeout=8)   # 8-second hard cap
+                        if not hist.empty:
+                            import pandas as pd
+                            if isinstance(hist.columns, pd.MultiIndex):
+                                hist.columns = hist.columns.get_level_values(0)
+                            vix = float(hist["Close"].iloc[-1])
+                            self._vix_cache = (now, vix)
+                    except _cf.TimeoutError:
+                        logger.debug("[RiskMgr] VIX fetch timed out — using neutral fallback")
             except Exception as exc:
                 logger.debug(f"[RiskMgr] VIX fetch failed: {exc}")
-                vix = 15.0
 
         # India VIX: <12 = very calm, 12–20 = normal, 20–30 = elevated, >30 = fearful
         if vix < 12:   return 0.05
@@ -433,9 +439,16 @@ class MacroRiskScorer:
 
         try:
             import yfinance as yf
-            # Fetch news for Nifty 50 as a proxy for Indian market sentiment
-            ticker = yf.Ticker("^NSEI")
-            news_items = ticker.news or []
+            import concurrent.futures as _cf
+            def _fetch_news():
+                return yf.Ticker("^NSEI").news or []
+            with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
+                _fut = _ex.submit(_fetch_news)
+                try:
+                    news_items = _fut.result(timeout=8)
+                except _cf.TimeoutError:
+                    logger.debug("[RiskMgr] News fetch timed out — using neutral fallback")
+                    return 0.2
 
             headlines = []
             for item in news_items[:20]:

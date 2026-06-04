@@ -2699,6 +2699,7 @@ class TradingAgent:
 
         executed = []
         new_buys_this_cycle = 0
+        skip_reasons: dict[str, int] = {}   # track why candidates are blocked
 
         # ── Time-of-day filter: institutional execution windows ────────────
         now_ist  = _now_ist()
@@ -2738,25 +2739,18 @@ class TradingAgent:
 
             # Guard-rail 1: minimum strength (dynamic — set by LearningEngine)
             if composite_strength < buy_threshold:
-                logger.debug(
-                    f"⏭  SKIP {ticker} — strength {composite_strength:.0f} < {buy_threshold} [{strat_str}]"
-                )
+                skip_reasons["low_strength"] = skip_reasons.get("low_strength", 0) + 1
                 continue
 
             # Guard-rail 2: multi-strategy consensus
-            # Institutional rule: single-strategy signals are noise.
-            # Require at least 2 strategies to agree (or very high conviction single).
             n_strategies = len(set(strategies))
             if n_strategies < 2 and composite_strength < 80:
-                logger.debug(
-                    f"⏭  SKIP {ticker} — only 1 strategy ({strat_str}) "
-                    f"with strength {composite_strength:.0f} < 80"
-                )
+                skip_reasons["single_strategy"] = skip_reasons.get("single_strategy", 0) + 1
                 continue
 
             # Guard-rail 3: execution time window
             if not execution_window_open:
-                logger.debug(f"⏭  SKIP {ticker} — outside execution window")
+                skip_reasons["time_window"] = skip_reasons.get("time_window", 0) + 1
                 continue
 
             # Guard-rail 4: volume / liquidity filter (uses already-fetched batch data — no extra API calls)
@@ -2927,6 +2921,8 @@ class TradingAgent:
             "timestamp":       _now_ist().isoformat(),
             "buy_threshold":   learning.get_threshold(),
         }
+        if skip_reasons:
+            logger.info(f"⏭  Skip summary: {skip_reasons}")
         logger.info(f"=== Cycle done in {elapsed}s | {summary} ===")
         return summary
 
