@@ -173,6 +173,42 @@ def api_dashboard():
         data["agent_running"] = _state.running
         data["last_cycle"] = _state.last_cycle
         data["auto_interval_s"] = _state.auto_interval
+
+        # ── Augment portfolio total with F&O deployed capital ────────────────
+        # equity get_total_value() = equity_cash + equity_stock_positions only.
+        # Cash was reduced when F&O premiums were paid, so the true total AUM
+        # must add back deployed F&O premiums + unrealised F&O P&L.
+        try:
+            from fno_engine import get_fno_agent as _gfno  # pylint: disable=import-outside-toplevel
+            fno_d      = _gfno().get_dashboard_data()
+            fno_deployed  = float(fno_d.get("deployed", 0) or 0)
+            fno_unrealised = float(fno_d.get("unrealised_pnl", 0) or 0)
+            fno_adj = fno_deployed + fno_unrealised  # add back cost basis + gain/loss
+
+            if fno_adj > 0:
+                port = data.get("portfolio", {})
+                eq_val    = float(port.get("total_value", 0))
+                true_val  = round(eq_val + fno_adj, 2)
+                initial   = float(port.get("initial", 1_300_000))
+
+                # Recalculate P&L vs initial capital
+                true_pnl  = round(true_val - initial, 2)
+                true_pct  = round(true_pnl / initial * 100, 2)
+
+                # Recalculate today P&L: baseline is day_start_value (equity only at day start)
+                # Add F&O deployed to baseline too so comparison is apples-to-apples
+                port_state = get_agent().portfolio.state
+                day_start  = float(port_state.get("day_start_value", initial))
+                today_pnl  = round(true_val - (day_start + fno_deployed), 2)
+
+                port["total_value"]   = true_val
+                port["total_pnl"]     = true_pnl
+                port["total_pnl_pct"] = true_pct
+                data["portfolio"]     = port
+                data["today_pnl"]     = today_pnl
+        except Exception:
+            pass  # if F&O unavailable, fall through with equity-only values
+
         return jsonify({"ok": True, "data": data})
     except (ValueError, RuntimeError, KeyError) as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
