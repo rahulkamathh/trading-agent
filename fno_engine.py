@@ -1241,6 +1241,8 @@ class FNOPortfolio:
                     "expiry":        pos["expiry"],
                     "days_left":     int(T * 365),
                     "qty_lots":      pos["qty"],
+                    "lot_size":      lot,
+                    "cost":          round(cost, 2),   # entry_premium × qty × lot_size
                     "entry_premium": entry,
                     "curr_premium":  round(curr_prem, 2),
                     "sl_premium":    sl_prem,
@@ -2213,10 +2215,10 @@ class FNOAgent:
         return summary
 
     def get_dashboard_data(self) -> dict:
-        # Deployed = premiums paid for open positions (still in market)
+        # Deployed = actual cash spent on open positions (entry_premium × qty × lot_size)
         positions_display = self.portfolio.get_positions_display()
         deployed = round(sum(
-            p.get("entry_premium", 0) * p.get("qty_lots", 1)
+            p.get("cost") or (p.get("entry_premium", 0) * p.get("qty_lots", 1))
             for p in positions_display
         ), 2)
         unrealised = self.portfolio.get_unrealised_pnl()

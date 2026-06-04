@@ -783,10 +783,11 @@ def api_portfolio_summary():
     except Exception:
         app.logger.error("portfolio_summary Commodity error:\n" + traceback.format_exc())
 
-    # F&O deployed capital = entry premiums still in open positions
-    # (these were deducted from equity cash when opened, so we add them back to get true AUM)
+    # F&O deployed capital = actual cash spent on open positions (entry_premium × qty × lot_size)
+    # Use the pre-computed "cost" field if available, else fall back to entry_premium × qty_lots
     fno_margin = round(sum(
-        p.get("entry_premium", 0) * p.get("qty_lots", 1) for p in fno_positions
+        p.get("cost") or (p.get("entry_premium", 0) * p.get("qty_lots", 1))
+        for p in fno_positions
     ), 2)
     comm_margin = round(sum(p.get("margin", 0) for p in comm_positions), 2)
 
