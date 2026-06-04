@@ -1513,9 +1513,13 @@ class Portfolio:
 
                 if atr and atr > 0:
                     # Chandelier multiplier tightens as profits grow
-                    if pnl_pct >= 15: mult = 2.0
-                    elif pnl_pct >= 7: mult = 2.5
-                    else:              mult = 3.0
+                    # Chandelier multiplier tightens aggressively as profit grows
+                    # More profit → tighter trail → locks in more gains
+                    if   pnl_pct >= 20: mult = 1.5   # very tight — protect big gains
+                    elif pnl_pct >= 15: mult = 2.0
+                    elif pnl_pct >= 10: mult = 2.5
+                    elif pnl_pct >= 5:  mult = 2.8
+                    else:               mult = 3.0   # early stage — give room to breathe
                     chandelier_sl = round(highest_close - mult * atr, 2)
 
                     # HARD FLOOR: initial -7% stop is the MINIMUM — chandelier
