@@ -466,7 +466,7 @@ class EventActionExecutor:
                         if trade:
                             actions.append(
                                 f"🛡️ HEDGE: Bought Nifty {strike}PE @ ₹{prem:.0f} "
-                                f"(1 lot, event hedge)"
+                                f"(1 lot, event hedge, expiry {expiry})"
                             )
             except Exception as _he:
                 logger.warning(f"[EventEngine] Hedge execution failed: {_he}")
