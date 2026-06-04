@@ -1088,6 +1088,68 @@
       </div>
     </div>
 
+    <!-- ── Live Trading Panel ──────────────────────────────────────────── -->
+    <div class="card" style="margin-top:20px" id="liveTraderCard">
+      <div class="section-header" style="margin-bottom:14px">
+        <span class="section-title">⚡ Live Trading</span>
+        <button class="btn btn-ghost" style="font-size:12px;padding:5px 12px" onclick="loadTraderStatus()">↻ Refresh</button>
+      </div>
+
+      <!-- Status row -->
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+        <div style="background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:12px 16px;min-width:180px;flex:1">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:5px">MODE</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span id="traderModeDot" style="width:10px;height:10px;border-radius:50%;background:#f0a800;flex-shrink:0"></span>
+            <span id="traderModeLabel" style="font-size:16px;font-weight:700;color:#f0a800">PAPER</span>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">Set <code>LIVE_TRADING=true</code> to go live</div>
+        </div>
+        <div style="background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:12px 16px;min-width:180px;flex:1">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:5px">HALT STATUS</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span id="traderHaltDot" style="width:10px;height:10px;border-radius:50%;background:#238636;flex-shrink:0"></span>
+            <span id="traderHaltLabel" style="font-size:16px;font-weight:700;color:#238636">CLEAR</span>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px" id="traderHaltReason">No halt active</div>
+        </div>
+        <div style="background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:12px 16px;min-width:160px;flex:1">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:5px">ORDERS TODAY</div>
+          <div id="traderOrderCount" style="font-size:24px;font-weight:700;color:var(--text)">—</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">live + paper</div>
+        </div>
+      </div>
+
+      <!-- Action buttons -->
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">
+        <button class="btn btn-red" onclick="traderHalt()" id="btnTraderHalt">🛑 Emergency Halt</button>
+        <button class="btn btn-green" onclick="traderResume()" id="btnTraderResume" style="display:none">▶ Resume Trading</button>
+        <button class="btn btn-ghost" onclick="traderSync()">🔄 Sync with Angel One</button>
+      </div>
+
+      <!-- Sync result -->
+      <div id="traderSyncResult" style="display:none;padding:10px 14px;border-radius:8px;font-size:13px;background:#0d1117;border:1px solid var(--border);margin-bottom:12px"></div>
+
+      <!-- Recent orders -->
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px;font-weight:600">RECENT ORDERS</div>
+      <div id="traderOrderTable" style="font-size:12px;color:var(--muted)">—</div>
+
+      <!-- Go-live instructions -->
+      <details style="margin-top:16px">
+        <summary style="cursor:pointer;font-size:12px;color:var(--muted);user-select:none">▸ How to go live when ready</summary>
+        <div style="margin-top:10px;padding:12px;background:#0d1117;border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--muted);line-height:1.9">
+          <strong style="color:var(--text)">Steps to enable real order placement (equity only):</strong><br>
+          <strong style="color:#58a6ff">1.</strong> Confirm paper trading is profitable for at least 4 weeks.<br>
+          <strong style="color:#58a6ff">2.</strong> Add to Railway Variables: <code>LIVE_TRADING=true</code><br>
+          <strong style="color:#58a6ff">3.</strong> Reduce <code>NSE_CAPITAL</code> to match your actual deposit (e.g. ₹10,000 to start).<br>
+          <strong style="color:#58a6ff">4.</strong> Watch first few cycles — check orders here and in Angel One match.<br>
+          <strong style="color:#58a6ff">5.</strong> Use <em>Sync with Angel One</em> after each Railway restart.<br>
+          <strong style="color:#d29922">⚠️ Circuit breaker:</strong> portfolio drops &gt;3% in a day → all buying auto-halts + Telegram alert.<br>
+          <strong style="color:#d29922">⚠️ Equity only:</strong> F&amp;O and commodities remain paper-only until separately enabled.
+        </div>
+      </details>
+    </div>
+
     <!-- ── Dynamic Risk Manager ─────────────────────────────────────────── -->
     <div class="card" style="margin-top:20px" id="riskCard">
       <div class="section-header" style="margin-bottom:14px">
@@ -1765,6 +1827,7 @@ function showView(view) {
       } else if (view === 'controls') {
         loadNotifierStatus();
         loadRiskStatus();
+        loadTraderStatus();
       } else if (view === 'calendar') {
         loadPnlCalendar();
       } else if (view === 'fno') {
@@ -5060,6 +5123,113 @@ async function loadPortfolio() {
 }
 
 setInterval(() => { if (_currentView === 'portfolio') loadPortfolio(); }, 30000);
+
+// ── Live Trader panel ───────────────────────────────────────────────────────
+async function loadTraderStatus() {
+  try {
+    const r = await fetch('/api/trader/status');
+    const d = await r.json();
+    const live = d.is_live;
+    const halted = d.halted;
+
+    // Mode badge
+    document.getElementById('traderModeDot').style.background = live ? '#f85149' : '#f0a800';
+    document.getElementById('traderModeLabel').textContent = live ? 'LIVE' : 'PAPER';
+    document.getElementById('traderModeLabel').style.color  = live ? '#f85149' : '#f0a800';
+
+    // Halt badge
+    const haltDot   = document.getElementById('traderHaltDot');
+    const haltLabel = document.getElementById('traderHaltLabel');
+    const haltReason = document.getElementById('traderHaltReason');
+    if (halted) {
+      haltDot.style.background = '#f85149';
+      haltLabel.textContent    = 'HALTED';
+      haltLabel.style.color    = '#f85149';
+      haltReason.textContent   = d.halt_reason || 'Manual halt';
+      document.getElementById('btnTraderHalt').style.display   = 'none';
+      document.getElementById('btnTraderResume').style.display = '';
+    } else {
+      haltDot.style.background = '#238636';
+      haltLabel.textContent    = 'CLEAR';
+      haltLabel.style.color    = '#238636';
+      haltReason.textContent   = 'No halt active';
+      document.getElementById('btnTraderHalt').style.display   = '';
+      document.getElementById('btnTraderResume').style.display = 'none';
+    }
+
+    // Order count
+    const orders = d.orders_today || [];
+    document.getElementById('traderOrderCount').textContent = orders.length;
+
+    // Order table
+    const tbl = document.getElementById('traderOrderTable');
+    if (!orders.length) {
+      tbl.textContent = 'No orders today.';
+    } else {
+      const rows = orders.slice(-10).reverse().map(o => {
+        const side  = o.side || o.transactiontype || '—';
+        const color = side === 'BUY' ? 'var(--green)' : 'var(--red)';
+        const paper = o.paper ? ' <span style="color:var(--muted)">(paper)</span>' : '';
+        const ts    = (o.timestamp || '').slice(11, 19);
+        return `<tr>
+          <td style="padding:5px 8px;color:var(--muted)">${ts}</td>
+          <td style="padding:5px 8px;font-weight:600;color:${color}">${side}</td>
+          <td style="padding:5px 8px">${o.ticker || o.tradingsymbol || '—'}${paper}</td>
+          <td style="padding:5px 8px;text-align:right">${o.qty || '—'}</td>
+          <td style="padding:5px 8px;text-align:right">₹${o.price ? Number(o.price).toLocaleString('en-IN',{maximumFractionDigits:2}) : '—'}</td>
+          <td style="padding:5px 8px;color:var(--muted)">${o.order_id || '—'}</td>
+        </tr>`;
+      }).join('');
+      tbl.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="color:var(--muted);border-bottom:1px solid var(--border)">
+          <th style="padding:5px 8px;font-weight:500;text-align:left">Time</th>
+          <th style="padding:5px 8px;font-weight:500;text-align:left">Side</th>
+          <th style="padding:5px 8px;font-weight:500;text-align:left">Ticker</th>
+          <th style="padding:5px 8px;font-weight:500;text-align:right">Qty</th>
+          <th style="padding:5px 8px;font-weight:500;text-align:right">Price</th>
+          <th style="padding:5px 8px;font-weight:500;text-align:left">Order ID</th>
+        </tr></thead>
+        <tbody>${rows}</tbody></table>`;
+    }
+  } catch(e) { console.error('Trader status error', e); }
+}
+
+async function traderHalt() {
+  if (!confirm('Halt all new orders now?')) return;
+  await fetch('/api/trader/halt', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({reason: 'Manual halt from dashboard'})
+  });
+  await loadTraderStatus();
+}
+
+async function traderResume() {
+  await fetch('/api/trader/resume', {method: 'POST'});
+  await loadTraderStatus();
+}
+
+async function traderSync() {
+  const el = document.getElementById('traderSyncResult');
+  el.style.display = '';
+  el.textContent   = 'Syncing with Angel One…';
+  try {
+    const r = await fetch('/api/trader/sync', {method: 'POST'});
+    const d = await r.json();
+    const disc = d.discrepancies || [];
+    if (disc.length === 0) {
+      el.style.border  = '1px solid #238636';
+      el.style.color   = '#3fb950';
+      el.textContent   = '✅ Agent matches Angel One holdings — no discrepancies.';
+    } else {
+      el.style.border = '1px solid #f85149';
+      el.style.color  = '#f85149';
+      el.textContent  = `⚠️ ${disc.length} discrepanc${disc.length>1?'ies':'y'}: ` +
+        disc.map(d => `${d.type} ${d.ticker||d.symbol}`).join(', ');
+    }
+  } catch(e) { el.textContent = 'Sync failed — check Angel One connection.'; }
+}
+
+setInterval(() => { if (_currentView === 'controls') loadTraderStatus(); }, 30000);
 </script>
 </body>
 </html>

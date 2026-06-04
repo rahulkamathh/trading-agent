@@ -470,13 +470,15 @@ def api_trader_status():
     """Return live trading status, halt state, today's orders."""
     from angelone_trader import get_trader  # pylint: disable=import-outside-toplevel
     t = get_trader()
+    from angelone_trader import _halt_reason  # pylint: disable=import-outside-toplevel
+    orders = t.get_order_book()
     return jsonify({
-        "ok":        True,
-        "is_live":   t.is_live,
-        "halted":    t.halted,
-        "halt_reason": None,  # exposed only to dashboard, not publicly
-        "mode":      "LIVE" if t.is_live else "PAPER",
-        "orders_today": len(t.get_order_book()),
+        "ok":          True,
+        "is_live":     t.is_live,
+        "halted":      t.halted,
+        "halt_reason": _halt_reason,
+        "mode":        "LIVE" if t.is_live else "PAPER",
+        "orders_today": orders,
     })
 
 @app.route("/api/trader/halt", methods=["POST"])
@@ -1264,6 +1266,13 @@ def _run_cycle_safe() -> None:
         agent   = get_agent()
         summary = agent.run_cycle()
         _state.last_cycle = summary
+
+        # ── Daily loss circuit breaker (live mode only) ─────────────────── #
+        try:
+            from angelone_trader import get_trader  # pylint: disable=import-outside-toplevel
+            get_trader().check_daily_loss(agent.portfolio.get_total_value())
+        except Exception:
+            pass
 
         # ── F&O cycle: pass equity signals + positions ─────────────────── #
         try:
