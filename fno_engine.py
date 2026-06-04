@@ -1885,6 +1885,262 @@ def run_hourly_fno_signals() -> list:
 
 
 # ---------------------------------------------------------------------------
+# Strategy: Long Straddle  (#7 — Event / volatility play)
+# Buy ATM Call + ATM Put at the same strike.
+# Profits if the stock makes a big move in EITHER direction.
+# Best used before earnings, RBI policy, budget, or when IV is low.
+# ---------------------------------------------------------------------------
+
+class LongStraddleStrategy:
+    """
+    Long Straddle = Buy ATM Call + Buy ATM Put (same strike, same expiry).
+    Pure buy-only. Max loss = total premiums paid. Profit = big move either way.
+
+    Triggers:
+      1. Event-driven — upcoming RBI, earnings season, budget, F&O expiry week
+      2. Low IV — 10-day HV < 70% of 30-day HV (options are cheap, good time to buy)
+      3. Post-consolidation — price stuck in tight range for 10+ days (coiled spring)
+    """
+
+    # Sector earnings seasons by month (NSE Q4: Apr-May, Q1: Jul-Aug, Q2: Oct-Nov, Q3: Jan-Feb)
+    _EARNINGS_MONTHS = {4, 5, 7, 8, 10, 11, 1, 2}
+
+    def run(self, portfolio: FNOPortfolio) -> list:
+        executed = []
+        if portfolio.at_max_positions():
+            return executed
+
+        now = _now_ist()
+        if not (dt_time(9, 30) <= now.time() <= dt_time(14, 30)):
+            return executed
+
+        # Only trade straddles 1–2× per day at most
+        straddle_positions = [
+            k for k in portfolio.state["positions"]
+            if portfolio.state["positions"][k].get("strategy", "").startswith("STRADDLE")
+        ]
+        if len(straddle_positions) >= 2:
+            return executed
+
+        candidates = ["^NSEI", "^NSEBANK"]  # Index straddles primarily
+
+        for underlying in candidates:
+            if portfolio.at_max_positions():
+                break
+            # Check cooldown
+            base = underlying.replace("^", "").replace(".NS", "")
+            if portfolio._is_in_cooldown(base):
+                continue
+
+            try:
+                # Fetch daily data for volatility check
+                df = yf.download(underlying, period="60d", interval="1d",
+                                 auto_adjust=True, progress=False)
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                if len(df) < 30:
+                    continue
+
+                close = df["Close"].squeeze()
+                spot  = float(close.iloc[-1])
+
+                # HV10 vs HV30 — low IV = cheap straddle
+                hv10 = float(close.pct_change().rolling(10).std().iloc[-1]) * (252**0.5) * 100
+                hv30 = float(close.pct_change().rolling(30).std().iloc[-1]) * (252**0.5) * 100
+                iv_cheap = hv10 < hv30 * 0.70   # current vol < 70% of historical → cheap
+
+                # Consolidation: tight range for 10 days
+                range_10 = (float(close.iloc[-10:].max()) - float(close.iloc[-10:].min())) / spot
+                consolidating = range_10 < 0.025   # < 2.5% range = coiled spring
+
+                # Event proximity from risk manager calendar
+                in_earnings_month = now.month in self._EARNINGS_MONTHS
+
+                conviction = 0
+                reasons = []
+                if iv_cheap:
+                    conviction += 30
+                    reasons.append(f"Low IV (HV10={hv10:.1f}% < HV30={hv30:.1f}%)")
+                if consolidating:
+                    conviction += 35
+                    reasons.append(f"Tight range {range_10*100:.1f}% → breakout expected")
+                if in_earnings_month:
+                    conviction += 25
+                    reasons.append("Earnings season")
+
+                if conviction < 55:
+                    continue
+
+                # ATM strike
+                lot_size = get_lot_size(underlying)
+                expiry   = get_expiry(underlying)
+                strike   = round(spot / 100) * 100  # nearest 100
+
+                # Price both legs via Black-Scholes
+                t_exp = max(1, (expiry - now.date()).days) / 365
+                sigma = max(hv10, hv30) / 100
+                call_prem = bs_price(spot, strike, t_exp, 0.065, sigma, "call")
+                put_prem  = bs_price(spot, strike, t_exp, 0.065, sigma, "put")
+
+                if call_prem < 10 or put_prem < 10:
+                    continue
+
+                total_cost = (call_prem + put_prem) * lot_size
+                if not portfolio.can_afford(total_cost):
+                    continue
+
+                # Open call leg
+                call_tag = f"{base}_{strike}C_{expiry}"
+                put_tag  = f"{base}_{strike}P_{expiry}"
+
+                call_pos = portfolio.open_option(
+                    underlying=underlying, strike=strike, expiry=expiry,
+                    option_type="call", premium=call_prem, lot_size=lot_size,
+                    strategy=f"STRADDLE_CALL", reason=f"Long Straddle | {' | '.join(reasons)}"
+                )
+                put_pos = portfolio.open_option(
+                    underlying=underlying, strike=strike, expiry=expiry,
+                    option_type="put", premium=put_prem, lot_size=lot_size,
+                    strategy=f"STRADDLE_PUT", reason=f"Long Straddle | {' | '.join(reasons)}"
+                )
+
+                if call_pos or put_pos:
+                    logger.info(
+                        f"[Straddle] {underlying} {strike} Call+Put @ ₹{call_prem:.1f}+₹{put_prem:.1f} "
+                        f"cost=₹{total_cost:,.0f} conv={conviction} | {', '.join(reasons)}"
+                    )
+                    executed.extend([p for p in [call_pos, put_pos] if p])
+
+            except Exception as exc:
+                logger.debug(f"[Straddle] {underlying} error: {exc}")
+
+        return executed
+
+
+# ---------------------------------------------------------------------------
+# Strategy: Long Strangle  (Iron Condor equivalent — buy-only)
+# Buy OTM Call + OTM Put at different strikes.
+# Cheaper than straddle, needs a bigger move to profit.
+# Best when breakout direction is unknown but move is expected.
+# ---------------------------------------------------------------------------
+
+class LongStrangleStrategy:
+    """
+    Long Strangle = Buy OTM Call + Buy OTM Put (different strikes).
+    Lower cost than straddle. Needs bigger price move to be profitable.
+    Max loss = both premiums paid.
+
+    Triggers:
+      1. Strong multi-strategy BUY signals AND strong SELL signals on same stock
+         simultaneously → direction genuinely unclear, big move expected
+      2. Pre-event on index (use index options for defined risk)
+      3. IV significantly low vs 60-day average
+    """
+
+    def run(self, equity_signals: list, portfolio: FNOPortfolio) -> list:
+        executed = []
+        if portfolio.at_max_positions():
+            return executed
+
+        now = _now_ist()
+        if not (dt_time(9, 30) <= now.time() <= dt_time(14, 0)):
+            return executed
+
+        # Find tickers with BOTH strong BUY and strong SELL signals (confused market)
+        buy_strength:  dict[str, int] = {}
+        sell_strength: dict[str, int] = {}
+        for sig in equity_signals:
+            t = sig.get("ticker", "")
+            s = sig.get("signal", "")
+            st = int(sig.get("strength", 0))
+            if s == "BUY"  and st >= 70: buy_strength[t]  = max(buy_strength.get(t, 0),  st)
+            if s == "SELL" and st >= 70: sell_strength[t] = max(sell_strength.get(t, 0), st)
+
+        # Stocks with both signals → genuine uncertainty → strangle candidate
+        both = [t for t in buy_strength if t in sell_strength]
+
+        # Also add index strangle if VIX is low (cheap strangle window)
+        for underlying in ["^NSEI"]:
+            base = "NSEI"
+            if portfolio._is_in_cooldown(base):
+                continue
+            # Limit to 1 index strangle per day
+            idx_strangles = sum(
+                1 for k, v in portfolio.state["positions"].items()
+                if v.get("strategy", "").startswith("STRANGLE") and "NSEI" in k
+            )
+            if idx_strangles >= 1:
+                continue
+            both.append(underlying)
+
+        for underlying in both[:3]:   # max 3 strangles per cycle
+            if portfolio.at_max_positions():
+                break
+            base = underlying.replace("^", "").replace(".NS", "")
+            if portfolio._is_in_cooldown(base):
+                continue
+
+            try:
+                df = yf.download(underlying, period="60d", interval="1d",
+                                 auto_adjust=True, progress=False)
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                if len(df) < 30:
+                    continue
+
+                close = df["Close"].squeeze()
+                spot  = float(close.iloc[-1])
+                hv20  = float(close.pct_change().rolling(20).std().iloc[-1]) * (252**0.5) * 100
+                hv60  = float(close.pct_change().rolling(60).std().iloc[-1]) * (252**0.5) * 100
+
+                # OTM strikes: 1 standard deviation away
+                daily_sd  = float(close.pct_change().std())
+                sd_7d     = daily_sd * (7**0.5) * spot
+                call_strike = round((spot + sd_7d) / 50) * 50
+                put_strike  = round((spot - sd_7d) / 50) * 50
+
+                lot_size = get_lot_size(underlying)
+                expiry   = get_expiry(underlying)
+                sigma    = max(hv20, hv60) / 100
+                t_exp    = max(1, (expiry - now.date()).days) / 365
+
+                call_prem = bs_price(spot, call_strike, t_exp, 0.065, sigma, "call")
+                put_prem  = bs_price(spot, put_strike,  t_exp, 0.065, sigma, "put")
+
+                if call_prem < 5 or put_prem < 5:
+                    continue
+
+                total_cost = (call_prem + put_prem) * lot_size
+                if not portfolio.can_afford(total_cost):
+                    continue
+
+                call_pos = portfolio.open_option(
+                    underlying=underlying, strike=call_strike, expiry=expiry,
+                    option_type="call", premium=call_prem, lot_size=lot_size,
+                    strategy="STRANGLE_CALL",
+                    reason=f"Long Strangle | OTM +{call_strike-spot:.0f} | HV20={hv20:.1f}%"
+                )
+                put_pos = portfolio.open_option(
+                    underlying=underlying, strike=put_strike, expiry=expiry,
+                    option_type="put", premium=put_prem, lot_size=lot_size,
+                    strategy="STRANGLE_PUT",
+                    reason=f"Long Strangle | OTM -{spot-put_strike:.0f} | HV20={hv20:.1f}%"
+                )
+
+                if call_pos or put_pos:
+                    logger.info(
+                        f"[Strangle] {underlying} {put_strike}P/{call_strike}C "
+                        f"@ ₹{put_prem:.1f}+₹{call_prem:.1f} cost=₹{total_cost:,.0f}"
+                    )
+                    executed.extend([p for p in [call_pos, put_pos] if p])
+
+            except Exception as exc:
+                logger.debug(f"[Strangle] {underlying} error: {exc}")
+
+        return executed
+
+
+# ---------------------------------------------------------------------------
 # F&O Agent — orchestrates all strategies
 # ---------------------------------------------------------------------------
 
@@ -1897,8 +2153,10 @@ class FNOAgent:
     def __init__(self, equity_portfolio=None):
         self.portfolio     = FNOPortfolio(equity_portfolio=equity_portfolio)
         self.directional   = DirectionalOptionsStrategy()
-        self.spreads       = SpreadStrategy()
-        self.iron_condor   = IronCondorStrategy()
+        self.straddle      = LongStraddleStrategy()
+        self.strangle      = LongStrangleStrategy()
+        self.spreads       = SpreadStrategy()      # disabled (sells options)
+        self.iron_condor   = IronCondorStrategy()  # disabled (sells options)
         self.hedge         = HedgeStrategy()
 
     def run_cycle(self, equity_signals: list = None,
@@ -1923,10 +2181,12 @@ class FNOAgent:
         # theoretically unlimited loss exposure — not appropriate for paper
         # trading without real broker margin controls.
         # Only LONG options (buying calls/puts) are permitted.
-        condors  = []   # self.iron_condor.run(self.portfolio)
-        spreads  = []   # self.spreads.run(equity_signals, self.portfolio)
-        directs  = self.directional.run(equity_signals, self.portfolio)
-        hedges   = self.hedge.run(equity_positions, self.portfolio, equity_drawdown_pct)
+        condors   = []   # self.iron_condor.run(self.portfolio)  — sells options, disabled
+        spreads   = []   # self.spreads.run(equity_signals, self.portfolio) — sells options, disabled
+        directs   = self.directional.run(equity_signals, self.portfolio)
+        straddles = self.straddle.run(self.portfolio)
+        strangles = self.strangle.run(equity_signals, self.portfolio)
+        hedges    = self.hedge.run(equity_positions, self.portfolio, equity_drawdown_pct)
 
         total_value   = self.portfolio.get_total_value()
         greeks        = self.portfolio.portfolio_greeks()
@@ -1940,10 +2200,12 @@ class FNOAgent:
             "fno_cash":     round(self.portfolio.state["cash"], 2),
             "gap_stops":    len(gap_closes),
             "stops_closed": len(stops),
-            "new_condors":  len(condors) // 4,
-            "new_directs":  len(directs),
-            "new_spreads":  len(spreads) // 2,
-            "new_hedges":   len(hedges),
+            "new_condors":   len(condors) // 4,
+            "new_directs":   len(directs),
+            "new_straddles": len(straddles) // 2,
+            "new_strangles": len(strangles) // 2,
+            "new_spreads":   len(spreads) // 2,
+            "new_hedges":    len(hedges),
             "open_positions": len(self.portfolio.state["positions"]),
             "portfolio_greeks": greeks,
         }
