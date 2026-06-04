@@ -2213,13 +2213,24 @@ class FNOAgent:
         return summary
 
     def get_dashboard_data(self) -> dict:
+        # Deployed = premiums paid for open positions (still in market)
+        positions_display = self.portfolio.get_positions_display()
+        deployed = round(sum(
+            p.get("entry_premium", 0) * p.get("qty_lots", 1)
+            for p in positions_display
+        ), 2)
+        unrealised = self.portfolio.get_unrealised_pnl()
+        # F&O desk P&L = unrealised on open positions + all realised
+        total_pnl = round(unrealised + self.portfolio.state["realised_pnl"], 2)
         return {
-            "portfolio_value": self.portfolio.get_total_value(),
-            "cash":            self.portfolio._eq_cash(),          # unified cash
+            "portfolio_value": round(deployed + unrealised, 2),  # current value of open options
+            "deployed":        deployed,       # premiums paid, still open
+            "cash":            self.portfolio._eq_cash(),
             "initial":         self.portfolio.state.get("initial", FNO_INITIAL_CAPITAL),
             "realised_pnl":    self.portfolio.state["realised_pnl"],
-            "unrealised_pnl":  self.portfolio.get_unrealised_pnl(),
-            "positions":       self.portfolio.get_positions_display(),
+            "unrealised_pnl":  unrealised,
+            "total_pnl":       total_pnl,
+            "positions":       positions_display,
             "greeks":          self.portfolio.portfolio_greeks(),
             "open_count":      len(self.portfolio.state["positions"]),
             "unified":         self.portfolio._equity is not None,

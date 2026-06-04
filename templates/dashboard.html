@@ -4877,13 +4877,14 @@ async function loadFNO() {
     const d = dash.data;
 
     // ── KPI strip ──
+    const totalPnl = (d.realised_pnl||0) + (d.unrealised_pnl||0);
     const kpis = [
-      { label: 'F&O Value',    val: fmt(d.portfolio_value), color: cls(d.unrealised_pnl + (d.realised_pnl||0)) },
-      { label: 'F&O P&L',      val: fmt((d.realised_pnl||0)+(d.unrealised_pnl||0)), color: cls((d.realised_pnl||0)+(d.unrealised_pnl||0)) },
-      { label: 'Realised',     val: fmt(d.realised_pnl||0),   color: cls(d.realised_pnl||0) },
-      { label: 'Unrealised',   val: fmt(d.unrealised_pnl||0), color: cls(d.unrealised_pnl||0) },
-      { label: 'Equity Cash',  val: fmt(d.cash),              color: '' },
-      { label: 'Open Positions',val: d.open_count,            color: '' },
+      { label: 'Deployed',      val: fmt(d.deployed||0),         color: '' },
+      { label: 'Unrealised',    val: fmt(d.unrealised_pnl||0),   color: cls(d.unrealised_pnl||0) },
+      { label: 'Realised',      val: fmt(d.realised_pnl||0),     color: cls(d.realised_pnl||0) },
+      { label: 'Total P&L',     val: fmt(totalPnl),              color: cls(totalPnl) },
+      { label: 'Equity Cash',   val: fmt(d.cash),                color: '' },
+      { label: 'Open Positions', val: d.open_count,              color: '' },
     ];
     document.getElementById('fnoKpis').innerHTML = kpis.map(k => `
       <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 16px;min-width:120px;">
@@ -5030,7 +5031,7 @@ async function loadPortfolio() {
 
     // Allocation bar
     const eqSeg   = eq.equity_val  || 0;
-    const fnoSeg  = fno.margin_used || 0;
+    const fnoSeg  = fno.margin_used || fno.deployed || 0;
     const comSeg  = comm.margin_used || 0;
     const cashSeg = eq.cash || 0;
     const total   = Math.max(eqSeg + fnoSeg + comSeg + cashSeg, 1);

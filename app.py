@@ -783,14 +783,18 @@ def api_portfolio_summary():
     except Exception:
         app.logger.error("portfolio_summary Commodity error:\n" + traceback.format_exc())
 
-    # F&O margin = sum of premiums paid (entry_premium × qty × lot_size) still open
-    fno_margin  = round(sum(
+    # F&O deployed capital = entry premiums still in open positions
+    # (these were deducted from equity cash when opened, so we add them back to get true AUM)
+    fno_margin = round(sum(
         p.get("entry_premium", 0) * p.get("qty_lots", 1) for p in fno_positions
     ), 2)
     comm_margin = round(sum(p.get("margin", 0) for p in comm_positions), 2)
 
-    # True AUM: equity cash + equity stock value + fno unrealised + commodity unrealised
-    total_aum = round(eq_total + fno_unreal + comm_unreal, 2)
+    # True AUM = cash (after premiums deducted) + equity stock positions
+    #          + F&O deployed premiums + F&O unrealised P&L
+    #          + commodity margin + commodity unrealised
+    # = original_capital + all_unrealised_pnl  (simplifies to this)
+    total_aum = round(eq_total + fno_margin + fno_unreal + comm_margin + comm_unreal, 2)
 
     return jsonify({
         "ok": True,
