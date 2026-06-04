@@ -1695,12 +1695,14 @@ class Portfolio:
         result.sort(key=lambda x: x["pnl_pct"], reverse=True)
         return result
 
-    def reset(self):
+    def reset(self, capital: float = 1_300_000):
         state = self._default_state()
+        state["cash"]    = capital
+        state["initial"] = capital
         self._save(state)
         if TRADE_LOG_FILE.exists():
             TRADE_LOG_FILE.write_text("[]")
-        logger.info("Portfolio reset to ₹10,00,000")
+        logger.info(f"Portfolio reset to ₹{capital:,.0f}")
 
 
 # ---------------------------------------------------------------------------
@@ -2182,6 +2184,195 @@ class SectorMomentumStrategy:
         return signals
 
 
+class VolumeAnalysisStrategy:
+    """
+    Institutional-grade volume analysis — 5 independent signals combined:
+
+    1. VWAP Deviation — price significantly above/below VWAP signals
+       institutional buying/selling pressure within the session.
+
+    2. OBV Trend Divergence — On-Balance Volume trending up while price is
+       flat or down → smart money accumulating. OBV down + price up → distribution.
+
+    3. Volume Profile POC — Identifies the Point of Control (price level with
+       most volume traded over 20 days). Price breaking above/below POC with
+       volume confirmation is a high-probability move.
+
+    4. Unusual Volume Spike — Volume > 3× 20-day average with a directional
+       price move ≥ 1%. Indicates informed/institutional activity.
+
+    5. Accumulation/Distribution Line — Multi-day A/D trend above zero with
+       rising price = institutional accumulation confirmed.
+
+    A conviction score is built from how many of the 5 signals agree.
+    Requires ≥ 3 agreeing signals for a trade-worthy output.
+    """
+    name       = "Volume Analysis"
+    short_name = "VOL_ANALYSIS"
+
+    def generate_signals(self, data: dict) -> list:
+        signals = []
+        for ticker, df in data.items():
+            if len(df) < 30 or "Volume" not in df.columns:
+                continue
+
+            try:
+                close = df["Close"].squeeze().astype(float)
+                high  = df["High"].squeeze().astype(float)
+                low   = df["Low"].squeeze().astype(float)
+                vol   = df["Volume"].squeeze().astype(float)
+
+                curr      = float(close.iloc[-1])
+                curr_vol  = float(vol.iloc[-1])
+                avg_v20   = float(vol.iloc[-21:-1].mean())
+
+                if avg_v20 <= 0 or curr <= 0:
+                    continue
+
+                votes_buy  = 0
+                votes_sell = 0
+                reasons    = []
+
+                # ── 1. VWAP Deviation ──────────────────────────────────────
+                # Use last 20 days as rolling VWAP approximation
+                typ_price = (high + low + close) / 3
+                vwap = float((typ_price.iloc[-20:] * vol.iloc[-20:]).sum() /
+                             vol.iloc[-20:].sum()) if vol.iloc[-20:].sum() > 0 else curr
+                vwap_dev = (curr - vwap) / vwap if vwap > 0 else 0
+                if vwap_dev < -0.02:          # >2% below VWAP → institutional support zone
+                    votes_buy += 1
+                    reasons.append(f"VWAP dev {vwap_dev*100:.1f}%")
+                elif vwap_dev > 0.025:         # >2.5% above VWAP → extended, sell signal
+                    votes_sell += 1
+                    reasons.append(f"VWAP ext +{vwap_dev*100:.1f}%")
+
+                # ── 2. OBV Trend Divergence ────────────────────────────────
+                obv = [0.0]
+                for i in range(1, len(close)):
+                    if float(close.iloc[i]) > float(close.iloc[i-1]):
+                        obv.append(obv[-1] + float(vol.iloc[i]))
+                    elif float(close.iloc[i]) < float(close.iloc[i-1]):
+                        obv.append(obv[-1] - float(vol.iloc[i]))
+                    else:
+                        obv.append(obv[-1])
+
+                if len(obv) >= 20:
+                    obv_recent = obv[-10:]
+                    obv_trend  = obv_recent[-1] - obv_recent[0]   # positive = accumulation
+                    price_change_10d = (curr - float(close.iloc[-11])) / float(close.iloc[-11])
+
+                    # Bullish divergence: OBV rising, price flat or slightly down
+                    if obv_trend > 0 and price_change_10d < 0.01:
+                        votes_buy += 1
+                        reasons.append("OBV↑ price flat (accumulation)")
+                    # Bearish divergence: OBV falling, price flat or up
+                    elif obv_trend < 0 and price_change_10d > -0.01:
+                        votes_sell += 1
+                        reasons.append("OBV↓ price up (distribution)")
+                    # Confirmation: both agree
+                    elif obv_trend > 0 and price_change_10d > 0.02:
+                        votes_buy += 1
+                        reasons.append("OBV+price confirming uptrend")
+                    elif obv_trend < 0 and price_change_10d < -0.02:
+                        votes_sell += 1
+                        reasons.append("OBV+price confirming downtrend")
+
+                # ── 3. Volume Profile POC ──────────────────────────────────
+                # Bucket last 20 days into 20 price bins, find highest-volume bin
+                closes_20 = close.iloc[-20:].values
+                vols_20   = vol.iloc[-20:].values
+                price_min = closes_20.min()
+                price_max = closes_20.max()
+                if price_max > price_min:
+                    bins = 20
+                    step = (price_max - price_min) / bins
+                    bucket_vol = [0.0] * bins
+                    for c, v in zip(closes_20, vols_20):
+                        idx = min(int((c - price_min) / step), bins - 1)
+                        bucket_vol[idx] += v
+                    poc_idx   = bucket_vol.index(max(bucket_vol))
+                    poc_price = price_min + (poc_idx + 0.5) * step
+                    poc_dev   = (curr - poc_price) / poc_price
+
+                    vol_ratio = curr_vol / avg_v20
+                    if poc_dev > 0.015 and vol_ratio > 1.5:    # broke above POC with volume
+                        votes_buy += 1
+                        reasons.append(f"POC breakout +{poc_dev*100:.1f}%")
+                    elif poc_dev < -0.015 and vol_ratio > 1.5: # broke below POC with volume
+                        votes_sell += 1
+                        reasons.append(f"POC breakdown {poc_dev*100:.1f}%")
+
+                # ── 4. Unusual Volume Spike ────────────────────────────────
+                vol_ratio = curr_vol / avg_v20
+                if vol_ratio >= 3.0:
+                    price_change_1d = (curr - float(close.iloc[-2])) / float(close.iloc[-2])
+                    if price_change_1d >= 0.01:
+                        votes_buy += 1
+                        reasons.append(f"Vol spike {vol_ratio:.1f}× + price +{price_change_1d*100:.1f}%")
+                    elif price_change_1d <= -0.01:
+                        votes_sell += 1
+                        reasons.append(f"Vol spike {vol_ratio:.1f}× + price {price_change_1d*100:.1f}%")
+
+                # ── 5. Accumulation/Distribution Line ─────────────────────
+                # A/D = ((Close - Low) - (High - Close)) / (High - Low) * Volume
+                ad_vals = []
+                for i in range(len(close)):
+                    h_l = float(high.iloc[i]) - float(low.iloc[i])
+                    if h_l > 0:
+                        mfm = ((float(close.iloc[i]) - float(low.iloc[i])) -
+                               (float(high.iloc[i]) - float(close.iloc[i]))) / h_l
+                        ad_vals.append(mfm * float(vol.iloc[i]))
+                    else:
+                        ad_vals.append(0.0)
+
+                if len(ad_vals) >= 20:
+                    ad_line     = [sum(ad_vals[:i+1]) for i in range(len(ad_vals))]
+                    ad_trend_5d = ad_line[-1] - ad_line[-6]
+                    ad_trend_20d = ad_line[-1] - ad_line[-21]
+
+                    if ad_trend_5d > 0 and ad_trend_20d > 0:
+                        votes_buy += 1
+                        reasons.append("A/D line rising (accumulation)")
+                    elif ad_trend_5d < 0 and ad_trend_20d < 0:
+                        votes_sell += 1
+                        reasons.append("A/D line falling (distribution)")
+
+                # ── Conviction gate: need ≥ 3 agreeing signals ─────────────
+                net_votes = votes_buy - votes_sell
+                if abs(net_votes) < 3:
+                    continue
+
+                signal   = "BUY" if net_votes > 0 else "SELL"
+                agreeing = votes_buy if signal == "BUY" else votes_sell
+                strength = min(95, 50 + agreeing * 10 + (5 if vol_ratio > 2 else 0))
+                score    = round(net_votes / 5, 2)   # normalised -1 to +1
+
+                rsi_val = float(df["rsi"].iloc[-1]) if "rsi" in df.columns else 50.0
+
+                # Skip overbought BUYs and oversold SELLs
+                if signal == "BUY"  and rsi_val > 75: continue
+                if signal == "SELL" and rsi_val < 25: continue
+
+                signals.append({
+                    "ticker":   ticker,
+                    "signal":   signal,
+                    "price":    round(curr, 2),
+                    "score":    score,
+                    "rsi":      round(rsi_val, 1),
+                    "strategy": self.short_name,
+                    "strength": strength,
+                    "reason":   " | ".join(reasons),
+                    "vol_ratio": round(vol_ratio, 1),
+                    "vwap":     round(vwap, 2),
+                    "votes":    f"{agreeing}/5",
+                })
+
+            except Exception:
+                continue
+
+        return signals
+
+
 class TelegramSignalStrategy:
     """
     Converts high-scoring Telegram group signals into trading signals.
@@ -2275,6 +2466,7 @@ class SignalAggregator:
         self.rsi_div     = RSIDivergenceStrategy()
         self.bb_squeeze  = BollingerSqueezeStrategy()
         self.vol_break   = VolumeBreakoutStrategy()
+        self.vol_analysis = VolumeAnalysisStrategy()
         self.mkt_struct  = MarketStructureStrategy()
         self.telegram    = TelegramSignalStrategy()
 
@@ -2307,6 +2499,7 @@ class SignalAggregator:
         all_signals += self.rsi_div.generate_signals(all_data)
         all_signals += self.bb_squeeze.generate_signals(all_data)
         all_signals += self.vol_break.generate_signals(all_data)
+        all_signals += self.vol_analysis.generate_signals(all_data)
         all_signals += self.mkt_struct.generate_signals(all_data)
         # ── Intelligence layers ──
         all_signals += self.telegram.generate_signals()

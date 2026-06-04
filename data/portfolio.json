@@ -1,97 +1,10 @@
 {
-  "cash": 435267.3118492127,
-  "initial": 1200000,
-  "positions": {
-    "TATASTEEL.NS": {
-      "qty": 369,
-      "avg_price": 216.47999572753906,
-      "strategy": "MOMENTUM",
-      "entry_date": "2026-05-27T11:32:53.882821",
-      "stop_loss": 201.33,
-      "target": 259.78
-    },
-    "EICHERMOT.NS": {
-      "qty": 10,
-      "avg_price": 7385.0,
-      "strategy": "MOMENTUM",
-      "entry_date": "2026-05-27T11:32:54.124244",
-      "stop_loss": 6868.05,
-      "target": 8862.0
-    },
-    "ONGC.NS": {
-      "qty": 288,
-      "avg_price": 277.25,
-      "strategy": "MOMENTUM",
-      "entry_date": "2026-05-27T11:32:54.372677",
-      "stop_loss": 257.84,
-      "target": 332.7
-    },
-    "PHARMABEES.NS": {
-      "qty": 3157,
-      "avg_price": 25.34000015258789,
-      "strategy": "SECTOR_ROT",
-      "entry_date": "2026-05-27T11:32:54.634197",
-      "stop_loss": 23.57,
-      "target": 30.41
-    },
-    "GOLDBEES.NS": {
-      "qty": 618,
-      "avg_price": 129.41000366210938,
-      "strategy": "SECTOR_ROT",
-      "entry_date": "2026-05-27T11:32:54.635088",
-      "stop_loss": 120.35,
-      "target": 155.29
-    },
-    "NTPC.NS": {
-      "qty": 202,
-      "avg_price": 395.25,
-      "strategy": "MULTIFACTOR",
-      "entry_date": "2026-05-27T11:32:55.322132",
-      "stop_loss": 367.58,
-      "target": 474.3
-    },
-    "NESTLEIND.NS": {
-      "qty": 55,
-      "avg_price": 1437.0,
-      "strategy": "MULTIFACTOR",
-      "entry_date": "2026-05-27T11:32:55.792283",
-      "stop_loss": 1336.41,
-      "target": 1724.4
-    },
-    "JPPOWER.NS": {
-      "qty": 3483,
-      "avg_price": 22.95,
-      "strategy": "VOL_BREAK",
-      "entry_date": "2026-05-27T13:43:09.478819",
-      "stop_loss": 21.34,
-      "target": 27.54
-    },
-    "GRANULES.NS": {
-      "qty": 101,
-      "avg_price": 786.05,
-      "strategy": "VOL_BREAK",
-      "entry_date": "2026-05-27T13:43:09.676697",
-      "stop_loss": 731.03,
-      "target": 943.26
-    },
-    "DRREDDY.NS": {
-      "qty": 60,
-      "avg_price": 1323.9,
-      "strategy": "SMA",
-      "entry_date": "2026-05-27T13:43:09.933895",
-      "stop_loss": 1231.23,
-      "target": 1588.68
-    },
-    "APOLLOHOSP.NS": {
-      "qty": 9,
-      "avg_price": 8249.0,
-      "strategy": "SMA",
-      "entry_date": "2026-05-27T13:44:31.523742",
-      "stop_loss": 7671.57,
-      "target": 9898.8
-    }
-  },
-  "realised_pnl": 696.593017578125,
-  "created_at": "2026-05-27T05:19:37.778030",
-  "last_updated": "2026-05-27T15:18:47.110506"
+  "cash": 1300000.0,
+  "initial": 1300000,
+  "positions": {},
+  "realised_pnl": 0.0,
+  "created_at": "2026-06-04T09:15:00+05:30",
+  "last_updated": "2026-06-04T09:15:00+05:30",
+  "day_start_value": 1300000.0,
+  "day_start_date": "2026-06-04"
 }

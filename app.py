@@ -457,10 +457,60 @@ def api_manual_sell():
 
 @app.route("/api/reset", methods=["POST"])
 def api_reset():
-    """Reset portfolio to initial ₹10,00,000 and clear all trade history."""
-    get_agent().portfolio.reset()
+    """Reset equity portfolio to ₹13,00,000 and clear trade history."""
+    get_agent().portfolio.reset(capital=1_300_000)
     DataFetcher.clear_cache()
-    return jsonify({"ok": True, "message": "Portfolio reset to ₹10,00,000"})
+    return jsonify({"ok": True, "message": "Portfolio reset to ₹13,00,000"})
+
+
+@app.route("/api/full_reset", methods=["POST"])
+def api_full_reset():
+    """
+    Full system reset — clears ALL desks (equity, F&O, commodity) and starts
+    fresh with ₹13,00,000 unified capital. All positions and trade history wiped.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    # ── 1. Equity reset ───────────────────────────────────────────────────── #
+    get_agent().portfolio.reset(capital=1_300_000)
+    DataFetcher.clear_cache()
+
+    # ── 2. F&O reset (returns any open premiums first, then clears) ───────── #
+    try:
+        from fno_engine import get_fno_agent  # pylint: disable=import-outside-toplevel
+        fno = get_fno_agent()
+        fno.portfolio.reset()  # returns premiums to equity cash first
+        # Clear F&O trade log
+        fno_log = _Path("data/fno_trades.json")
+        if fno_log.exists():
+            fno_log.write_text("[]")
+    except Exception as _e:
+        logger.warning(f"F&O reset error: {_e}")
+
+    # ── 3. Commodity reset ────────────────────────────────────────────────── #
+    try:
+        from commodity_engine import get_commodity_agent  # pylint: disable=import-outside-toplevel
+        comm = get_commodity_agent()
+        comm.portfolio.reset()
+        comm_log = _Path("data/commodity_trades.json")
+        if comm_log.exists():
+            comm_log.write_text("[]")
+    except Exception as _e:
+        logger.warning(f"Commodity reset error: {_e}")
+
+    # ── 4. Clear signals and live orders ─────────────────────────────────── #
+    for fname in ["data/signals.json", "data/live_orders.json"]:
+        p = _Path(fname)
+        if p.exists():
+            p.write_text("{}" if "signals" in fname else "[]")
+
+    logger.info("🔄 Full system reset — ₹13,00,000 fresh start")
+    return jsonify({
+        "ok": True,
+        "message": "All desks reset. Fresh start with ₹13,00,000.",
+        "capital": 1_300_000,
+    })
 
 
 # ── Live trading controls ─────────────────────────────────────────────────────

@@ -1275,6 +1275,14 @@ class FNOPortfolio:
         return result
 
     def reset(self):
+        # Return all open premium costs back to equity cash before wiping state
+        for pos in self.state.get("positions", {}).values():
+            try:
+                cost = float(pos.get("entry_premium", 0)) * int(pos.get("qty", 0))
+                if cost > 0:
+                    self._return_cash(cost)
+            except Exception:
+                pass
         self.state = self._default_state()
         self._save()
 
