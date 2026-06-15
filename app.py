@@ -195,11 +195,12 @@ def api_dashboard():
                 true_pnl  = round(true_val - initial, 2)
                 true_pct  = round(true_pnl / initial * 100, 2)
 
-                # Recalculate today P&L: baseline is day_start_value (equity only at day start)
-                # Add F&O deployed to baseline too so comparison is apples-to-apples
+                # Today P&L = (current true total) - (equity value at day start)
+                # true_val already includes fno_deployed, so day_start is equity-only baseline.
+                # Do NOT subtract fno_deployed again — it's already in true_val.
                 port_state = get_agent().portfolio.state
                 day_start  = float(port_state.get("day_start_value", initial))
-                today_pnl  = round(true_val - (day_start + fno_deployed), 2)
+                today_pnl  = round(true_val - day_start, 2)
 
                 port["total_value"]   = true_val
                 port["total_pnl"]     = true_pnl
@@ -342,26 +343,35 @@ def _fetch_index_price(ticker: str) -> tuple[float, float]:
     Uses yf.Ticker.fast_info which gives the *live delayed* price (15-min lag)
     rather than the previous day's EOD close that daily OHLCV bars return.
     Falls back to 5d daily bars if fast_info fails.
+    Hard 5-second timeout on each attempt to prevent the dashboard from hanging.
     """
     import yfinance as yf  # pylint: disable=import-outside-toplevel
-    try:
+    import concurrent.futures  # pylint: disable=import-outside-toplevel
+
+    def _fast():
         fi = yf.Ticker(ticker).fast_info
         price = float(fi.last_price or 0)
         prev  = float(fi.previous_close or 0)
-        if price > 0 and prev > 0:
-            return price, (price / prev - 1) * 100
-    except Exception:
-        pass
-    # Fallback to daily bars (gives previous close during market hours)
-    try:
+        return (price, (price / prev - 1) * 100) if price > 0 and prev > 0 else None
+
+    def _daily():
         df = yf.download(ticker, period="5d", interval="1d",
                          auto_adjust=True, progress=False)
         if not df.empty:
             price = float(df["Close"].iloc[-1])
             prev  = float(df["Close"].iloc[-2]) if len(df) > 1 else price
             return price, (price / prev - 1) * 100
-    except Exception:
-        pass
+        return None
+
+    for fn in (_fast, _daily):
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(fn)
+                result = fut.result(timeout=5)
+                if result:
+                    return result
+        except Exception:
+            pass
     return 0.0, 0.0
 
 
@@ -1708,6 +1718,35 @@ if __name__ == "__main__":
 
     threading.Thread(target=_fno_realtime_monitor, daemon=True, name="fno-rt-monitor").start()
     print("  📡  Real-time F&O position monitor started (60s loop, Angel One prices)")
+
+    # ── Equity stop-loss monitor (60s loop) ───────────────────────────────────
+    # check_stops() is also called at the start of every run_cycle(), but that
+    # only runs every 15 min. A position can breach its stop and sit there for
+    # the full 15-minute window before the next full cycle fires. This loop
+    # checks equity stops independently every 60 seconds during market hours
+    # with zero signal generation overhead — it only fetches prices for the
+    # currently-open positions (typically 10–15 tickers), which is very cheap.
+    def _equity_stop_monitor():
+        import time as _time
+        from zoneinfo import ZoneInfo
+        _IST = ZoneInfo("Asia/Kolkata")
+        while True:
+            try:
+                from datetime import time as _dt_time
+                now = datetime.now(_IST).time()
+                if _dt_time(9, 15) <= now <= _dt_time(15, 30):
+                    triggered = get_agent().portfolio.check_stops()
+                    if triggered:
+                        logger.info(
+                            f"[StopMonitor] Fired {len(triggered)} stop(s): "
+                            + ", ".join(t.get("ticker", "?") for t in triggered)
+                        )
+            except Exception as _e:
+                logger.warning(f"[StopMonitor] Error: {_e}")
+            _time.sleep(60)
+
+    threading.Thread(target=_equity_stop_monitor, daemon=True, name="equity-stop-monitor").start()
+    print("  🛑  Equity stop-loss monitor started (60s loop, fires independently of cycle)")
 
     # ── Geopolitical / macro event monitor (5-min loop) ───────────────────────
     def _event_monitor_loop():

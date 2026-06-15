@@ -2148,8 +2148,13 @@ function switchTab(name, el) {
 // ──────────────────────────────────────────────
 async function refreshAll() {
   show('loader');
-  await Promise.all([loadDashboard(), loadMarketOverview()]);
-  hide('loader');
+  try {
+    await Promise.all([loadDashboard(), loadMarketOverview()]);
+  } catch(e) {
+    console.error('refreshAll error:', e);
+  } finally {
+    hide('loader');
+  }
 }
 
 async function loadMarketOverview() {
