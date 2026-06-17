@@ -459,17 +459,27 @@ class FNOPortfolio:
         """
         self._equity = equity_portfolio
         self.state = self._load()
-        # ── Cash migration: old "unified" mode stored cash=0 ─────────────
-        # Give FNO its own capital pool if not already initialised.
-        if self.state.get("cash", 0) == 0:
-            deployed_cost = sum(
-                p.get("entry_premium", 0) * p.get("qty", 1) * get_lot_size(p.get("underlying", ""))
-                for p in self.state.get("positions", {}).values()
-                if p.get("position") == "LONG"
+        # ── Cash integrity check ──────────────────────────────────────────
+        # Correct cash if it's inconsistent with the accounting identity:
+        #   cash = initial + realised_pnl - deployed_cost
+        # This handles both: (a) first-run when cash=0, (b) stale cash from
+        # the old "unified" model where _return_cash() wrote to equity's pool.
+        deployed_cost = sum(
+            p.get("entry_premium", 0) * p.get("qty", 1) * get_lot_size(p.get("underlying", ""))
+            for p in self.state.get("positions", {}).values()
+            if p.get("position") == "LONG"
+        )
+        realised = self.state.get("realised_pnl", 0.0)
+        expected_cash = float(FNO_INITIAL_CAPITAL) + realised - deployed_cost
+        actual_cash   = self.state.get("cash", 0)
+        if abs(actual_cash - expected_cash) > 0.01:
+            logger.info(
+                f"[FNO] Cash correction: stored=₹{actual_cash:,.0f} "
+                f"expected=₹{expected_cash:,.0f} (initial={FNO_INITIAL_CAPITAL:,} "
+                f"realised={realised:,.0f} deployed={deployed_cost:,.0f})"
             )
-            self.state["cash"] = max(0.0, float(FNO_INITIAL_CAPITAL) - deployed_cost)
+            self.state["cash"] = max(0.0, expected_cash)
             self._save()
-            logger.info(f"[FNO] Cash migration: initialised own pool at ₹{self.state['cash']:,.0f}")
 
     def _default_state(self) -> dict:
         return {
