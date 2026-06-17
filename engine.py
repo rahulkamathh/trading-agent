@@ -458,7 +458,7 @@ class DataFetcher:
 
     # Per-ticker price cache with a short TTL so stop-loss checks stay current
     _price_cache: dict = {}   # ticker → (price, timestamp)
-    _PRICE_TTL   = 120        # seconds before re-fetching via fast_info
+    _PRICE_TTL   = 60         # seconds before re-fetching via fast_info (matches 60s stop monitor)
 
     @classmethod
     def get_current_price(cls, ticker: str) -> float:
@@ -1486,22 +1486,35 @@ class Portfolio:
             pnl_pct  = (price / entry - 1) * 100
             prev_sl  = pos["stop_loss"]
 
+            # ── Track peak P&L (for profit protection) ───────────────────── #
+            peak_pnl = pos.get("peak_pnl_pct", pnl_pct)
+            if pnl_pct > peak_pnl:
+                pos["peak_pnl_pct"] = pnl_pct
+                peak_pnl = pnl_pct
+                state_dirty = True
+
+            # ── Days held ────────────────────────────────────────────────── #
+            days_held = 0
+            try:
+                entry_dt = datetime.fromisoformat(pos.get("entry_date", ""))
+                if entry_dt.tzinfo is None:
+                    entry_dt = entry_dt.replace(tzinfo=_IST_TZ)
+                days_held = (_now_ist() - entry_dt).days
+            except Exception:
+                pass
+
             # ── Chandelier Exit trailing stop ────────────────────────────── #
-            # Use cached ATR stored on the position at entry time.
-            # We only fetch fresh data if ATR is not cached — avoids per-position
-            # API calls on every 15-minute cycle (institutional standard: compute
-            # stop at entry, trail mechanically from the stored ATR value).
             try:
                 atr = pos.get("atr_at_entry")
                 highest_close = pos.get("highest_close", max(price, entry))
 
-                # Update highest close in position state
+                # Update highest close
                 if price > highest_close:
                     pos["highest_close"] = price
                     highest_close = price
                     state_dirty = True
 
-                # If no cached ATR (position opened before this code), do a one-time fetch
+                # One-time ATR fetch for positions opened before this code
                 if not atr:
                     df_recent = DataFetcher.fetch(ticker, period="30d", interval="1d")
                     if df_recent is not None and not df_recent.empty and len(df_recent) >= 15:
@@ -1512,25 +1525,54 @@ class Portfolio:
                         state_dirty = True
 
                 if atr and atr > 0:
-                    # Chandelier multiplier tightens as profits grow
-                    # Chandelier multiplier tightens aggressively as profit grows
-                    # More profit → tighter trail → locks in more gains
-                    if   pnl_pct >= 20: mult = 1.5   # very tight — protect big gains
-                    elif pnl_pct >= 15: mult = 2.0
-                    elif pnl_pct >= 10: mult = 2.5
-                    elif pnl_pct >= 5:  mult = 2.8
-                    else:               mult = 3.0   # early stage — give room to breathe
+                    # Tighter multipliers vs old code — stop trails closer to price.
+                    # Old base was 3.0x; that allowed massive retracement before exit.
+                    if   pnl_pct >= 20: mult = 1.5
+                    elif pnl_pct >= 15: mult = 1.8
+                    elif pnl_pct >= 10: mult = 2.0
+                    elif pnl_pct >= 5:  mult = 2.3
+                    else:               mult = 2.5   # was 3.0 — tighter base
                     chandelier_sl = round(highest_close - mult * atr, 2)
 
-                    # HARD FLOOR: initial -7% stop is the MINIMUM — chandelier
-                    # only activates above this level. Downside is always capped
-                    # at the entry stop so we never risk more than planned.
+                    # FLOOR 1: initial -7% entry stop (never lose more than planned)
                     initial_sl = round(entry * (1 - STOP_LOSS_PCT), 2)
-                    floor      = max(initial_sl, prev_sl)   # stop never moves down
-                    new_sl     = max(chandelier_sl, floor)
-                    new_sl     = round(new_sl, 2)
+                    floor = max(initial_sl, prev_sl)
+
+                    # FLOOR 2: profit protection — if peak was ever ≥5%, stop
+                    # rises automatically to protect that gain:
+                    #   peak ≥ 5%  → stop ≥ entry (breakeven)
+                    #   peak ≥ 10% → stop ≥ entry + 3%
+                    #   peak ≥ 15% → stop ≥ entry + 7%
+                    if peak_pnl >= 15:
+                        profit_floor = round(entry * 1.07, 2)
+                    elif peak_pnl >= 10:
+                        profit_floor = round(entry * 1.03, 2)
+                    elif peak_pnl >= 5:
+                        profit_floor = round(entry * 1.00, 2)  # breakeven at minimum
+                    else:
+                        profit_floor = floor
+                    floor = max(floor, profit_floor)
+
+                    # FLOOR 3: time-based stop tightening for stale losers
+                    # Positions going nowhere tie up capital — exit faster
+                    if days_held >= 14 and pnl_pct < 0:
+                        time_floor = round(entry * 0.97, 2)   # tighten to -3%
+                        floor = max(floor, time_floor)
+                    elif days_held >= 7 and pnl_pct < 0:
+                        time_floor = round(entry * 0.95, 2)   # tighten to -5%
+                        floor = max(floor, time_floor)
+
+                    new_sl = max(chandelier_sl, floor)
+                    new_sl = round(new_sl, 2)
                 else:
+                    # No ATR — still apply time-based and profit floors
                     new_sl = prev_sl
+                    if peak_pnl >= 5:
+                        new_sl = max(new_sl, round(entry * 1.00, 2))
+                    if days_held >= 14 and pnl_pct < 0:
+                        new_sl = max(new_sl, round(entry * 0.97, 2))
+                    elif days_held >= 7 and pnl_pct < 0:
+                        new_sl = max(new_sl, round(entry * 0.95, 2))
             except Exception:
                 new_sl = prev_sl
 
@@ -1538,8 +1580,9 @@ class Portfolio:
                 pos["stop_loss"] = new_sl
                 state_dirty = True
                 logger.info(
-                    f"📈 CHANDELIER-STOP {ticker}  "
-                    f"SL ₹{prev_sl:.2f} → ₹{new_sl:.2f}  ({pnl_pct:+.1f}%)"
+                    f"📈 TRAILING-STOP {ticker}  "
+                    f"SL ₹{prev_sl:.2f} → ₹{new_sl:.2f}  "
+                    f"(peak={peak_pnl:+.1f}%  now={pnl_pct:+.1f}%  held={days_held}d)"
                 )
 
             # ── Gap-down protection ──────────────────────────────────────── #
@@ -1606,23 +1649,29 @@ class Portfolio:
                     )
                     state_dirty = True
 
-            # ── Dead-money exit: flat for 20+ days ──────────────────────── #
-            try:
-                entry_dt = pos.get("entry_date", "")
-                if entry_dt:
-                    entry_ts  = _now_ist().fromisoformat(entry_dt)
-                    days_held = (_now_ist() - entry_ts).days
-                    if days_held >= 20 and abs(pnl_pct) < 3.0:
-                        logger.info(
-                            f"⌛ DEAD-MONEY EXIT {ticker}  "
-                            f"held {days_held}d  only {pnl_pct:+.1f}% — redeploying capital"
-                        )
-                        trade = self.execute_sell(ticker, price, reason="DEAD_MONEY_EXIT")
-                        if trade:
-                            triggered.append(trade)
-                        continue
-            except Exception:
-                pass
+            # ── Dead-money exit ──────────────────────────────────────────── #
+            # Tightened from 20d → 10d: holding a flat position for 10 trading
+            # days means the thesis hasn't played out — redeploy the capital.
+            # Also applies if position is slightly negative after 5 days (< -3%)
+            # and has never recovered (peak_pnl < 2%) — thesis is already broken.
+            if days_held >= 10 and abs(pnl_pct) < 5.0:
+                logger.info(
+                    f"⌛ DEAD-MONEY EXIT {ticker}  "
+                    f"held {days_held}d  {pnl_pct:+.1f}% — redeploying capital"
+                )
+                trade = self.execute_sell(ticker, price, reason="DEAD_MONEY_EXIT")
+                if trade:
+                    triggered.append(trade)
+                continue
+            if days_held >= 5 and pnl_pct < -3.0 and peak_pnl < 2.0:
+                logger.info(
+                    f"⌛ BROKEN-THESIS EXIT {ticker}  "
+                    f"held {days_held}d  never recovered (peak={peak_pnl:+.1f}%  now={pnl_pct:+.1f}%)"
+                )
+                trade = self.execute_sell(ticker, price, reason="BROKEN_THESIS_EXIT")
+                if trade:
+                    triggered.append(trade)
+                continue
 
             logger.debug(
                 f"📊 HOLD {ticker} @ ₹{price:.2f}  "

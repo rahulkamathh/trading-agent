@@ -687,12 +687,13 @@ class FNOPortfolio:
         Open an option position.
         position: LONG (buy) | SHORT (sell/write)
         """
-        # Hard gate: no new F&O positions in last 30 min of trading (after 3:00 PM IST)
-        # Positions opened near close get immediately closed by end-of-day cleanup at ₹0
+        # INTRADAY-ONLY: no new entries after 2:00 PM IST.
+        # All positions must be closed by 3:15 PM; entering after 2 PM gives less
+        # than 75 min for the trade to work — not enough time for a directional move.
         now_time = _now_ist().time()
         from datetime import time as _dtt  # noqa: PLC0415
-        if not (_dtt(9, 15) <= now_time <= _dtt(15, 0)):
-            logger.info(f"[FNO] BLOCKED open_option {underlying} — outside window (after 3PM or pre-market)")
+        if not (_dtt(9, 15) <= now_time <= _dtt(14, 0)):
+            logger.info(f"[FNO] BLOCKED open_option {underlying} — outside intraday window (after 2PM or pre-market)")
             return None
 
         spot = self._get_spot(underlying)
@@ -1119,60 +1120,60 @@ class FNOPortfolio:
         entry_date  = pos.get("entry_date", "")
         option_type = pos.get("option_type", "CE")     # CE=call, PE=put
 
-        # ── 1. Hard stop: -40% ───────────────────────────────────────────── #
-        if pnl_pct <= -0.40:
+        # ════════════════════════════════════════════════════════════════════
+        # INTRADAY-ONLY EXIT LOGIC
+        # All positions live for hours, not days. Rules are time-of-day aware.
+        # EOD force-close at 3:15 PM is handled in check_expiry_and_stops()
+        # before this function is ever called.
+        # ════════════════════════════════════════════════════════════════════
+
+        now_t = _now_ist().time()
+        from datetime import time as _dtt3  # noqa: PLC0415
+
+        # ── 1. Hard stop: -35% on premium ────────────────────────────────── #
+        # Tighter than before (-40%) — intraday positions have no recovery time.
+        if pnl_pct <= -0.35:
             return True, f"STOP_LOSS ({pnl_pct:.0%})"
 
-        # ── 2. Profit-lock trailing stop ─────────────────────────────────── #
-        # Track the highest pnl_pct ever seen on this position
+        # ── 2. Big winner: lock any +25% gain immediately ────────────────── #
+        # Intraday option premium rarely sustains above +25% — book it.
+        if pnl_pct >= 0.25:
+            return True, f"INTRADAY_TARGET ({pnl_pct:.0%})"
+
+        # ── 3. Profit-lock trailing stop ─────────────────────────────────── #
+        # Track peak P&L; once we've been up, stop retreating below the floor.
         peak = pos.get("_peak_pnl_pct", pnl_pct)
         if pnl_pct > peak:
             pos["_peak_pnl_pct"] = pnl_pct
             peak = pnl_pct
 
-        if peak >= 0.35:
-            floor = 0.20   # never let a +35% become less than +20%
-        elif peak >= 0.20:
-            floor = 0.10   # never let a +20% become less than +10%
-        elif peak >= 0.10:
-            floor = 0.00   # never let a +10% turn into a loss
+        if peak >= 0.20:
+            floor = 0.10   # peaked +20% → never close below +10%
+        elif peak >= 0.12:
+            floor = 0.05   # peaked +12% → lock at least +5%
+        elif peak >= 0.08:
+            floor = 0.00   # peaked +8% → at least breakeven
         else:
             floor = None
 
         if floor is not None and pnl_pct < floor:
-            return True, f"PROFIT_LOCK (peak {peak:.0%} → dropped to {pnl_pct:.0%}, floor {floor:.0%})"
+            return True, f"PROFIT_LOCK (peak {peak:.0%} → {pnl_pct:.0%}, floor {floor:.0%})"
 
-        # ── 3. Intraday booking: up 8%+ after 2 PM ──────────────────────── #
-        now_t = _now_ist().time()
-        from datetime import time as _dtt3  # noqa: PLC0415
-        if pnl_pct >= 0.08 and now_t >= _dtt3(14, 0):
-            return True, f"INTRADAY_PROFIT ({pnl_pct:.0%} after 2PM)"
+        # ── 4. Afternoon booking: any profit ≥5% after 1:30 PM ─────────── #
+        # In last 2 hours of trading, take whatever we have. Greeks decay fast.
+        if pnl_pct >= 0.05 and now_t >= _dtt3(13, 30):
+            return True, f"AFTERNOON_PROFIT ({pnl_pct:.0%} after 1:30PM)"
 
-        # ── 4. Near-expiry tightening ─────────────────────────────────────── #
-        if days_left <= 5:
-            if pnl_pct <= -0.20:
-                return True, f"NEAR_EXPIRY_STOP ({days_left}d left, {pnl_pct:.0%})"
-            if pnl_pct >= 0.25:
-                return True, f"NEAR_EXPIRY_TARGET ({days_left}d left, {pnl_pct:.0%})"
+        # ── 5. Dead-money: flat after 3 hours ────────────────────────────── #
+        # If the thesis hasn't played out in 3h, it's not going to today.
+        # Replaces the old multi-day theta drain rule.
+        if age_hours >= 3.0 and abs(pnl_pct) < 0.05:
+            return True, f"DEAD_MONEY (held {age_hours:.1f}h, flat {pnl_pct:.0%})"
 
-        # ── 5. Theta drain: flat position after 3+ days ─────────────────── #
-        if age_hours >= 72 and abs(pnl_pct) < 0.05:
-            return True, f"THETA_DRAIN (held {age_hours/24:.0f}d, flat {pnl_pct:.0%})"
-
-        # ── 6. Nifty reversal filter ─────────────────────────────────────── #
-        try:
-            import yfinance as _yf  # noqa: PLC0415
-            nifty = _yf.download("^NSEI", period="2d", interval="1d",
-                                  auto_adjust=True, progress=False)
-            if len(nifty) >= 2:
-                nifty_move = float(nifty["Close"].iloc[-1] / nifty["Close"].iloc[-2] - 1)
-                # CE profits when Nifty rises; PE profits when Nifty falls
-                against = (option_type == "CE" and nifty_move < -0.015) or \
-                          (option_type == "PE" and nifty_move >  0.015)
-                if against and pnl_pct < 0:
-                    return True, f"NIFTY_REVERSAL ({nifty_move:.1%} vs {option_type}, P&L {pnl_pct:.0%})"
-        except Exception:
-            pass
+        # ── 6. Pre-close tightening: only hold winners after 2:30 PM ─────── #
+        # After 2:30 PM if we're flat or losing, close and protect capital.
+        if now_t >= _dtt3(14, 30) and pnl_pct <= -0.05:
+            return True, f"PRECLOSE_STOP ({pnl_pct:.0%} after 2:30PM)"
 
         return False, ""
 
@@ -1199,15 +1200,28 @@ class FNOPortfolio:
                     closed.append(t)
                 continue
 
-            # ── 2. Only check during 9:30–15:00 ─────────────────────────── #
+            # ── 2. INTRADAY FORCE-CLOSE at 3:15 PM ───────────────────────── #
+            # All F&O is intraday-only. Whatever is open at 3:15 PM must close.
+            # This runs even if the min-hold hasn't elapsed.
             now_t = _now_ist().time()
-            if not (_dtt2(9, 30) <= now_t <= _dtt2(15, 0)):
+            if now_t >= _dtt2(15, 15):
+                logger.info(f"[FNO] EOD-CLOSE {pid} — intraday force-close at 3:15 PM")
+                t = self.close_option(pid, reason="EOD_INTRADAY_CLOSE") \
+                    if pos["instrument_type"] == "OPTION" \
+                    else self.close_future(pid, reason="EOD_INTRADAY_CLOSE")
+                if t:
+                    closed.append(t)
+                continue
+
+            # ── 3. Only check during 9:30–15:15 ─────────────────────────── #
+            if not (_dtt2(9, 30) <= now_t <= _dtt2(15, 15)):
                 continue
 
             if pos["instrument_type"] != "OPTION" or pos["position"] != "LONG":
                 continue
 
-            # ── 3. Minimum hold: 1.5 hours (avoids open auction noise) ──── #
+            # ── 4. Minimum hold: 45 min (avoids open auction noise) ──────── #
+            # Reduced from 1.5h — intraday options can move decisively in 45 min.
             age_hours = 0.0
             entry_dt_str = pos.get("entry_date", "")
             if entry_dt_str:
@@ -1216,7 +1230,7 @@ class FNOPortfolio:
                     if entry_dt.tzinfo is None:
                         entry_dt = entry_dt.replace(tzinfo=_IST)
                     age_hours = (_now_ist() - entry_dt).total_seconds() / 3600
-                    if age_hours < 1.5:
+                    if age_hours < 0.75:  # 45 minutes
                         continue
                 except Exception:
                     pass
@@ -1965,7 +1979,7 @@ class LongStraddleStrategy:
             return executed
 
         now = _now_ist()
-        if not (dt_time(9, 30) <= now.time() <= dt_time(14, 30)):
+        if not (dt_time(9, 30) <= now.time() <= dt_time(14, 0)):
             return executed
 
         # Only trade straddles 1–2× per day at most
