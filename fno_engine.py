@@ -459,10 +459,21 @@ class FNOPortfolio:
         """
         self._equity = equity_portfolio
         self.state = self._load()
+        # ── Cash migration: old "unified" mode stored cash=0 ─────────────
+        # Give FNO its own capital pool if not already initialised.
+        if self.state.get("cash", 0) == 0:
+            deployed_cost = sum(
+                p.get("entry_premium", 0) * p.get("qty", 1) * get_lot_size(p.get("underlying", ""))
+                for p in self.state.get("positions", {}).values()
+                if p.get("position") == "LONG"
+            )
+            self.state["cash"] = max(0.0, float(FNO_INITIAL_CAPITAL) - deployed_cost)
+            self._save()
+            logger.info(f"[FNO] Cash migration: initialised own pool at ₹{self.state['cash']:,.0f}")
 
     def _default_state(self) -> dict:
         return {
-            "cash":          0,   # unused when _equity is set; kept for compatibility
+            "cash":          FNO_INITIAL_CAPITAL,   # FNO has its own separate capital pool
             "initial":       FNO_INITIAL_CAPITAL,
             "positions":     {},
             "realised_pnl":  0.0,
@@ -471,26 +482,18 @@ class FNOPortfolio:
         }
 
     def _eq_cash(self) -> float:
-        """Return available cash — from equity portfolio if unified, else own."""
-        if self._equity is not None:
-            return self._equity.state["cash"]
+        """Return available F&O cash (always own pool — fully decoupled from equity)."""
         return self.state["cash"]
 
     def _deduct_cash(self, amount: float):
-        """Deduct cash from the right pool."""
-        if self._equity is not None:
-            self._equity.state["cash"] -= amount
-            self._equity._save()
-        else:
-            self.state["cash"] -= amount
+        """Deduct from FNO's own cash pool."""
+        self.state["cash"] -= amount
+        self._save()
 
     def _return_cash(self, amount: float):
-        """Return cash to the right pool."""
-        if self._equity is not None:
-            self._equity.state["cash"] += amount
-            self._equity._save()
-        else:
-            self.state["cash"] += amount
+        """Return to FNO's own cash pool."""
+        self.state["cash"] += amount
+        self._save()
 
     def _load(self) -> dict:
         if FNO_PORTFOLIO_FILE.exists():
@@ -744,6 +747,7 @@ class FNOPortfolio:
         trade = {
             "action":       f"OPEN_{position}_{option_type.upper()}",
             "underlying":   underlying,
+            "instrument":   underlying,                  # alias for UI
             "strike":       strike,
             "expiry":       expiry.isoformat(),
             "option_type":  option_type,
@@ -922,13 +926,16 @@ class FNOPortfolio:
         trade = {
             "action":       f"CLOSE_{pos['position']}_{pos['option_type'].upper()}",
             "underlying":   pos["underlying"],
+            "instrument":   pos.get("underlying", ""),   # alias for UI
             "strike":       pos["strike"],
             "expiry":       pos["expiry"],
             "option_type":  pos["option_type"],
             "qty_lots":     pos["qty"],
+            "premium":      round(curr_premium, 2),      # consistent field name
             "exit_premium": round(curr_premium, 2),
             "entry_premium":entry,
             "pnl":          round(pnl, 2),
+            "strategy":     pos.get("strategy", ""),
             "reason":       reason,
         }
         self._log_trade(trade)
@@ -1200,11 +1207,11 @@ class FNOPortfolio:
                     closed.append(t)
                 continue
 
-            # ── 2. INTRADAY FORCE-CLOSE at 3:15 PM ───────────────────────── #
-            # All F&O is intraday-only. Whatever is open at 3:15 PM must close.
-            # This runs even if the min-hold hasn't elapsed.
+            # ── 2. INTRADAY FORCE-CLOSE at 3:15–3:30 PM ─────────────────── #
+            # All F&O is intraday-only. Force-close window: 15:15–15:30 ONLY.
+            # Do NOT close on manual cycles run after market close (e.g. 19:00).
             now_t = _now_ist().time()
-            if now_t >= _dtt2(15, 15):
+            if _dtt2(15, 15) <= now_t <= _dtt2(15, 30):
                 logger.info(f"[FNO] EOD-CLOSE {pid} — intraday force-close at 3:15 PM")
                 t = self.close_option(pid, reason="EOD_INTRADAY_CLOSE") \
                     if pos["instrument_type"] == "OPTION" \
@@ -2240,6 +2247,14 @@ class FNOAgent:
         """
         equity_signals   = equity_signals or []
         equity_positions = equity_positions or []
+
+        # ── Market hours guard: skip entirely outside 9:00-15:35 IST ─────── #
+        _now_t = _now_ist().time()
+        if not (dt_time(9, 0) <= _now_t <= dt_time(15, 35)):
+            logger.info(f"[FNO] run_cycle skipped — outside market hours ({_now_t.strftime('%H:%M')} IST)")
+            return {"skipped": True, "reason": "outside_market_hours",
+                    "fno_value": self.portfolio.get_total_value(),
+                    "fno_cash":  round(self.portfolio._eq_cash(), 2)}
 
         logger.info("[FNO] === F&O Cycle Start ===")
         gap_closes = self.portfolio.morning_gap_check()   # runs only 9:15–9:30

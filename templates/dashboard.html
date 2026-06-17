@@ -5357,11 +5357,11 @@ async function loadMaster() {
     };
     const [dash, fno] = await Promise.all([
       fetchTimeout('/api/dashboard'),
-      fetchTimeout('/api/fno/positions', 4000).catch(()=>({positions:[],greeks:{delta:0,theta:0},summary:{deployed:0,unrealised_pnl:0,realised_pnl:0}}))
+      fetchTimeout('/api/fno/dashboard', 4000).catch(()=>({ok:false,data:{deployed:0,unrealised_pnl:0,realised_pnl:0,positions:[],greeks:{delta:0,theta:0}}}))
     ]);
     const p = dash.portfolio || {};
     const tv = p.total_value || 0;
-    const init = p.initial_capital || 1300000;
+    const init = p.initial_capital || p.initial || 1300000;
     const pnl = tv - init;
     const pnlPct = init ? (pnl/init*100) : 0;
     const fmt = v => '₹' + Math.round(v).toLocaleString('en-IN');
@@ -5385,27 +5385,29 @@ async function loadMaster() {
     document.getElementById('mstrEqTotalPnl').style.color = clr(totalPnl);
     setText('mstrEqSigs', (dash.signals ? dash.signals.filter(s=>s.signal==='BUY').length : 0).toString() + ' buy');
 
-    // F&O panel
-    var fs = fno.summary || {};
-    var fpx = fno.positions || [];
-    var fg = fno.greeks || {};
-    document.getElementById('mstrFnoDeployed').textContent = fmt(fs.deployed || 0);
-    var mtm = fs.unrealised_pnl || 0;
+    // F&O panel — fno is now /api/fno/dashboard response: {ok, data:{deployed, unrealised_pnl, ...}}
+    var fd = (fno.ok ? fno.data : fno) || {};
+    var fpx = fd.positions || [];
+    var fg  = fd.greeks   || {};
+    document.getElementById('mstrFnoDeployed').textContent = fmt(fd.deployed || 0);
+    var mtm = fd.unrealised_pnl || 0;
     document.getElementById('mstrFnoMtm').textContent = '₹' + sign(mtm);
     document.getElementById('mstrFnoMtm').style.color = clr(mtm);
-    setText('mstrFnoPos', fpx.length.toString());
-    var freal = fs.realised_pnl || 0;
+    setText('mstrFnoPos', (fd.open_count || fpx.length || 0).toString());
+    var freal = fd.realised_pnl || 0;
     document.getElementById('mstrFnoReal').textContent = '₹' + sign(freal);
     document.getElementById('mstrFnoReal').style.color = clr(freal);
     setText('mstrFnoDelta', (fg.delta || 0).toFixed(2));
     document.getElementById('mstrFnoTheta').textContent = '₹' + (fg.theta || 0).toFixed(2);
     document.getElementById('mstrFnoTheta').style.color = (fg.theta || 0) < 0 ? 'var(--red)' : 'var(--green)';
 
-    // Combined
-    var combined = tv + (fs.deployed || 0) + (fs.unrealised_pnl || 0);
+    // Combined (equity value + FNO deployed + FNO unrealised gain)
+    var fnoNet = (fd.deployed || 0) + (fd.unrealised_pnl || 0);
+    var combined = tv + fnoNet;
     document.getElementById('mstrTotal').textContent = fmt(combined);
-    var combPnl = combined - init;
-    document.getElementById('mstrTotalPnl').textContent = '₹' + sign(combPnl) + ' (' + (init ? (combPnl/init*100).toFixed(2) : 0) + '%) total return';
+    var initCombined = init + (fd.initial || 200000);
+    var combPnl = combined - initCombined;
+    document.getElementById('mstrTotalPnl').textContent = '₹' + sign(combPnl) + ' (' + (initCombined ? (combPnl/initCombined*100).toFixed(2) : 0) + '%) total return';
     document.getElementById('mstrTotalPnl').style.color = clr(combPnl);
   } catch(e) { console.error('loadMaster:', e); }
 }
@@ -5874,9 +5876,9 @@ async function loadFNOTrades() {
       return `<tr style="border-bottom:1px solid var(--border)">
         <td style="padding:7px 10px;color:var(--muted)">${(t.time||t.timestamp||'').slice(11,19)||'—'}</td>
         <td style="padding:7px 10px;text-align:center;color:${clrAct};font-weight:600">${act}</td>
-        <td style="padding:7px 10px;color:var(--amber)">${(t.instrument||t.ticker||'').replace('.NS','')}</td>
+        <td style="padding:7px 10px;color:var(--amber)">${(t.underlying||t.instrument||t.ticker||'').replace('.NS','')}</td>
         <td style="padding:7px 10px;text-align:center;color:var(--muted)">${t.strike||''} ${t.option_type||t.type||''}</td>
-        <td style="padding:7px 10px;text-align:right">₹${(t.premium||t.price||0).toFixed(2)}</td>
+        <td style="padding:7px 10px;text-align:right">₹${(t.premium||t.exit_premium||t.price||0).toFixed(2)}</td>
         <td style="padding:7px 10px;text-align:right">${t.qty_lots||t.qty||'—'}</td>
         <td style="padding:7px 10px;text-align:right;color:${pnlClr};font-weight:${pnl!=null?600:400}">${pnl!=null?'₹'+Math.round(pnl).toLocaleString('en-IN'):'—'}</td>
         <td style="padding:7px 10px;color:var(--muted)">${t.strategy||'—'}</td>
