@@ -1462,27 +1462,66 @@ def _generate_closing_report() -> None:
             trades = _json.load(fh)
 
     today_trades = [t for t in trades if t.get("time", "").startswith(today)]
-    day_pnl      = sum(t.get("pnl") or 0 for t in today_trades if t["action"] == "SELL")
-    port_value   = agent.portfolio.get_total_value()
-    positions    = agent.portfolio.get_positions_display()
+
+    # ── Equity P&L from closed trades today ──────────────────────────────────
+    eq_day_pnl = sum(t.get("pnl") or 0 for t in today_trades if t["action"] == "SELL")
+
+    # ── Unified portfolio value (equity + F&O + commodity) ───────────────────
+    # Same logic as the /api/dashboard endpoint — equity-only value misses
+    # the ₹2L F&O and ₹1L commodity capital, causing a phantom -16% loss.
+    eq_value  = agent.portfolio.get_total_value()
+    port_value = eq_value   # start with equity; add desks below
+    fno_day_pnl = 0.0
+
+    try:
+        from fno_engine import get_fno_agent as _gfno  # pylint: disable=import-outside-toplevel
+        fno_d         = _gfno().get_dashboard_data()
+        fno_deployed  = float(fno_d.get("deployed", 0) or 0)
+        fno_unrealised = float(fno_d.get("unrealised_pnl", 0) or 0)
+        port_value   += fno_deployed + fno_unrealised
+
+        # F&O realised P&L today (from fno_trades.json)
+        from pathlib import Path as _Path  # pylint: disable=import-outside-toplevel
+        fno_trade_file = _Path("data/fno_trades.json")
+        if fno_trade_file.exists():
+            fno_trades = _json.loads(fno_trade_file.read_text())
+            fno_day_pnl = sum(
+                t.get("pnl") or 0
+                for t in fno_trades
+                if t.get("action") in ("SELL", "CLOSE")
+                and (t.get("time") or t.get("timestamp") or "").startswith(today)
+            )
+    except Exception as _fe:
+        print(f"[CLOSE] F&O value error: {_fe}")
+
+    try:
+        from commodity_engine import get_commodity_agent as _gcomm  # pylint: disable=import-outside-toplevel
+        comm_d     = _gcomm().get_dashboard_data()
+        comm_val   = float(comm_d.get("portfolio_value", 0) or 0)
+        port_value += comm_val
+    except Exception:
+        pass
+
+    day_pnl = eq_day_pnl + fno_day_pnl
+    positions = agent.portfolio.get_positions_display()
 
     report = {
-        "date":           today,
-        "generated_at":   _ist_now().isoformat(),
+        "date":            today,
+        "generated_at":    _ist_now().isoformat(),
         "portfolio_value": round(port_value, 2),
-        "day_pnl":        round(day_pnl, 2),
-        "day_pnl_pct":    round(day_pnl / INITIAL_CAPITAL * 100, 4),
-        "trades_today":   today_trades,
-        "trades_count":   len(today_trades),
-        "open_positions": len(positions),
-        "top_gainers":    sorted(positions, key=lambda p: p["pnl_pct"], reverse=True)[:3],
-        "top_losers":     sorted(positions, key=lambda p: p["pnl_pct"])[:3],
-        "last_cycle":     _state.last_cycle,
+        "day_pnl":         round(day_pnl, 2),
+        "day_pnl_pct":     round(day_pnl / INITIAL_CAPITAL * 100, 4),
+        "trades_today":    today_trades,
+        "trades_count":    len(today_trades),
+        "open_positions":  len(positions),
+        "top_gainers":     sorted(positions, key=lambda p: p["pnl_pct"], reverse=True)[:3],
+        "top_losers":      sorted(positions, key=lambda p: p["pnl_pct"])[:3],
+        "last_cycle":      _state.last_cycle,
     }
     Path("data/closing_report.json").write_text(
         _json.dumps(report, indent=2), encoding="utf-8"
     )
-    print(f"[CLOSE] Closing report saved for {today}  day_pnl=₹{day_pnl:,.0f}")
+    print(f"[CLOSE] Closing report saved for {today}  port=₹{port_value:,.0f}  day_pnl=₹{day_pnl:,.0f}")
 
     # ── Full closing report notification ─────────────────────────────────────
     try:
