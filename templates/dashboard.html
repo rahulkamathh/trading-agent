@@ -488,7 +488,7 @@
       <div style="flex:1"></div>
       <div style="text-align:right">
         <div style="font-size:9px;color:var(--muted);letter-spacing:1px">INITIAL CAPITAL</div>
-        <div style="font-size:18px;color:var(--text);font-weight:600;margin-top:2px">₹15,00,000</div>
+        <div style="font-size:18px;color:var(--text);font-weight:600;margin-top:2px" id="mstrInitCapital">—</div>
       </div>
     </div>
   </div>
@@ -926,6 +926,40 @@
         <button class="btn btn-ghost" onclick="resetPortfolio()" style="font-size:12px">Equity only</button>
       </div>
       <div style="font-size:11px;color:var(--muted);margin-top:8px">Full Reset clears equity, F&amp;O and commodity positions + trade history. Change the amount above to set your starting capital.</div>
+    </div>
+
+    <!-- ── Capital Allocation ────────────────────────────────────────── -->
+    <div style="background:#000000;border:1px solid var(--amber);border-radius:8px;padding:14px 16px;margin-bottom:20px">
+      <div style="font-size:12px;color:var(--amber);margin-bottom:12px;font-weight:600;letter-spacing:.5px">💰 CAPITAL ALLOCATION</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:12px">
+        Set how much of your total account the bot should trade with, and how to split it between Equity and F&O.
+        For example: ₹1Cr account → use ₹10L → ₹8L equity + ₹2L F&O.
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+        <div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:4px;letter-spacing:.5px">TOTAL TO USE (₹)</div>
+          <input id="cfgTotal" type="number" min="100000" step="100000"
+            style="background:#0a0a0a;border:1px solid var(--border);border-radius:6px;color:var(--text);
+                   font-size:14px;font-family:monospace;padding:6px 10px;width:130px;outline:none"/>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:4px;letter-spacing:.5px">EQUITY SLICE (₹)</div>
+          <input id="cfgEquity" type="number" min="0" step="100000"
+            style="background:#0a0a0a;border:1px solid var(--border);border-radius:6px;color:var(--green);
+                   font-size:14px;font-family:monospace;padding:6px 10px;width:130px;outline:none"/>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:4px;letter-spacing:.5px">F&amp;O SLICE (₹)</div>
+          <input id="cfgFno" type="number" min="0" step="50000"
+            style="background:#0a0a0a;border:1px solid var(--border);border-radius:6px;color:#4fc3f7;
+                   font-size:14px;font-family:monospace;padding:6px 10px;width:130px;outline:none"/>
+        </div>
+        <button class="btn btn-amber" onclick="saveCapitalConfig()" style="height:36px">Save</button>
+      </div>
+      <div id="cfgMsg" style="font-size:11px;margin-top:8px;color:var(--muted)"></div>
+      <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap" id="cfgBarWrap">
+        <div style="font-size:10px;color:var(--muted)">Loading…</div>
+      </div>
     </div>
 
     <!-- ── Notifications ─────────────────────────────────────────────── -->
@@ -1775,6 +1809,7 @@ function showView(view) {
         loadNotifierStatus();
         loadRiskStatus();
         loadTraderStatus();
+        loadCapitalConfig();
       } else if (view === 'calendar') {
         const calTitle = document.querySelector('#page-calendar .page-title');
         if (calTitle) calTitle.textContent = _currentDesk === 'fno' ? '📅 F&O P&L CALENDAR' : '📅 P&L CALENDAR';
@@ -2882,6 +2917,72 @@ async function setInterval_() {
   if (d.ok) {
     toast(`Auto-run interval set to ${d.interval}s ✓`, 'success');
     document.getElementById('intervalDisplay').textContent = `Current: ${d.interval}s (${Math.round(d.interval/60)} min)`;
+  }
+}
+
+// ══════════════════════════════════════════════
+// Capital Allocation Config
+// ══════════════════════════════════════════════
+
+async function loadCapitalConfig() {
+  try {
+    const d = await fetch('/api/capital_config').then(r => r.json());
+    if (!d.ok) return;
+    const c = d.config;
+    document.getElementById('cfgTotal').value  = c.total_capital;
+    document.getElementById('cfgEquity').value = c.equity_allocation;
+    document.getElementById('cfgFno').value    = c.fno_allocation;
+    _renderCfgBar(c);
+  } catch(e) {}
+}
+
+function _renderCfgBar(c) {
+  const wrap = document.getElementById('cfgBarWrap');
+  if (!wrap) return;
+  const total  = c.total_capital     || 1;
+  const eq     = c.equity_allocation || 0;
+  const fno    = c.fno_allocation    || 0;
+  const unused = Math.max(0, total - eq - fno);
+  const eqPct  = (eq / total * 100).toFixed(1);
+  const fnoPct = (fno / total * 100).toFixed(1);
+  const unPct  = (unused / total * 100).toFixed(1);
+  wrap.innerHTML = `
+    <div style="width:100%;height:8px;border-radius:4px;overflow:hidden;display:flex;background:#111;margin-bottom:6px">
+      <div style="width:${eqPct}%;background:var(--green)"></div>
+      <div style="width:${fnoPct}%;background:#4fc3f7"></div>
+      <div style="width:${unPct}%;background:#222"></div>
+    </div>
+    <span style="font-size:10px;color:var(--green)">■ Equity ₹${(eq/1e5).toFixed(1)}L (${eqPct}%)</span>
+    <span style="font-size:10px;color:#4fc3f7;margin-left:12px">■ F&O ₹${(fno/1e5).toFixed(1)}L (${fnoPct}%)</span>
+    ${unused > 0 ? `<span style="font-size:10px;color:var(--muted);margin-left:12px">■ Undeployed ₹${(unused/1e5).toFixed(1)}L</span>` : ''}
+    <span style="font-size:10px;color:var(--amber);margin-left:12px">Total ₹${(total/1e5).toFixed(1)}L</span>
+  `;
+}
+
+async function saveCapitalConfig() {
+  const total  = parseInt(document.getElementById('cfgTotal').value)  || 0;
+  const equity = parseInt(document.getElementById('cfgEquity').value) || 0;
+  const fno    = parseInt(document.getElementById('cfgFno').value)    || 0;
+  const msg    = document.getElementById('cfgMsg');
+  if (equity + fno > total) {
+    msg.style.color = 'var(--red)';
+    msg.textContent = `⚠ Equity (₹${(equity/1e5).toFixed(1)}L) + F&O (₹${(fno/1e5).toFixed(1)}L) exceeds total (₹${(total/1e5).toFixed(1)}L)`;
+    return;
+  }
+  const r = await fetch('/api/capital_config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({total_capital: total, equity_allocation: equity, fno_allocation: fno})
+  });
+  const d = await r.json();
+  if (d.ok) {
+    msg.style.color = 'var(--green)';
+    msg.textContent = `✓ ${d.message}`;
+    _renderCfgBar(d.config);
+    toast('Capital allocation saved ✓', 'success');
+  } else {
+    msg.style.color = 'var(--red)';
+    msg.textContent = `⚠ ${d.error}`;
   }
 }
 
@@ -5367,9 +5468,10 @@ async function loadMaster() {
       const t = setTimeout(()=>ctrl.abort(), ms);
       return fetch(url, {signal:ctrl.signal}).then(r=>r.json()).finally(()=>clearTimeout(t));
     };
-    const [eqR, fnoR] = await Promise.all([
+    const [eqR, fnoR, cfgR] = await Promise.all([
       fetchTimeout('/api/dashboard'),
-      fetchTimeout('/api/fno/dashboard', 4000).catch(()=>({ok:false,data:{deployed:0,unrealised_pnl:0,realised_pnl:0,positions:[],greeks:{delta:0,theta:0},cash:0,initial:200000}}))
+      fetchTimeout('/api/fno/dashboard', 4000).catch(()=>({ok:false,data:{deployed:0,unrealised_pnl:0,realised_pnl:0,positions:[],greeks:{delta:0,theta:0},cash:0,initial:200000}})),
+      fetchTimeout('/api/capital_config', 3000).catch(()=>({ok:false,config:{total_capital:1300000,equity_allocation:1100000,fno_allocation:200000}}))
     ]);
 
     // ── Equity data ─────────────────────────────────────────────────────
@@ -5418,17 +5520,19 @@ async function loadMaster() {
     document.getElementById('mstrFnoTheta').textContent = '₹' + (fg.theta || 0).toFixed(2);
     document.getElementById('mstrFnoTheta').style.color = (fg.theta || 0) < 0 ? 'var(--red)' : 'var(--green)';
 
+    // ── Capital config ────────────────────────────────────────────────────
+    const cfg         = (cfgR.ok ? cfgR.config : null) || {total_capital: init, equity_allocation: init, fno_allocation: 0};
+    const cfgEqInit   = cfg.equity_allocation || init;
+    const cfgFnoInit  = cfg.fno_allocation    || 0;
+    const cfgTotal    = cfg.total_capital     || (cfgEqInit + cfgFnoInit);
+
     // ── Combined account value ────────────────────────────────────────────
-    // Equity's ₹13L initial already includes the ₹2L F&O allocation.
-    // So: combined = equity portfolio value + F&O P&L (gains/losses only, not capital).
-    // Do NOT add fno.cash to avoid double-counting the ₹2L that came from equity's pool.
-    const fnoRealised   = fd.realised_pnl   || 0;
-    const fnoUnrealised = fd.unrealised_pnl || 0;
-    const fnoPnl        = fnoRealised + fnoUnrealised;
-    const combined      = tv + fnoPnl;
-    const initCombined  = init;   // ₹13L is the total account (F&O ₹2L is within this)
-    const combPnl       = combined - initCombined;
-    const combPct       = initCombined ? (combPnl / initCombined * 100) : 0;
+    // Equity value uses its own pool. F&O value = cash + deployed + unrealised.
+    const fnoValue    = (fd.cash || cfgFnoInit) + (fd.deployed || 0) + (fd.unrealised_pnl || 0);
+    const combined    = tv + fnoValue;
+    const initCombined = cfgTotal;
+    const combPnl     = combined - initCombined;
+    const combPct     = initCombined ? (combPnl / initCombined * 100) : 0;
     document.getElementById('mstrTotal').textContent    = fmt(combined);
     document.getElementById('mstrTotalPnl').textContent =
       '₹' + sign(combPnl) + ' (' + combPct.toFixed(2) + '%) total return';

@@ -623,6 +623,41 @@ def api_trader_orders():
     return jsonify({"ok": True, "orders": get_trader().get_order_book()})
 
 
+@app.route("/api/capital_config", methods=["GET"])
+def api_capital_config_get():
+    """Return the current capital allocation config."""
+    from pathlib import Path as _P
+    cfg_file = _P("data/capital_config.json")
+    default = {"total_capital": 1_300_000, "equity_allocation": 1_100_000, "fno_allocation": 200_000}
+    if cfg_file.exists():
+        try:
+            cfg = json.loads(cfg_file.read_text())
+            # Fill missing keys with defaults
+            for k, v in default.items():
+                cfg.setdefault(k, v)
+            return jsonify({"ok": True, "config": cfg})
+        except Exception:
+            pass
+    return jsonify({"ok": True, "config": default})
+
+
+@app.route("/api/capital_config", methods=["POST"])
+def api_capital_config_set():
+    """Save capital allocation config. Body: {total_capital, equity_allocation, fno_allocation}"""
+    from pathlib import Path as _P
+    body = request.get_json(force=True, silent=True) or {}
+    total  = int(body.get("total_capital",     1_300_000))
+    equity = int(body.get("equity_allocation", 1_100_000))
+    fno    = int(body.get("fno_allocation",      200_000))
+    if equity + fno > total:
+        return jsonify({"ok": False, "error": "equity + fno allocation cannot exceed total capital"}), 400
+    cfg = {"total_capital": total, "equity_allocation": equity, "fno_allocation": fno}
+    _P("data").mkdir(exist_ok=True)
+    _P("data/capital_config.json").write_text(json.dumps(cfg, indent=2))
+    logging.getLogger(__name__).info(f"💰 Capital config updated: total=₹{total:,} eq=₹{equity:,} fno=₹{fno:,}")
+    return jsonify({"ok": True, "config": cfg, "message": f"Saved: ₹{total:,} total | ₹{equity:,} equity | ₹{fno:,} F&O"})
+
+
 @app.route("/api/add_capital", methods=["POST"])
 def api_add_capital():
     """Add capital to the portfolio cash balance. Body: {amount: 300000}"""
