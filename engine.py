@@ -1706,7 +1706,9 @@ class Portfolio:
     def _log_trade(self, action, ticker, qty, price, strategy, reason, pnl=None,
                    stop_loss=None, target=None, planned_rr=None,
                    actual_rr=None, risk_per_unit=None,
-                   trade_type=None, hold_days=None) -> dict:
+                   trade_type=None, hold_days=None,
+                   rsi_at_entry=None, signal_score=None,
+                   market_regime=None, strength=None) -> dict:
         log = []
         if TRADE_LOG_FILE.exists():
             with open(TRADE_LOG_FILE) as f:
@@ -1723,19 +1725,19 @@ class Portfolio:
             "pnl":           round(pnl, 2) if pnl is not None else None,
             "time":          _now_ist().isoformat(),
             # ── RR metadata ──────────────────────────────────────────────
-            # BUY  → stop_loss, target, planned_rr, risk_per_unit
-            # SELL → actual_rr, trade_type, hold_days
             "stop_loss":     stop_loss,
             "target":        target,
             "planned_rr":    planned_rr,
             "actual_rr":     actual_rr,
             "risk_per_unit": risk_per_unit,
             # ── Tax classification ────────────────────────────────────────
-            # INTRADAY = same-day (speculative, taxed at slab rate)
-            # STCG     = 1–364 days (20% tax)
-            # LTCG     = 365+ days (12.5% above ₹1.25L exemption)
-            "trade_type":    trade_type,   # populated on SELL/exit
-            "hold_days":     hold_days,    # populated on SELL/exit
+            "trade_type":    trade_type,
+            "hold_days":     hold_days,
+            # ── Trade journal (mentor recommendations) ────────────────────
+            "strength":      round(strength, 1) if strength is not None else None,
+            "rsi_at_entry":  round(rsi_at_entry, 1) if rsi_at_entry is not None else None,
+            "signal_score":  round(signal_score, 4) if signal_score is not None else None,
+            "market_regime": market_regime,   # LOW/MEDIUM/HIGH/EXTREME risk
         }
         log.append(trade)
         with open(TRADE_LOG_FILE, "w") as f:
@@ -2718,11 +2720,17 @@ class TradingAgent:
 
             if action == "BUY":
                 if ticker not in buy_agg:
-                    buy_agg[ticker] = {"strengths": [], "strategies": [], "price": price}
+                    buy_agg[ticker] = {
+                        "strengths": [], "strategies": [], "price": price,
+                        "rsi": sig.get("rsi"), "scores": [],
+                    }
                 buy_agg[ticker]["strengths"].append(strength)
                 buy_agg[ticker]["strategies"].append(strategy)
+                buy_agg[ticker]["scores"].append(sig.get("score", 0))
+                if sig.get("rsi") is not None:
+                    buy_agg[ticker]["rsi"] = sig.get("rsi")  # last non-None RSI wins
                 if price > 0:
-                    buy_agg[ticker]["price"] = price   # use latest non-zero price
+                    buy_agg[ticker]["price"] = price
 
             elif action == "SELL":
                 if ticker not in sell_agg:
@@ -2760,7 +2768,9 @@ class TradingAgent:
         for ticker, agg in buy_agg.items():
             # Use learning-weighted composite strength (accounts for strategy win rates)
             boosted = learning.weighted_strength(agg["strengths"], agg["strategies"])
-            buy_candidates.append((ticker, boosted, agg["price"], agg["strategies"]))
+            avg_score = sum(agg.get("scores", [0])) / max(len(agg.get("scores", [1])), 1)
+            buy_candidates.append((ticker, boosted, agg["price"], agg["strategies"],
+                                   agg.get("rsi"), avg_score))
 
         buy_candidates.sort(key=lambda x: x[1], reverse=True)
         logger.info(f"📋 {len(buy_candidates)} BUY candidates after aggregation "
@@ -2795,7 +2805,7 @@ class TradingAgent:
                     break
         MAX_SECTOR_PCT = 0.30  # max 30% of portfolio in any single sector
 
-        for ticker, composite_strength, price, strategies in buy_candidates:
+        for ticker, composite_strength, price, strategies, sig_rsi, sig_score in buy_candidates:
             # Guard-rail 0: macro / drawdown hard limit
             if new_buys_this_cycle >= max_new_buys:
                 logger.info(
@@ -2859,6 +2869,20 @@ class TradingAgent:
                     )
                     continue
 
+                # Correlation guard: max 2 stocks per sector (mentor: 5 banks ≠ 5 trades)
+                MAX_STOCKS_PER_SECTOR = 2
+                sector_count = sum(
+                    1 for tk in self.portfolio.state.get("positions", {})
+                    if any(tk in tks for tks in [SectorMomentumStrategy.SECTOR_STOCKS.get(ticker_sector, [])])
+                )
+                if sector_count >= MAX_STOCKS_PER_SECTOR:
+                    logger.info(
+                        f"⏭  SKIP {ticker} — already {sector_count} stocks in '{ticker_sector}' "
+                        f"(max {MAX_STOCKS_PER_SECTOR} per sector)"
+                    )
+                    skip_reasons["sector_correlation"] = skip_reasons.get("sector_correlation", 0) + 1
+                    continue
+
             if self.portfolio.in_cooldown(ticker):
                 logger.info(f"⏳ COOLDOWN {ticker} — skipping (exited recently)")
                 continue
@@ -2902,6 +2926,9 @@ class TradingAgent:
                 strategy=strat_str,
                 reason=f"SIGNAL strength={composite_strength:.0f} strategies={n_strategies}",
                 strength=composite_strength,
+                rsi_at_entry=sig_rsi,
+                signal_score=sig_score,
+                market_regime=macro_label,
             )
             if trade:
                 executed.append(trade)

@@ -286,6 +286,32 @@ def days_to_expiry(expiry: date) -> float:
     return max(delta, 0) / 365.0
 
 
+def get_expiry_20_45dte() -> date:
+    """
+    Get the best expiry targeting 20-45 DTE (mentor recommendation).
+    Prefers monthly expiries in the 20-45 day window.
+    Falls back to the next monthly if current month is too close (<20 days).
+    Never uses weeklies — those have <7 DTE and are too risky per mentor.
+    """
+    today = date.today()
+    # Try current month's last Thursday
+    exp = _last_thursday(today.year, today.month)
+    dte = (exp - today).days
+    if 20 <= dte <= 45:
+        return exp
+    # Too close or already past — try next month
+    nm = today.month % 12 + 1
+    ny = today.year + (1 if today.month == 12 else 0)
+    exp = _last_thursday(ny, nm)
+    dte = (exp - today).days
+    if dte <= 45:
+        return exp
+    # Skip to month after (rare edge case — e.g. we're right after expiry)
+    nm2 = nm % 12 + 1
+    ny2 = ny + (1 if nm == 12 else 0)
+    return _last_thursday(ny2, nm2)
+
+
 # ---------------------------------------------------------------------------
 # Black-Scholes pricing (no scipy dependency)
 # ---------------------------------------------------------------------------
@@ -801,15 +827,14 @@ class FNOPortfolio:
         Called when the equity desk fires a bearish signal on an F&O-eligible stock.
 
         Strike selection:
-          - Strength ≥ 85  → ATM put (high conviction — maximum delta)
-          - Strength 70-85 → OTM1 put (moderate — cheaper, more leverage)
-          - Below 70       → skip (not enough conviction for options)
+          - Strength ≥ 85  → ATM put (mentor: ATM/ITM1 only, never OTM)
+          - Below 85       → skip (mentor: high conviction gate)
 
-        Expiry: nearest monthly (more liquidity than weeklies for stock options).
+        Expiry: 20-45 DTE monthly (mentor: never weeklies).
         Position size: capped at 2% of F&O portfolio per trade.
         """
-        if strength < 70:
-            logger.debug(f"[FNO] SELL signal on {ticker} too weak ({strength:.0f}) for PUT — skipping")
+        if strength < 85:
+            logger.debug(f"[FNO] SELL signal on {ticker} strength={strength:.0f} < 85 — skipping PUT hedge")
             return None
 
         if not is_fno_eligible(ticker):
@@ -828,8 +853,8 @@ class FNOPortfolio:
             logger.info(f"[FNO] PUT {ticker} skipped — in 4h cooldown after recent close")
             return None
 
-        moneyness = "ATM" if strength >= 85 else "OTM1"
-        expiry    = get_expiry(ticker, monthly=True)   # monthly for liquidity
+        moneyness = "ATM"                    # always ATM — never OTM (mentor rule)
+        expiry    = get_expiry_20_45dte()   # 20-45 DTE monthly (mentor rule)
         T         = days_to_expiry(expiry)
 
         if T < 7:
@@ -1392,7 +1417,7 @@ class DirectionalOptionsStrategy:
         for sig in signals:
             if portfolio.at_max_positions():
                 break
-            if sig.get("strength", 0) < 80:
+            if sig.get("strength", 0) < 85:   # ≥85 conviction gate (mentor: avoid marginal trades)
                 continue
             ticker = sig["ticker"]
             action = sig.get("signal", "")
@@ -1407,15 +1432,14 @@ class DirectionalOptionsStrategy:
             if portfolio.in_cooldown(ticker):
                 continue
 
-            is_index = ticker in ("^NSEI", "^NSEBANK", "NIFTY", "BANKNIFTY")
-            monthly  = not is_index
-
             try:
-                expiry = get_expiry(ticker, monthly=monthly)
+                # Always use 20-45 DTE monthly expiry (mentor: never weeklies)
+                expiry = get_expiry_20_45dte()
                 spot   = portfolio._get_spot(ticker)
                 if spot <= 0:
                     continue
 
+                # ATM only (mentor: never OTM — theta decay kills OTM longs)
                 strike = select_strike(spot, opt_type, moneyness="ATM")
                 T      = days_to_expiry(expiry)
                 iv     = historical_vol(ticker)
@@ -1828,17 +1852,15 @@ class HourlyFNOStrategy:
         iv      = iv_env["hv30"]
 
         # IV regime → moneyness preference
-        # Low IV → buy OTM (cheap, more leverage)
-        # High IV → buy ATM or ITM (less vega exposure)
-        if iv_env["iv_regime"] == "LOW":
-            moneyness = "OTM1"
-            trade_note = "Low IV — buying OTM for leverage"
-        elif iv_env["iv_regime"] == "HIGH":
-            moneyness = "ATM"
-            trade_note = "High IV — staying ATM to limit vega exposure"
+        # Mentor rule: NEVER buy OTM — theta decay destroys OTM longs.
+        # Low IV  → ATM (already cheap, good risk/reward)
+        # High IV → ITM1 (deep enough to have intrinsic value, less vega risk)
+        if iv_env["iv_regime"] == "HIGH":
+            moneyness = "ITM1"
+            trade_note = "High IV — buying ITM1 to reduce vega exposure"
         else:
             moneyness = "ATM"
-            trade_note = "Normal IV environment"
+            trade_note = f"{iv_env['iv_regime']} IV — ATM for best risk/reward"
 
         strike  = select_strike(spot, option_type, moneyness=moneyness)
         premium = BlackScholes.price(spot, strike, T, RISK_FREE_RATE, iv, option_type)
