@@ -5344,6 +5344,18 @@ document.addEventListener('keydown', function(e) {
     if (view) showView(view);
   }
   if (e.key === 'Escape' || e.key === '`') { e.preventDefault(); switchDesk('master'); }
+  // Tab cycles eq ↔ fno (shift+tab goes back)
+  if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey &&
+      e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
+    e.preventDefault();
+    if (_currentDesk === 'master') {
+      switchDesk('eq');
+    } else if (_currentDesk === 'eq') {
+      switchDesk(e.shiftKey ? 'master' : 'fno');
+    } else {
+      switchDesk(e.shiftKey ? 'eq' : 'master');
+    }
+  }
 });
 
 
