@@ -5419,13 +5419,16 @@ async function loadMaster() {
     document.getElementById('mstrFnoTheta').style.color = (fg.theta || 0) < 0 ? 'var(--red)' : 'var(--green)';
 
     // ── Combined account value ────────────────────────────────────────────
-    // equity_total_value + FNO (deployed + unrealised + remaining_cash)
-    const fnoPortValue = (fd.deployed || 0) + (fd.unrealised_pnl || 0) + (fd.cash || 0);
-    const combined     = tv + fnoPortValue;
-    const initFno      = fd.initial  || 200000;
-    const initCombined = init + initFno;
-    const combPnl      = combined - initCombined;
-    const combPct      = initCombined ? (combPnl / initCombined * 100) : 0;
+    // Equity's ₹13L initial already includes the ₹2L F&O allocation.
+    // So: combined = equity portfolio value + F&O P&L (gains/losses only, not capital).
+    // Do NOT add fno.cash to avoid double-counting the ₹2L that came from equity's pool.
+    const fnoRealised   = fd.realised_pnl   || 0;
+    const fnoUnrealised = fd.unrealised_pnl || 0;
+    const fnoPnl        = fnoRealised + fnoUnrealised;
+    const combined      = tv + fnoPnl;
+    const initCombined  = init;   // ₹13L is the total account (F&O ₹2L is within this)
+    const combPnl       = combined - initCombined;
+    const combPct       = initCombined ? (combPnl / initCombined * 100) : 0;
     document.getElementById('mstrTotal').textContent    = fmt(combined);
     document.getElementById('mstrTotalPnl').textContent =
       '₹' + sign(combPnl) + ' (' + combPct.toFixed(2) + '%) total return';
