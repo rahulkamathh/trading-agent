@@ -270,8 +270,7 @@ def api_positions():
 
 @app.route("/api/pnl_calendar")
 def api_pnl_calendar():
-    """Daily P&L aggregated across Equity + F&O + Commodity for the calendar view."""
-    from pathlib import Path as _P  # pylint: disable=import-outside-toplevel
+    """Daily P&L from EQUITY trades only for the equity calendar view."""
     from engine import TRADE_LOG_FILE  # pylint: disable=import-outside-toplevel
 
     days: dict = {}
@@ -284,43 +283,13 @@ def api_pnl_calendar():
         if is_win:
             days[date_str]["wins"] += 1
 
-    # ── Equity trades ─────────────────────────────────────────────────────── #
+    # ── Equity trades only ────────────────────────────────────────────────── #
     try:
         if TRADE_LOG_FILE.exists():
             for t in json.loads(TRADE_LOG_FILE.read_text(encoding="utf-8")):
                 if t.get("action") != "SELL":
                     continue
                 ts  = (t.get("timestamp") or t.get("date") or "")[:10]
-                pnl = float(t.get("pnl") or 0)
-                if ts:
-                    _add(ts, pnl, pnl > 0)
-    except Exception:
-        pass
-
-    # ── F&O trades ────────────────────────────────────────────────────────── #
-    try:
-        fno_file = _P("data/fno_trades.json")
-        if fno_file.exists():
-            for t in json.loads(fno_file.read_text()):
-                action = t.get("action", "")
-                if "CLOSE" not in action and action != "SELL":
-                    continue
-                ts  = (t.get("time") or t.get("timestamp") or t.get("date") or "")[:10]
-                pnl = float(t.get("pnl") or 0)
-                if ts:
-                    _add(ts, pnl, pnl > 0)
-    except Exception:
-        pass
-
-    # ── Commodity trades ──────────────────────────────────────────────────── #
-    try:
-        comm_file = _P("data/commodity_trades.json")
-        if comm_file.exists():
-            for t in json.loads(comm_file.read_text()):
-                action = t.get("action", "")
-                if "CLOSE" not in action:
-                    continue
-                ts  = (t.get("time") or t.get("timestamp") or "")[:10]
                 pnl = float(t.get("pnl") or 0)
                 if ts:
                     _add(ts, pnl, pnl > 0)
