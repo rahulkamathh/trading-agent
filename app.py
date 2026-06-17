@@ -207,6 +207,38 @@ def api_dashboard():
                 port["total_pnl_pct"] = true_pct
                 data["portfolio"]     = port
                 data["today_pnl"]     = today_pnl
+
+                # ── Persist unified snapshot for equity curve ─────────────── #
+                # engine.py's _build_equity_curve falls back to equity-only
+                # trade reconstruction which never includes F&O/commodity capital.
+                # By storing true_val keyed by today's date, the curve will use
+                # the real unified value for every day we've seen the dashboard.
+                try:
+                    today_str = _ist_now().strftime("%Y-%m-%d")
+                    ps = get_agent().portfolio.state
+                    hist = ps.setdefault("value_history", {})
+                    hist[today_str] = true_val
+                    # Save silently — don't trigger full _save() to avoid
+                    # touching last_updated / day_start_value mid-day
+                    import json as _json
+                    from pathlib import Path as _Path
+                    _pf = _Path("data/portfolio.json")
+                    _pf.write_text(_json.dumps(ps, indent=2))
+                except Exception:
+                    pass
+
+                # Patch equity curve's last point with unified value
+                try:
+                    today_str = _ist_now().strftime("%Y-%m-%d")
+                    curve = data.get("equity_curve", [])
+                    if curve and curve[-1]["date"] == today_str:
+                        curve[-1]["value"] = true_val
+                    elif today_str:
+                        curve.append({"date": today_str, "value": true_val})
+                    data["equity_curve"] = curve
+                except Exception:
+                    pass
+
         except Exception:
             pass  # if F&O unavailable, fall through with equity-only values
 

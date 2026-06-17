@@ -3002,12 +3002,15 @@ class TradingAgent:
         # P&L % based on total deployed capital (₹13L = ₹10L + ₹2L F&O + ₹1L commodity)
         total_pnl_pct = (total_pnl / INITIAL_CAPITAL) * 100
 
-        # Equity curve: reconstruct from trades + append live value
+        # Equity curve: prefer persisted unified snapshots (set by app.py after
+        # each dashboard load when it knows the true unified value including F&O).
+        # Fall back to trade-reconstruction if snapshots are absent.
         equity_curve = _build_equity_curve(
             trades,
             current_value=total_val,
             created_at=port.state.get("created_at"),
-            start_value=INITIAL_CAPITAL,  # ₹13L total deployed capital
+            start_value=INITIAL_CAPITAL,
+            value_history=port.state.get("value_history"),
         )
 
         # Strategy performance: closed P&L + unrealised from open positions
@@ -3126,31 +3129,57 @@ def _calc_today_pnl(trades: list, current_value: float, equity_curve: list,
 
 
 def _build_equity_curve(trades: list, current_value: float = None,
-                        created_at: str = None, start_value: float = None) -> list:
+                        created_at: str = None, start_value: float = None,
+                        value_history: dict = None) -> list:
     """
-    Equity curve from trade log + current live portfolio value.
-    Starts at the portfolio creation date using the ACTUAL first portfolio
-    value (not INITIAL_CAPITAL, which is inflated by top-ups added later).
+    Equity curve — unified portfolio value (equity + F&O + commodity).
+
+    Preferred source: `value_history` — a dict of {date_str: unified_total}
+    persisted in portfolio.json by app.py each time the dashboard is loaded.
+    This is the ONLY source that includes F&O deployed capital + commodity.
+
+    Fallback: reconstruct from realised trade P&L (equity-only, kept for
+    backwards compatibility if value_history is empty / missing).
+
+    The current live value is always appended as the final data point so the
+    chart reflects the latest portfolio state even between snapshots.
     """
     start_date = (created_at or _now_ist().isoformat())[:10]
-    # Use the real starting value from trades if available, otherwise INITIAL_CAPITAL
-    # This prevents the curve from showing ₹13L when trading started at ₹10L
-    first_val = start_value if start_value else INITIAL_CAPITAL
-    curve = [{"date": start_date, "value": first_val}]
+    first_val  = start_value if start_value else INITIAL_CAPITAL
+    today      = _now_ist().strftime("%Y-%m-%d")
+
+    # ── Preferred path: use persisted unified snapshots ──────────────────── #
+    if value_history:
+        # Build sorted list of (date, value) from history
+        snapshots = sorted(value_history.items())
+        # Always include start
+        if not snapshots or snapshots[0][0] > start_date:
+            snapshots = [(start_date, first_val)] + snapshots
+
+        curve = [{"date": d, "value": round(v, 2)} for d, v in snapshots]
+
+        # Override or append today's point with live value
+        if current_value is not None:
+            if curve and curve[-1]["date"] == today:
+                curve[-1]["value"] = round(current_value, 2)
+            else:
+                curve.append({"date": today, "value": round(current_value, 2)})
+        return curve
+
+    # ── Fallback: reconstruct from trade P&L (equity-only) ───────────────── #
+    curve   = [{"date": start_date, "value": first_val}]
     running = first_val
-    daily = {}
+    daily   = {}
     for t in trades:
         date = t["time"][:10]
         if t["pnl"] is not None:
             daily[date] = daily.get(date, 0) + t["pnl"]
     for date in sorted(daily):
         if date == start_date:
-            continue   # skip duplicate start point
+            continue
         running += daily[date]
         curve.append({"date": date, "value": round(running, 2)})
-    # Always end with the current live value (includes unrealised P&L)
     if current_value is not None:
-        today = _now_ist().strftime("%Y-%m-%d")
         if curve and curve[-1]["date"] == today:
             curve[-1]["value"] = round(current_value, 2)
         else:
