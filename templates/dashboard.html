@@ -5527,10 +5527,12 @@ async function loadMaster() {
     const cfgTotal    = cfg.total_capital     || (cfgEqInit + cfgFnoInit);
 
     // ── Combined account value ────────────────────────────────────────────
-    // Equity value uses its own pool. F&O value = cash + deployed + unrealised.
-    const fnoValue    = (fd.cash || cfgFnoInit) + (fd.deployed || 0) + (fd.unrealised_pnl || 0);
-    const combined    = tv + fnoValue;
-    const initCombined = cfgTotal;
+    // FnO's ₹2L is carved from within the total capital (not additive on top).
+    // So combined = equity value + FnO P&L only (gains/losses), NOT + FnO cash.
+    // This prevents double-counting the FnO allocation.
+    const fnoPnl      = (fd.realised_pnl || 0) + (fd.unrealised_pnl || 0);
+    const combined    = tv + fnoPnl;
+    const initCombined = init;  // use actual equity initial (₹13L)
     const combPnl     = combined - initCombined;
     const combPct     = initCombined ? (combPnl / initCombined * 100) : 0;
     document.getElementById('mstrTotal').textContent    = fmt(combined);
