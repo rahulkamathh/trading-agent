@@ -366,7 +366,7 @@ def api_signals():
 
 _market_overview_cache: dict = {}
 _market_overview_ts: float = 0.0
-_MARKET_OVERVIEW_TTL = 15  # seconds between yfinance refreshes (fast enough for ~live feel)
+_MARKET_OVERVIEW_TTL = 60  # seconds between yfinance refreshes
 
 
 def _fetch_index_price(ticker: str) -> tuple[float, float]:
@@ -444,17 +444,27 @@ def api_market_overview():
     if now - _market_overview_ts < _MARKET_OVERVIEW_TTL and _market_overview_cache:
         return jsonify({"ok": True, "indices": _market_overview_cache, "source": "cache"})
 
+    # Fetch all tickers in parallel — max 5s total instead of 5s × N sequential
+    import concurrent.futures as _cf
     results = {}
-    for name, ticker in INDEX_TICKERS.items():
-        price, chg_pct = _fetch_index_price(ticker)
-        if price > 0:
-            results[name] = {
-                "price":        round(price, 2),
-                "chg_pct":      round(chg_pct, 2),
-                "ticker":       ticker,
-                "source":       "delayed",
-                "last_updated": now_ist_str,
-            }
+    items = list(INDEX_TICKERS.items())
+    with _cf.ThreadPoolExecutor(max_workers=len(items) or 1) as pool:
+        futures = {pool.submit(_fetch_index_price, ticker): (name, ticker)
+                   for name, ticker in items}
+        for fut in _cf.as_completed(futures, timeout=6):
+            name, ticker = futures[fut]
+            try:
+                price, chg_pct = fut.result()
+            except Exception:
+                price, chg_pct = 0.0, 0.0
+            if price > 0:
+                results[name] = {
+                    "price":        round(price, 2),
+                    "chg_pct":      round(chg_pct, 2),
+                    "ticker":       ticker,
+                    "source":       "delayed",
+                    "last_updated": now_ist_str,
+                }
 
     _market_overview_cache = results
     _market_overview_ts    = now
@@ -1069,9 +1079,58 @@ def api_fno_option_price():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
+@app.route("/api/fno/strategy_perf")
+def api_fno_strategy_perf():
+    """Aggregate F&O realised P&L, win rate, and trade count by strategy."""
+    import json as _j
+    from pathlib import Path as _P
+    from collections import defaultdict
+
+    stats: dict = defaultdict(lambda: {"pnl": 0.0, "trades": 0, "wins": 0, "open": 0})
+
+    # ── Closed trades ─────────────────────────────────────────────────────── #
+    fno_file = _P("data/fno_trades.json")
+    if fno_file.exists():
+        try:
+            for t in _j.loads(fno_file.read_text()):
+                action = t.get("action", "")
+                strat  = t.get("strategy") or "Unknown"
+                if "CLOSE" not in action and action not in ("SELL", "EXPIRE"):
+                    continue
+                pnl = float(t.get("pnl") or 0)
+                stats[strat]["pnl"]    += pnl
+                stats[strat]["trades"] += 1
+                if pnl > 0:
+                    stats[strat]["wins"] += 1
+        except Exception:
+            pass
+
+    # ── Open positions ────────────────────────────────────────────────────── #
+    try:
+        from fno_engine import get_fno_agent as _gfno  # pylint: disable=import-outside-toplevel
+        for pos in _gfno().portfolio.state.get("positions", {}).values():
+            strat = pos.get("strategy") or "Unknown"
+            stats[strat]["open"] += 1
+    except Exception:
+        pass
+
+    result = []
+    for strat, v in stats.items():
+        result.append({
+            "strategy":  strat,
+            "pnl":       round(v["pnl"], 2),
+            "trades":    v["trades"],
+            "wins":      v["wins"],
+            "open":      v["open"],
+            "win_rate":  round(v["wins"] / v["trades"] * 100, 1) if v["trades"] else 0,
+        })
+    result.sort(key=lambda x: x["pnl"], reverse=True)
+    return jsonify({"ok": True, "strategies": result})
+
+
 @app.route("/api/report")
 def api_report():
-    """Return the latest closing report."""
+    """Return the latest equity closing report."""
     from pathlib import Path  # pylint: disable=import-outside-toplevel
     p = Path("data/closing_report.json")
     if p.exists():
@@ -1079,6 +1138,168 @@ def api_report():
             import json as _j  # pylint: disable=import-outside-toplevel
             return jsonify({"ok": True, "report": _j.load(fh)})
     return jsonify({"ok": True, "report": None})
+
+
+@app.route("/api/fno/report")
+def api_fno_report():
+    """Build and return an F&O daily report from fno_trades.json + fno_portfolio.json."""
+    import json as _j
+    from pathlib import Path as _P
+
+    ist_today = _ist_now().strftime("%Y-%m-%d")
+
+    # ── Load F&O trades ──────────────────────────────────────────────────────
+    trades_all: list = []
+    fno_trade_file = _P("data/fno_trades.json")
+    if fno_trade_file.exists():
+        try:
+            trades_all = _j.loads(fno_trade_file.read_text())
+        except Exception:
+            pass
+
+    # Trades executed today
+    trades_today = [
+        t for t in trades_all
+        if (t.get("time") or t.get("timestamp") or "")[:10] == ist_today
+    ]
+
+    # P&L from closed trades today
+    day_pnl = sum(
+        float(t.get("pnl") or 0)
+        for t in trades_today
+        if "CLOSE" in t.get("action", "") or t.get("action") == "SELL"
+    )
+
+    # ── Load F&O portfolio ───────────────────────────────────────────────────
+    try:
+        from fno_engine import get_fno_agent as _gfno
+        fno_d          = _gfno().get_dashboard_data()
+        deployed       = float(fno_d.get("deployed", 0) or 0)
+        unrealised     = float(fno_d.get("unrealised_pnl", 0) or 0)
+        realised       = float(fno_d.get("realised_pnl", 0) or 0)
+        open_positions = fno_d.get("positions", [])
+        greeks         = fno_d.get("greeks", {})
+        portfolio_value = deployed + unrealised + fno_d.get("cash", 0)
+    except Exception:
+        deployed = unrealised = realised = portfolio_value = 0.0
+        open_positions = []
+        greeks = {}
+
+    # Top positions by absolute MTM
+    top_positions = sorted(
+        open_positions,
+        key=lambda p: abs(float(p.get("mtm") or 0)),
+        reverse=True
+    )[:6]
+
+    report = {
+        "date":            ist_today,
+        "day_pnl":         round(day_pnl, 2),
+        "day_pnl_pct":     0.0,
+        "portfolio_value": round(portfolio_value, 2),
+        "deployed":        round(deployed, 2),
+        "unrealised":      round(unrealised, 2),
+        "realised":        round(realised, 2),
+        "trades_count":    len(trades_today),
+        "open_positions":  len(open_positions),
+        "greeks":          greeks,
+        "trades_today":    list(reversed(trades_today[-50:])),
+        "top_positions":   [
+            {
+                "ticker":  p.get("instrument") or p.get("ticker"),
+                "pnl_pct": round(float(p.get("pnl_pct") or 0), 2),
+                "pnl":     round(float(p.get("mtm") or 0), 2),
+                "type":    p.get("type") or p.get("instrument_type", ""),
+            }
+            for p in top_positions
+        ],
+    }
+
+    return jsonify({"ok": True, "report": report})
+
+
+@app.route("/api/fno/pnl_calendar")
+def api_fno_pnl_calendar():
+    """Daily P&L aggregated from F&O trades only."""
+    import json as _j
+    from pathlib import Path as _P
+
+    days: dict = {}
+    fno_file = _P("data/fno_trades.json")
+    if fno_file.exists():
+        try:
+            for t in _j.loads(fno_file.read_text()):
+                action = t.get("action", "")
+                if "CLOSE" not in action and action != "SELL":
+                    continue
+                ts  = (t.get("time") or t.get("timestamp") or t.get("date") or "")[:10]
+                pnl = float(t.get("pnl") or 0)
+                if ts:
+                    if ts not in days:
+                        days[ts] = {"pnl": 0.0, "trades": 0, "wins": 0}
+                    days[ts]["pnl"]    += pnl
+                    days[ts]["trades"] += 1
+                    if pnl > 0:
+                        days[ts]["wins"] += 1
+        except Exception:
+            pass
+
+    result = {}
+    for ds, v in days.items():
+        result[ds] = {
+            "pnl":      round(v["pnl"], 2),
+            "trades":   v["trades"],
+            "wins":     v["wins"],
+            "win_rate": round(v["wins"] / v["trades"] * 100, 0) if v["trades"] else 0,
+        }
+    return jsonify({"ok": True, "days": result})
+
+
+# F&O-specific agent state
+_fno_state = _AgentState()
+
+
+@app.route("/api/fno/run_cycle", methods=["POST"])
+def api_fno_run_cycle():
+    """Trigger an F&O agent cycle in the background."""
+    if _fno_state.running:
+        return jsonify({"ok": False, "error": "F&O cycle already running"})
+
+    def _run():
+        _fno_state.running = True
+        try:
+            from fno_engine import get_fno_agent  # pylint: disable=import-outside-toplevel
+            result = get_fno_agent().run_cycle()
+            _fno_state.last_cycle = result or {}
+            logging.getLogger(__name__).info("[FNO Cycle] Complete")
+        except Exception as exc:
+            logging.getLogger(__name__).error(f"[FNO Cycle] Error: {exc}", exc_info=True)
+        finally:
+            _fno_state.running = False
+
+    threading.Thread(target=_run, daemon=True, name="fno-cycle").start()
+    return jsonify({"ok": True, "message": "F&O cycle started in background"})
+
+
+@app.route("/api/fno/set_interval", methods=["POST"])
+def api_fno_set_interval():
+    """Set the F&O auto-run interval in seconds."""
+    body = request.get_json(force=True)
+    secs = int(body.get("seconds", 900))
+    _fno_state.auto_interval = max(60, secs)
+    return jsonify({"ok": True, "interval": _fno_state.auto_interval})
+
+
+@app.route("/api/fno/agent_status")
+def api_fno_agent_status():
+    """Return F&O agent running status."""
+    return jsonify({
+        "ok":            True,
+        "agent_running": _fno_state.running,
+        "last_cycle":    _fno_state.last_cycle,
+        "auto_interval": _fno_state.auto_interval,
+    })
+
 
 # ── Telegram Intelligence endpoints ─────────────────────────────────────────
 

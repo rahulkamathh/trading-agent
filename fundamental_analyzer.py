@@ -139,26 +139,39 @@ class ScreenerScraper:
             logger.warning("beautifulsoup4 not installed — screener.in scraping disabled")
             return {}
 
-        url = f"https://www.screener.in/company/{symbol}/consolidated/"
-        try:
-            resp = requests.get(url, headers=_HEADERS, timeout=15)
-            if resp.status_code == 404:
-                # Try standalone
-                resp = requests.get(
-                    f"https://www.screener.in/company/{symbol}/",
-                    headers=_HEADERS, timeout=15
-                )
-            if resp.status_code != 200:
-                logger.debug(f"Screener.in {symbol}: HTTP {resp.status_code}")
+        # Try consolidated first, fall back to standalone
+        for url in [
+            f"https://www.screener.in/company/{symbol}/consolidated/",
+            f"https://www.screener.in/company/{symbol}/",
+        ]:
+            try:
+                resp = requests.get(url, headers=_HEADERS, timeout=15)
+                if resp.status_code == 200:
+                    break
+            except Exception as e:
+                logger.debug(f"Screener.in fetch failed for {symbol}: {e}")
                 return {}
-        except Exception as e:
-            logger.debug(f"Screener.in fetch failed for {symbol}: {e}")
+        else:
+            logger.debug(f"Screener.in {symbol}: not found")
             return {}
 
         soup = BeautifulSoup(resp.text, "html.parser")
-        result: dict = {"symbol": symbol}
+        result: dict = {"symbol": symbol, "_url": url}
 
-        # ── Top ratios ──────────────────────────────────────────────────────
+        # ── Company name & about ────────────────────────────────────────────
+        name_tag = soup.find("h1")
+        if name_tag:
+            result["company_name"] = name_tag.get_text(strip=True)
+
+        about_sec = soup.find(id="company-info") or soup.find(class_="company-profile")
+        if not about_sec:
+            about_sec = soup.find("div", class_=re.compile(r"about", re.I))
+        if about_sec:
+            about_p = about_sec.find("p")
+            if about_p:
+                result["about"] = about_p.get_text(strip=True)
+
+        # ── Top ratios (header KPIs) ─────────────────────────────────────────
         ratios_section = soup.find(id="top-ratios")
         if ratios_section:
             for li in ratios_section.find_all("li"):
@@ -167,81 +180,161 @@ class ScreenerScraper:
                 if not name_tag or not value_tag:
                     continue
                 name  = name_tag.get_text(strip=True).lower()
-                value = _parse_number(value_tag.get_text(strip=True))
-                if "roce"      in name: result["roce"]        = value
-                elif "roe"     in name: result["roe_screener"] = value
-                elif "p/e"     in name: result["pe_screener"]  = value
-                elif "p/b"     in name: result["pb_screener"]  = value
-                elif "book val"in name: result["book_value"]   = value
-                elif "div yld" in name or "dividend" in name:
-                    result["dividend_yield"] = value
-                elif "market cap" in name: result["market_cap_cr"] = value
-                elif "debt"    in name: result["debt_cr"]      = value
-                elif "sales gr"in name: result["sales_growth_3yr"] = value
-                elif "profit gr" in name: result["profit_growth_3yr"] = value
+                raw   = value_tag.get_text(strip=True)
+                value = _parse_number(raw)
+                result.setdefault("_raw_ratios", {})[name] = raw
+                if "market cap"  in name: result["market_cap_cr"]      = value
+                elif "current price" in name or "curr. price" in name:  result["price"]     = value
+                elif "high / low"in name or "52 week"  in name:
+                    # "1,608 / 1,114" format
+                    parts = raw.replace(",", "").split("/")
+                    if len(parts) == 2:
+                        result["high_52w"] = _parse_number(parts[0])
+                        result["low_52w"]  = _parse_number(parts[1])
+                elif "book value"  in name: result["book_value"]        = value
+                elif "dividend yld"in name or "div yld" in name: result["dividend_yield"] = value
+                elif "roce"        in name: result["roce"]              = value
+                elif "roe"         in name: result["roe"]               = value
+                elif "face value"  in name: result["face_value"]        = value
+                elif "p/e"         in name: result["pe"]                = value
+                elif "p/b"         in name: result["pb"]                = value
+                elif "eps"         in name: result["eps"]               = value
+                elif "debt"        in name and "equity" not in name: result["debt_cr"] = value
+                elif "sales gr"    in name: result["sales_growth_3yr"]  = value
+                elif "profit gr"   in name: result["profit_growth_3yr"] = value
+                elif "ind pe"      in name or "industry pe" in name: result["industry_pe"] = value
 
-        # ── Shareholding pattern ─────────────────────────────────────────────
+        # ── Helper: parse any screener.in financial table ────────────────────
+        def _parse_table(section_id: str) -> dict:
+            sec = soup.find(id=section_id)
+            if not sec:
+                return {}
+            table = sec.find("table")
+            if not table:
+                return {}
+            rows = table.find_all("tr")
+            if not rows:
+                return {}
+            # Header row → period labels
+            header_row = rows[0]
+            th_cells = header_row.find_all(["th", "td"])
+            periods = [c.get_text(strip=True) for c in th_cells]  # first cell = row label
+
+            out: dict = {"periods": periods[1:], "rows": {}}
+            for row in rows[1:]:
+                cells = row.find_all(["td", "th"])
+                if not cells:
+                    continue
+                label = cells[0].get_text(strip=True)
+                if not label:
+                    continue
+                vals = []
+                for c in cells[1:]:
+                    txt = c.get_text(strip=True)
+                    vals.append(txt)
+                out["rows"][label] = vals
+            return out
+
+        # ── Quarterly results ────────────────────────────────────────────────
+        result["quarterly"] = _parse_table("quarters")
+
+        # Latest quarter single values (backwards compat)
+        q = result["quarterly"]
+        if q.get("rows"):
+            def _latest(label_kws):
+                for lbl, vals in q["rows"].items():
+                    if any(k in lbl.lower() for k in label_kws):
+                        nums = [_parse_number(v) for v in vals]
+                        nums = [n for n in nums if n is not None]
+                        return nums[-1] if nums else None
+                return None
+            result["q_sales_cr"]  = _latest(["sales", "revenue"])
+            result["q_profit_cr"] = _latest(["net profit", "profit after"])
+            result["q_opm_pct"]   = _latest(["opm"])
+
+        # ── Annual Profit & Loss ─────────────────────────────────────────────
+        result["annual_pl"] = _parse_table("profit-loss")
+
+        # ── Balance Sheet ────────────────────────────────────────────────────
+        result["balance_sheet"] = _parse_table("balance-sheet")
+
+        # ── Cash Flows ───────────────────────────────────────────────────────
+        result["cash_flows"] = _parse_table("cash-flow")
+
+        # ── Ratios (efficiency) ───────────────────────────────────────────────
+        result["ratios_table"] = _parse_table("ratios")
+
+        # ── Shareholding pattern (multi-quarter trend) ───────────────────────
         holding_section = soup.find(id="shareholding")
         if holding_section:
             table = holding_section.find("table")
             if table:
                 rows = table.find_all("tr")
-                headers = [th.get_text(strip=True) for th in rows[0].find_all("th")] if rows else []
-                # Latest quarter is first data column
+                periods = []
+                if rows:
+                    hcells = rows[0].find_all(["th", "td"])
+                    periods = [c.get_text(strip=True) for c in hcells[1:]]
+                holding: dict = {"periods": periods, "rows": {}}
                 for row in rows[1:]:
-                    cells = row.find_all("td")
+                    cells = row.find_all(["td", "th"])
                     if not cells:
                         continue
-                    label = cells[0].get_text(strip=True).lower()
-                    val   = _parse_number(cells[1].get_text(strip=True)) if len(cells) > 1 else None
-                    if "promoter"  in label: result["promoter_holding"]   = val
-                    elif "fii"     in label or "foreign" in label: result["fii_holding"] = val
-                    elif "dii"     in label or "domestic" in label: result["dii_holding"] = val
-                    elif "public"  in label: result["public_holding"]     = val
-
-        # ── Quarterly results (last 4 quarters) ─────────────────────────────
-        quarters_section = soup.find(id="quarters")
-        if quarters_section:
-            table = quarters_section.find("table")
-            if table:
-                rows   = table.find_all("tr")
-                # Row labels: Sales, Expenses, Operating Profit, OPM%, Net Profit, EPS
-                q_sales = q_profit = q_opm = None
-                for row in rows:
-                    cells = row.find_all("td")
-                    if len(cells) < 2:
-                        continue
-                    label = cells[0].get_text(strip=True).lower()
-                    # Last non-empty column = most recent quarter
-                    vals = [_parse_number(c.get_text(strip=True)) for c in cells[1:]]
-                    vals = [v for v in vals if v is not None]
-                    if not vals:
-                        continue
-                    latest = vals[-1]
-                    if "sales" in label and "growth" not in label:
-                        q_sales = latest
-                    elif "net profit" in label or "profit after" in label:
-                        q_profit = latest
-                    elif "opm" in label:
-                        q_opm = latest
-                result["q_sales_cr"]  = q_sales
-                result["q_profit_cr"] = q_profit
-                result["q_opm_pct"]   = q_opm
-
-                # QoQ growth: compare last two quarters
-                for row in rows:
-                    cells = row.find_all("td")
-                    if len(cells) < 3:
-                        continue
-                    label = cells[0].get_text(strip=True).lower()
+                    label = cells[0].get_text(strip=True)
                     vals  = [_parse_number(c.get_text(strip=True)) for c in cells[1:]]
-                    vals  = [v for v in vals if v is not None]
-                    if len(vals) >= 2 and "net profit" in label:
-                        prev, curr = vals[-2], vals[-1]
-                        if prev and prev != 0:
-                            result["q_profit_growth_pct"] = round((curr - prev) / abs(prev) * 100, 1)
+                    holding["rows"][label] = vals
+                result["shareholding"] = holding
 
-        # ── Piotroski score (if shown) ───────────────────────────────────────
+                # Latest values for quick display
+                def _hld(kws):
+                    for lbl, vals in holding["rows"].items():
+                        if any(k in lbl.lower() for k in kws):
+                            v = [x for x in vals if x is not None]
+                            return v[-1] if v else None
+                    return None
+                result["promoter_holding"] = _hld(["promoter"])
+                result["fii_holding"]      = _hld(["fii", "foreign"])
+                result["dii_holding"]      = _hld(["dii", "domestic inst"])
+                result["public_holding"]   = _hld(["public"])
+
+        # ── Peers ────────────────────────────────────────────────────────────
+        peers_sec = soup.find(id="peers") or soup.find(id="peer-comparison")
+        if peers_sec:
+            table = peers_sec.find("table")
+            if table:
+                rows = table.find_all("tr")
+                if rows:
+                    headers = [c.get_text(strip=True) for c in rows[0].find_all(["th","td"])]
+                    peers = []
+                    for row in rows[1:]:
+                        cells = row.find_all(["td","th"])
+                        if not cells:
+                            continue
+                        peer = {}
+                        for i, c in enumerate(cells):
+                            key = headers[i] if i < len(headers) else str(i)
+                            peer[key] = c.get_text(strip=True)
+                        if peer:
+                            peers.append(peer)
+                    result["peers"] = peers
+
+        # ── Pros / Cons ───────────────────────────────────────────────────────
+        pros, cons = [], []
+        for tag in soup.find_all("li", class_=re.compile(r"pro|positive", re.I)):
+            pros.append(tag.get_text(strip=True))
+        for tag in soup.find_all("li", class_=re.compile(r"con|negative|warn", re.I)):
+            cons.append(tag.get_text(strip=True))
+        # Fallback: find ul with class pros/cons
+        for ul in soup.find_all("ul"):
+            c = ul.get("class", [])
+            cls_str = " ".join(c).lower()
+            if "pros" in cls_str or "positive" in cls_str:
+                pros += [li.get_text(strip=True) for li in ul.find_all("li")]
+            elif "cons" in cls_str or "negative" in cls_str:
+                cons += [li.get_text(strip=True) for li in ul.find_all("li")]
+        result["pros"] = list(dict.fromkeys(pros))[:8]   # dedupe, max 8
+        result["cons"] = list(dict.fromkeys(cons))[:8]
+
+        # ── Piotroski score ───────────────────────────────────────────────────
         piotro_tag = soup.find(string=re.compile(r"Piotroski", re.I))
         if piotro_tag:
             parent = piotro_tag.find_parent()
@@ -250,7 +343,27 @@ class ScreenerScraper:
                 if nums:
                     result["piotroski"] = int(nums[0])
 
-        logger.debug(f"Screener.in scraped {symbol}: {list(result.keys())}")
+        # ── Augment with yfinance (52W H/L, volume, EPS TTM) ─────────────────
+        try:
+            import yfinance as yf
+            ticker_sym = f"{symbol}.NS"
+            tk = yf.Ticker(ticker_sym)
+            fi = tk.fast_info
+            if not result.get("price"):
+                result["price"] = round(float(fi.last_price or 0), 2)
+            if not result.get("high_52w"):
+                result["high_52w"] = round(float(fi.year_high or 0), 2)
+            if not result.get("low_52w"):
+                result["low_52w"]  = round(float(fi.year_low or 0), 2)
+            result["volume"]    = int(fi.three_month_average_volume or 0)
+            result["prev_close"] = round(float(fi.previous_close or 0), 2)
+            if result["price"] and result["prev_close"]:
+                result["price_chg"] = round(result["price"] - result["prev_close"], 2)
+                result["price_chg_pct"] = round((result["price"] / result["prev_close"] - 1) * 100, 2)
+        except Exception:
+            pass
+
+        logger.info(f"Screener.in scraped {symbol}: {len(result)} fields")
         return result
 
     def get_all_cached(self) -> dict:
