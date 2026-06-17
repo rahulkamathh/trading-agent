@@ -692,6 +692,40 @@ def api_fix_today_baseline():
     return jsonify({"ok": True, "day_start_value": current, "message": "Today baseline reset"})
 
 
+@app.route("/api/migrate_fno_capital", methods=["POST"])
+def api_migrate_fno_capital():
+    """One-time migration: deduct ₹2L from equity cash so total capital = ₹11L eq + ₹2L FnO = ₹13L.
+    Safe to call multiple times — checks if migration already done via portfolio initial value."""
+    port = get_agent().portfolio
+    current_initial = port.state.get("initial", INITIAL_CAPITAL)
+
+    if current_initial <= 1_100_000:
+        return jsonify({"ok": True, "message": f"Already migrated — equity initial is ₹{current_initial:,}", "skipped": True})
+
+    FNO_ALLOCATION = 2_00_000
+    if port.state["cash"] < FNO_ALLOCATION:
+        return jsonify({"ok": False, "error": f"Equity cash ₹{port.state['cash']:,.0f} < ₹2L needed for migration. Close some positions first."})
+
+    # Deduct ₹2L from equity (it now lives in the FnO pool)
+    port.state["cash"]    -= FNO_ALLOCATION
+    port.state["initial"]  = 1_100_000   # new equity-only initial
+    port.state["day_start_value"] = round(port.get_total_value(), 2)
+    port.state["day_start_date"]  = _ist_now().strftime("%Y-%m-%d")
+    port._save()
+
+    logging.getLogger(__name__).info(
+        f"✅ Capital migration done — equity initial ₹{current_initial:,} → ₹1,100,000 "
+        f"(₹{FNO_ALLOCATION:,} transferred to FnO pool)"
+    )
+    return jsonify({
+        "ok":      True,
+        "message": "Migration complete: equity initial set to ₹11L, ₹2L deducted from equity cash",
+        "equity_initial": 1_100_000,
+        "equity_cash":    round(port.state["cash"], 2),
+        "total_capital":  1_300_000,
+    })
+
+
 @app.route("/api/set_interval", methods=["POST"])
 def api_set_interval():
     """Set the auto-run interval in seconds (minimum 60)."""

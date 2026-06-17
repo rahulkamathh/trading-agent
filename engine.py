@@ -292,10 +292,10 @@ PORTFOLIO_FILE = DATA_DIR / "portfolio.json"
 TRADE_LOG_FILE = DATA_DIR / "trade_log.json"
 SIGNALS_FILE   = DATA_DIR / "signals.json"
 
-INITIAL_CAPITAL  = 1_300_000   # ₹13 lakhs (₹10L equity + ₹2L F&O + ₹1L commodity)
-FNO_RESERVE      = 2_00_000   # ₹2L ring-fenced for F&O premiums — equity cannot touch this
-COMMODITY_RESERVE= 1_00_000   # ₹1L ring-fenced for commodity margins — equity cannot touch this
-EQUITY_CASH_FLOOR= FNO_RESERVE + COMMODITY_RESERVE  # ₹3L minimum cash equity must leave intact
+INITIAL_CAPITAL  = 1_100_000   # ₹11L equity-only capital (₹13L total = ₹11L eq + ₹2L FnO)
+FNO_RESERVE      = 0           # FnO now has its own independent ₹2L pool — no reserve needed here
+COMMODITY_RESERVE= 1_00_000   # ₹1L ring-fenced for commodity margins
+EQUITY_CASH_FLOOR= COMMODITY_RESERVE  # only commodity reserve needed now
 MAX_POSITION_PCT = 0.08        # max 8% per position
 STOP_LOSS_PCT    = 0.07        # 7% stop loss
 TAKE_PROFIT_PCT  = 0.20        # 20% take profit
@@ -1244,7 +1244,10 @@ class Portfolio:
         return self.state["cash"] >= min_floor and price > 0
 
     def execute_buy(self, ticker: str, price: float, strategy: str,
-                    reason: str = "", strength: float = 65.0) -> dict | None:
+                    reason: str = "", strength: float = 65.0,
+                    rsi_at_entry: float | None = None,
+                    signal_score: float | None = None,
+                    market_regime: str | None = None) -> dict | None:
 
         # ── Hard gate 1: market must be open ────────────────────────────── #
         if not _market_open():
@@ -1303,24 +1306,37 @@ class Portfolio:
 
         cost = qty * price
         self.state["cash"] -= cost
+        # ── Capture market regime at entry ──────────────────────────────────
+        _regime = market_regime
+        if _regime is None:
+            try:
+                _, _regime, _ = get_risk_manager().macro_risk()
+            except Exception:
+                _regime = "UNKNOWN"
+
         self.state["positions"][ticker] = {
-            "qty":           qty,
-            "avg_price":     price,
-            "strategy":      strategy,
-            "entry_date":    _now_ist().isoformat(),
-            "stop_loss":     stop_loss,      # always fixed -7% from entry — max loss is known
-            "target":        target,
-            "planned_rr":    planned_rr,
-            "risk_per_unit": risk_per_unit,
-            "strength":      round(strength, 1),
-            "atr_at_entry":  atr_val,        # cached for chandelier trailing (only moves stop UP)
-            "highest_close": price,          # tracks peak price for chandelier calculation
+            "qty":            qty,
+            "avg_price":      price,
+            "strategy":       strategy,
+            "entry_date":     _now_ist().isoformat(),
+            "stop_loss":      stop_loss,
+            "target":         target,
+            "planned_rr":     planned_rr,
+            "risk_per_unit":  risk_per_unit,
+            "strength":       round(strength, 1),
+            "atr_at_entry":   atr_val,
+            "highest_close":  price,
+            "rsi_at_entry":   round(rsi_at_entry, 1) if rsi_at_entry is not None else None,
+            "signal_score":   round(signal_score, 4) if signal_score is not None else None,
+            "market_regime":  _regime,
         }
         self._save()
         trade = self._log_trade(
             "BUY", ticker, qty, price, strategy, reason,
             stop_loss=stop_loss, target=target,
             planned_rr=planned_rr, risk_per_unit=risk_per_unit,
+            rsi_at_entry=rsi_at_entry, signal_score=signal_score,
+            market_regime=_regime, strength=strength,
         )
         logger.info(
             f"BUY  {ticker:20s} qty={qty} @ ₹{price:.2f}  "
@@ -1414,6 +1430,10 @@ class Portfolio:
             "SELL", ticker, qty, price, strategy, reason, pnl=pnl,
             actual_rr=actual_rr, planned_rr=planned_rr,
             trade_type=trade_type, hold_days=hold_days,
+            rsi_at_entry=pos.get("rsi_at_entry"),
+            signal_score=pos.get("signal_score"),
+            market_regime=pos.get("market_regime"),
+            strength=pos.get("strength"),
         )
         rr_str   = f"  RR={actual_rr:+.2f}(planned 1:{planned_rr})" if planned_rr else ""
         type_str = f"  [{trade_type}/{hold_days}d]"

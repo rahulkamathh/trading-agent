@@ -926,6 +926,15 @@
         <button class="btn btn-ghost" onclick="resetPortfolio()" style="font-size:12px">Equity only</button>
       </div>
       <div style="font-size:11px;color:var(--muted);margin-top:8px">Full Reset clears equity, F&amp;O and commodity positions + trade history. Change the amount above to set your starting capital.</div>
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+        <div style="font-size:11px;color:var(--amber);margin-bottom:8px;font-weight:600">⚠ ONE-TIME CAPITAL FIX</div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
+          Equity was started with ₹13L but FnO also got its own ₹2L on top — total was ₹15L instead of ₹13L.
+          This deducts ₹2L from equity cash so the split is correct: ₹11L equity + ₹2L FnO = ₹13L total.
+        </div>
+        <button class="btn btn-amber" onclick="migrateFnoCapital()" style="font-size:12px">Fix Capital Split (₹11L eq + ₹2L FnO)</button>
+        <span id="migrateFnoMsg" style="font-size:11px;margin-left:10px;color:var(--muted)"></span>
+      </div>
     </div>
 
     <!-- ── Capital Allocation ────────────────────────────────────────── -->
@@ -2917,6 +2926,22 @@ async function setInterval_() {
   if (d.ok) {
     toast(`Auto-run interval set to ${d.interval}s ✓`, 'success');
     document.getElementById('intervalDisplay').textContent = `Current: ${d.interval}s (${Math.round(d.interval/60)} min)`;
+  }
+}
+
+async function migrateFnoCapital() {
+  const msg = document.getElementById('migrateFnoMsg');
+  msg.style.color = 'var(--muted)';
+  msg.textContent = 'Running…';
+  const r = await fetch('/api/migrate_fno_capital', {method:'POST'});
+  const d = await r.json();
+  if (d.ok) {
+    msg.style.color = d.skipped ? 'var(--muted)' : 'var(--green)';
+    msg.textContent = '✓ ' + d.message;
+    toast(d.message, 'success');
+  } else {
+    msg.style.color = 'var(--red)';
+    msg.textContent = '⚠ ' + d.error;
   }
 }
 
