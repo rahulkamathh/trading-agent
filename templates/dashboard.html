@@ -2164,6 +2164,7 @@ async function loadDashboard() {
 // KPIs
 // ──────────────────────────────────────────────
 function renderKPIs(p) {
+  if (_currentDesk === 'fno') return;  // F&O desk manages its own header
   // ── Summary bar ──
   const totalEl = document.getElementById('kpiTotal');
   totalEl.textContent = fmt(p.total_value);
@@ -2217,6 +2218,19 @@ function renderKPIs(p) {
 // Today's P&L
 // ──────────────────────────────────────────────
 function renderTodayPnl(t) {
+  if (_currentDesk === 'fno') return;  // F&O desk manages its own header
+  if (t == null) return;
+  // today_pnl can be a plain number (from API) or an object {day_pnl, day_pnl_pct}
+  const pnl = (typeof t === 'object' && t !== null) ? (t.day_pnl ?? t) : t;
+  const pct = (typeof t === 'object' && t !== null) ? (t.day_pnl_pct ?? null) : null;
+  const valEl = document.getElementById('kpiDayPnl');
+  const pctEl = document.getElementById('kpiDayPct');
+  if (!valEl || !pctEl) return;
+  valEl.textContent = fmt(pnl);
+  valEl.className = 'sb-val ' + cls(pnl);
+  if (pct != null) { pctEl.textContent = fmtPct(pct); pctEl.className = 'sb-sub ' + cls(pct); }
+}
+function _renderTodayPnlOriginal(t) {  // kept for reference, not called
   if (!t) return;
   const valEl = document.getElementById('kpiDayPnl');
   const pctEl = document.getElementById('kpiDayPct');
@@ -2247,6 +2261,7 @@ function segmentPill(ticker) {
 }
 
 function renderPositions(positions) {
+  if (_currentDesk === 'fno') return;
   document.getElementById('kpiPositions').textContent = positions.length;
   const dp = document.getElementById('dash-positions');
   if (dp) dp.textContent = positions.length + ' / 20';
@@ -2290,7 +2305,7 @@ let _sigActiveFilter = 'ALL';
 
 function renderSignals(signals, ts) {
   _sigAllSignals = signals;
-  document.getElementById('kpiSignals').textContent = signals.length + ' active';
+  if (_currentDesk !== 'fno') document.getElementById('kpiSignals').textContent = signals.length + ' active';
   const ds = document.getElementById('dash-signals');
   if (ds) {
     const buys  = signals.filter(s => s.signal === 'BUY').length;
@@ -5873,15 +5888,20 @@ async function loadFNOTrades() {
 // ── F&O Overview loader ───────────────────────────────────────────────────
 async function loadFNOOverview() {
   try {
-    // Also refresh header KPIs with F&O data
-    fetch('/api/fno/dashboard').then(r=>r.json()).then(dd=>{
-      if (dd.ok && _currentDesk==='fno') renderFNOKPIs(dd.data);
-    }).catch(()=>{});
-    const d = await fetch('/api/fno/positions').then(r=>r.json());
-    const s = d.summary || {};
-    const g = d.greeks  || {};
-    const px = d.positions || [];
-    const trd = d.trades  || [];
+    // Fetch full dashboard data (has deployed, unrealised, greeks, positions, trades)
+    const dashR = await fetch('/api/fno/dashboard');
+    const dd    = await dashR.json();
+    if (!dd.ok) return;
+    const d   = dd.data;
+    if (_currentDesk === 'fno') renderFNOKPIs(d);
+
+    const s   = d;            // dashboard has all summary fields at top level
+    const g   = d.greeks || {};
+    const px  = d.positions || [];
+    // Recent trades from trade log
+    const trdR = await fetch('/api/fno/trades');
+    const trdD = await trdR.json();
+    const trd  = trdD.trades || [];
 
     const fmt  = v => '₹' + Math.round(v||0).toLocaleString('en-IN');
     const clr  = v => (v||0) >= 0 ? 'var(--green)' : 'var(--red)';
@@ -5914,8 +5934,8 @@ async function loadFNOOverview() {
           <td style="padding:7px 10px;color:var(--amber)">${p.instrument||p.ticker}</td>
           <td style="padding:7px 10px;text-align:center">${p.type||'—'}</td>
           <td style="padding:7px 10px;text-align:center;color:var(--muted)">${p.expiry||'—'}</td>
-          <td style="padding:7px 10px;text-align:right">₹${(p.entry_price||0).toFixed(2)}</td>
-          <td style="padding:7px 10px;text-align:right">₹${(p.current_price||0).toFixed(2)}</td>
+          <td style="padding:7px 10px;text-align:right">₹${(p.entry_premium||0).toFixed(2)}</td>
+          <td style="padding:7px 10px;text-align:right">₹${(p.curr_premium||0).toFixed(2)}</td>
           <td style="padding:7px 10px;text-align:right;color:${cls};font-weight:600">₹${sign(mtm)}</td>
           <td style="padding:7px 10px;text-align:right">${(p.delta||0).toFixed(2)}</td>
         </tr>`;
@@ -5948,7 +5968,7 @@ function renderFNOKPIs(d) {
   const unreal     = d.unrealised_pnl || 0;
   const realised   = d.realised_pnl   || 0;
   const totalPnl   = realised + unreal;
-  const initial    = d.initial_capital || 200000;
+  const initial    = d.initial || d.initial_capital || 200000;
   const pnlPct     = initial ? totalPnl / initial * 100 : 0;
   const cash       = d.cash || 0;
   const aum        = deployed + unreal + cash;
