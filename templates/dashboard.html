@@ -488,7 +488,7 @@
       <div style="flex:1"></div>
       <div style="text-align:right">
         <div style="font-size:9px;color:var(--muted);letter-spacing:1px">INITIAL CAPITAL</div>
-        <div style="font-size:18px;color:var(--text);font-weight:600;margin-top:2px">₹13,00,000</div>
+        <div style="font-size:18px;color:var(--text);font-weight:600;margin-top:2px">₹15,00,000</div>
       </div>
     </div>
   </div>
@@ -5367,64 +5367,76 @@ async function loadMaster() {
       const t = setTimeout(()=>ctrl.abort(), ms);
       return fetch(url, {signal:ctrl.signal}).then(r=>r.json()).finally(()=>clearTimeout(t));
     };
-    const [dash, fno] = await Promise.all([
+    const [eqR, fnoR] = await Promise.all([
       fetchTimeout('/api/dashboard'),
-      fetchTimeout('/api/fno/dashboard', 4000).catch(()=>({ok:false,data:{deployed:0,unrealised_pnl:0,realised_pnl:0,positions:[],greeks:{delta:0,theta:0}}}))
+      fetchTimeout('/api/fno/dashboard', 4000).catch(()=>({ok:false,data:{deployed:0,unrealised_pnl:0,realised_pnl:0,positions:[],greeks:{delta:0,theta:0},cash:0,initial:200000}}))
     ]);
-    const p = dash.portfolio || {};
-    const tv = p.total_value || 0;
-    const init = p.initial_capital || p.initial || 1300000;
-    const pnl = tv - init;
-    const pnlPct = init ? (pnl/init*100) : 0;
-    const fmt = v => '₹' + Math.round(v).toLocaleString('en-IN');
-    const clr = v => v >= 0 ? 'var(--green)' : 'var(--red)';
+
+    // ── Equity data ─────────────────────────────────────────────────────
+    const eqData  = (eqR.ok ? eqR.data : null) || {};
+    const p       = eqData.portfolio || {};
+    const positions = eqData.positions || [];
+    const signals   = eqData.signals   || [];
+    const tv      = p.total_value    || 0;
+    const init    = p.initial        || 1300000;
+    const pnl     = p.total_pnl      || (tv - init);
+    const pnlPct  = p.total_pnl_pct  || (init ? (pnl / init * 100) : 0);
+    // today_pnl lives at top level of data (not inside portfolio)
+    const todayPnl = typeof eqData.today_pnl === 'number' ? eqData.today_pnl : 0;
+    const todayPct = tv > 0 ? (todayPnl / tv * 100) : 0;
+
+    const fmt  = v => '₹' + Math.round(v).toLocaleString('en-IN');
+    const clr  = v => v >= 0 ? 'var(--green)' : 'var(--red)';
     const sign = v => (v >= 0 ? '+' : '') + Math.round(v).toLocaleString('en-IN');
 
-    // Equity panel
     setText('mstrEqValue', fmt(tv));
-    var dayPnl = p.day_pnl || 0;
-    document.getElementById('mstrEqDayPnl').textContent = fmt(dayPnl);
-    document.getElementById('mstrEqDayPnl').style.color = clr(dayPnl);
-    var dayPct = p.day_pnl_pct || 0;
-    document.getElementById('mstrEqDayPct').textContent = (dayPct >= 0 ? '+' : '') + dayPct.toFixed(2) + '%';
-    document.getElementById('mstrEqDayPct').style.color = clr(dayPct);
-    document.getElementById('mstrEqPnlPct').textContent = (pnlPct >= 0 ? '+' : '') + pnlPct.toFixed(2) + '% total';
-    document.getElementById('mstrEqPnlPct').style.color = clr(pnlPct);
-    setText('mstrEqPos', (p.num_positions || 0).toString());
+    document.getElementById('mstrEqDayPnl').textContent  = '₹' + sign(todayPnl);
+    document.getElementById('mstrEqDayPnl').style.color  = clr(todayPnl);
+    document.getElementById('mstrEqDayPct').textContent  = (todayPct >= 0 ? '+' : '') + todayPct.toFixed(2) + '%';
+    document.getElementById('mstrEqDayPct').style.color  = clr(todayPct);
+    document.getElementById('mstrEqPnlPct').textContent  = (pnlPct >= 0 ? '+' : '') + pnlPct.toFixed(2) + '% total';
+    document.getElementById('mstrEqPnlPct').style.color  = clr(pnlPct);
+    setText('mstrEqPos',  positions.length.toString());
     setText('mstrEqCash', fmt(p.cash || 0));
-    var totalPnl = p.total_pnl || 0;
-    document.getElementById('mstrEqTotalPnl').textContent = '₹' + sign(totalPnl);
-    document.getElementById('mstrEqTotalPnl').style.color = clr(totalPnl);
-    setText('mstrEqSigs', (dash.signals ? dash.signals.filter(s=>s.signal==='BUY').length : 0).toString() + ' buy');
+    document.getElementById('mstrEqTotalPnl').textContent = '₹' + sign(pnl);
+    document.getElementById('mstrEqTotalPnl').style.color = clr(pnl);
+    setText('mstrEqSigs', signals.filter(s => s.signal === 'BUY').length + ' buy');
 
-    // F&O panel — fno is now /api/fno/dashboard response: {ok, data:{deployed, unrealised_pnl, ...}}
-    var fd = (fno.ok ? fno.data : fno) || {};
-    var fpx = fd.positions || [];
-    var fg  = fd.greeks   || {};
+    // ── F&O data ─────────────────────────────────────────────────────────
+    const fd  = (fnoR.ok ? fnoR.data : null) || {};
+    const fpx = fd.positions || [];
+    const fg  = fd.greeks    || {};
     document.getElementById('mstrFnoDeployed').textContent = fmt(fd.deployed || 0);
-    var mtm = fd.unrealised_pnl || 0;
+    const mtm = fd.unrealised_pnl || 0;
     document.getElementById('mstrFnoMtm').textContent = '₹' + sign(mtm);
     document.getElementById('mstrFnoMtm').style.color = clr(mtm);
     setText('mstrFnoPos', (fd.open_count || fpx.length || 0).toString());
-    var freal = fd.realised_pnl || 0;
+    const freal = fd.realised_pnl || 0;
     document.getElementById('mstrFnoReal').textContent = '₹' + sign(freal);
     document.getElementById('mstrFnoReal').style.color = clr(freal);
     setText('mstrFnoDelta', (fg.delta || 0).toFixed(2));
     document.getElementById('mstrFnoTheta').textContent = '₹' + (fg.theta || 0).toFixed(2);
     document.getElementById('mstrFnoTheta').style.color = (fg.theta || 0) < 0 ? 'var(--red)' : 'var(--green)';
 
-    // Combined (equity value + FNO deployed + FNO unrealised gain)
-    var fnoNet = (fd.deployed || 0) + (fd.unrealised_pnl || 0);
-    var combined = tv + fnoNet;
-    document.getElementById('mstrTotal').textContent = fmt(combined);
-    var initCombined = init + (fd.initial || 200000);
-    var combPnl = combined - initCombined;
-    document.getElementById('mstrTotalPnl').textContent = '₹' + sign(combPnl) + ' (' + (initCombined ? (combPnl/initCombined*100).toFixed(2) : 0) + '%) total return';
+    // ── Combined account value ────────────────────────────────────────────
+    // equity_total_value + FNO (deployed + unrealised + remaining_cash)
+    const fnoPortValue = (fd.deployed || 0) + (fd.unrealised_pnl || 0) + (fd.cash || 0);
+    const combined     = tv + fnoPortValue;
+    const initFno      = fd.initial  || 200000;
+    const initCombined = init + initFno;
+    const combPnl      = combined - initCombined;
+    const combPct      = initCombined ? (combPnl / initCombined * 100) : 0;
+    document.getElementById('mstrTotal').textContent    = fmt(combined);
+    document.getElementById('mstrTotalPnl').textContent =
+      '₹' + sign(combPnl) + ' (' + combPct.toFixed(2) + '%) total return';
     document.getElementById('mstrTotalPnl').style.color = clr(combPnl);
+
+    // Update initial capital label if present
+    const initEl = document.getElementById('mstrInitCapital');
+    if (initEl) initEl.textContent = fmt(initCombined);
+
   } catch(e) { console.error('loadMaster:', e); }
 }
-
-
 
 
 // ══════════════════════════════════════════════════════════════════════
