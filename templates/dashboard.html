@@ -466,12 +466,13 @@
       <div style="border:1px solid var(--cyan);padding:16px;background:var(--panel)">
         <div style="color:var(--cyan);font-size:11px;letter-spacing:1.5px;margin-bottom:12px;border-bottom:1px solid var(--border);padding-bottom:8px">⚡ F&amp;O DESK</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-          <div><div style="font-size:9px;color:var(--muted);letter-spacing:1px">DEPLOYED</div><div id="mstrFnoDeployed" style="font-size:22px;color:var(--text);font-weight:700;margin-top:2px">₹—</div></div>
-          <div><div style="font-size:9px;color:var(--muted);letter-spacing:1px">TODAY MTM</div><div id="mstrFnoMtm" style="font-size:22px;font-weight:700;margin-top:2px">₹—</div></div>
-          <div><div style="font-size:9px;color:var(--muted);letter-spacing:1px">OPEN POSITIONS</div><div id="mstrFnoPos" style="font-size:18px;color:var(--text);font-weight:600;margin-top:2px">—</div></div>
-          <div><div style="font-size:9px;color:var(--muted);letter-spacing:1px">REALISED P&amp;L</div><div id="mstrFnoReal" style="font-size:18px;font-weight:600;margin-top:2px">₹—</div></div>
-          <div><div style="font-size:9px;color:var(--muted);letter-spacing:1px">DELTA EXPOSURE</div><div id="mstrFnoDelta" style="font-size:18px;color:var(--text);font-weight:600;margin-top:2px">—</div></div>
-          <div><div style="font-size:9px;color:var(--muted);letter-spacing:1px">THETA / DAY</div><div id="mstrFnoTheta" style="font-size:18px;font-weight:600;margin-top:2px">—</div></div>
+          <div style="grid-column:1/-1"><div style="font-size:9px;color:var(--muted);letter-spacing:1px">PORTFOLIO VALUE</div><div id="mstrFnoValue" style="font-size:26px;color:var(--cyan);font-weight:700;margin-top:2px">₹—</div><div id="mstrFnoValuePct" style="font-size:11px;margin-top:2px;color:var(--muted)">—</div></div>
+          <div><div style="font-size:9px;color:var(--muted);letter-spacing:1px">DEPLOYED</div><div id="mstrFnoDeployed" style="font-size:16px;color:var(--text);font-weight:600;margin-top:2px">₹—</div></div>
+          <div><div style="font-size:9px;color:var(--muted);letter-spacing:1px">CASH</div><div id="mstrFnoCash" style="font-size:16px;color:var(--text);font-weight:600;margin-top:2px">₹—</div></div>
+          <div><div style="font-size:9px;color:var(--muted);letter-spacing:1px">REALISED P&amp;L</div><div id="mstrFnoReal" style="font-size:16px;font-weight:600;margin-top:2px">₹—</div></div>
+          <div><div style="font-size:9px;color:var(--muted);letter-spacing:1px">UNREALISED MTM</div><div id="mstrFnoMtm" style="font-size:16px;font-weight:600;margin-top:2px">₹—</div></div>
+          <div><div style="font-size:9px;color:var(--muted);letter-spacing:1px">OPEN POSITIONS</div><div id="mstrFnoPos" style="font-size:16px;color:var(--text);font-weight:600;margin-top:2px">—</div></div>
+          <div><div style="font-size:9px;color:var(--muted);letter-spacing:1px">THETA / DAY</div><div id="mstrFnoTheta" style="font-size:16px;font-weight:600;margin-top:2px">—</div></div>
         </div>
         <div style="margin-top:14px">
           <button class="btn btn-primary" onclick="switchDesk('fno')">OPEN F&amp;O DESK →</button>
@@ -5530,18 +5531,35 @@ async function loadMaster() {
     setText('mstrEqSigs', signals.filter(s => s.signal === 'BUY').length + ' buy');
 
     // ── F&O data ─────────────────────────────────────────────────────────
-    const fd  = (fnoR.ok ? fnoR.data : null) || {};
-    const fpx = fd.positions || [];
-    const fg  = fd.greeks    || {};
-    document.getElementById('mstrFnoDeployed').textContent = fmt(fd.deployed || 0);
-    const mtm = fd.unrealised_pnl || 0;
+    const fd   = (fnoR.ok ? fnoR.data : null) || {};
+    const fpx  = fd.positions || [];
+    const fg   = fd.greeks    || {};
+    const fnoInitial = fd.initial || 200000;
+    const fnoCash    = fd.cash    || 0;
+    const fnoDeployed = fd.deployed || 0;
+    const fnoUnreal   = fd.unrealised_pnl || 0;
+    const fnoReal     = fd.realised_pnl   || 0;
+    // FnO portfolio value = cash remaining + deployed premiums + unrealised P&L
+    const fnoPortValue = fnoCash + fnoDeployed + fnoUnreal;
+    const fnoPnlTotal  = fnoPortValue - fnoInitial;
+    const fnoPnlPct    = fnoInitial ? (fnoPnlTotal / fnoInitial * 100) : 0;
+
+    setText('mstrFnoValue', fmt(fnoPortValue));
+    const fvPctEl = document.getElementById('mstrFnoValuePct');
+    if (fvPctEl) {
+      fvPctEl.textContent = (fnoPnlTotal >= 0 ? '+' : '') + Math.round(fnoPnlTotal).toLocaleString('en-IN') +
+        ' (' + fnoPnlPct.toFixed(2) + '%) total';
+      fvPctEl.style.color = clr(fnoPnlTotal);
+    }
+    document.getElementById('mstrFnoDeployed').textContent = fmt(fnoDeployed);
+    const fnoCashEl = document.getElementById('mstrFnoCash');
+    if (fnoCashEl) fnoCashEl.textContent = fmt(fnoCash);
+    const mtm = fnoUnreal;
     document.getElementById('mstrFnoMtm').textContent = '₹' + sign(mtm);
     document.getElementById('mstrFnoMtm').style.color = clr(mtm);
     setText('mstrFnoPos', (fd.open_count || fpx.length || 0).toString());
-    const freal = fd.realised_pnl || 0;
-    document.getElementById('mstrFnoReal').textContent = '₹' + sign(freal);
-    document.getElementById('mstrFnoReal').style.color = clr(freal);
-    setText('mstrFnoDelta', (fg.delta || 0).toFixed(2));
+    document.getElementById('mstrFnoReal').textContent = '₹' + sign(fnoReal);
+    document.getElementById('mstrFnoReal').style.color = clr(fnoReal);
     document.getElementById('mstrFnoTheta').textContent = '₹' + (fg.theta || 0).toFixed(2);
     document.getElementById('mstrFnoTheta').style.color = (fg.theta || 0) < 0 ? 'var(--red)' : 'var(--green)';
 
@@ -5552,12 +5570,10 @@ async function loadMaster() {
     const cfgTotal    = cfg.total_capital     || (cfgEqInit + cfgFnoInit);
 
     // ── Combined account value ────────────────────────────────────────────
-    // FnO's ₹2L is carved from within the total capital (not additive on top).
-    // So combined = equity value + FnO P&L only (gains/losses), NOT + FnO cash.
-    // This prevents double-counting the FnO allocation.
-    const fnoPnl      = (fd.realised_pnl || 0) + (fd.unrealised_pnl || 0);
-    const combined    = tv + fnoPnl;
-    const initCombined = init;  // use actual equity initial (₹13L)
+    // True combined: equity portfolio value + full FnO portfolio value (cash + deployed + unrealised)
+    // Equity initial = ₹11L, FnO initial = ₹2L → total initial = ₹13L
+    const combined     = tv + fnoPortValue;
+    const initCombined = init + fnoInitial;  // ₹11L equity + ₹2L FnO = ₹13L
     const combPnl     = combined - initCombined;
     const combPct     = initCombined ? (combPnl / initCombined * 100) : 0;
     document.getElementById('mstrTotal').textContent    = fmt(combined);
