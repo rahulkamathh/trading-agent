@@ -2703,6 +2703,67 @@ class TradingAgent:
         # 1. Check stop-loss / take-profit on open positions first
         stops = self.portfolio.check_stops()
 
+        # ── Regime Detection Guard-rail ─────────────────────────────────────
+        _regime_data = {}
+        _regime_name = "UNKNOWN"
+        try:
+            from regime_agent import get_regime_agent
+            _regime_data = get_regime_agent().get_dashboard_data()
+            _regime_name = _regime_data.get("regime", "UNKNOWN")
+            _regime_score = _regime_data.get("regime_score", 50)
+            logger.info(f"🌍 Market Regime: {_regime_name} (score={_regime_score})")
+        except Exception as e:
+            logger.warning(f"Regime detection unavailable: {e}")
+            _regime_score = 50
+
+        # Hard stop: no new buys in CRISIS
+        _regime_blocks_buys = _regime_name == "CRISIS"
+        if _regime_blocks_buys:
+            logger.warning("🚨 REGIME=CRISIS — all new BUY signals suppressed")
+
+        # Reduce max positions in BEAR
+        _regime_position_cap = 10 if _regime_name == "BEAR" else 15  # default MAX_POSITIONS
+
+        # ── Portfolio Risk (VaR) Guard-rail ─────────────────────────────────
+        _var_blocks_buys = False
+        try:
+            from risk_agent import get_risk_agent
+            risk_summary = get_risk_agent().get_risk_summary()
+            var_95 = risk_summary.get("var_95", 0)
+            portfolio_value = self.portfolio.get_total_value()
+            var_pct = abs(var_95) / portfolio_value * 100 if portfolio_value > 0 else 0
+            beta = risk_summary.get("beta", 1.0)
+            logger.info(f"📊 Risk: VaR95={var_pct:.1f}% of portfolio, Beta={beta:.2f}")
+            if var_pct > 5.0:
+                logger.warning(f"⚠️  VaR {var_pct:.1f}% exceeds 5% threshold — pausing new buys")
+                _var_blocks_buys = True
+            if beta > 1.8:
+                logger.warning(f"⚠️  Portfolio Beta={beta:.2f} > 1.8 — tightening stop-loss to 5%")
+                # Tighten stops dynamically
+                for tk in list(self.portfolio.state.get("positions", {}).keys()):
+                    pos = self.portfolio.state["positions"][tk]
+                    if pos.get("stop_pct", 0.07) > 0.05:
+                        pos["stop_pct"] = 0.05
+        except Exception as e:
+            logger.warning(f"Risk agent unavailable: {e}")
+            _var_blocks_buys = False
+
+        # ── News Sentiment Guard-rail ───────────────────────────────────────
+        _news_blocks_buys = False
+        try:
+            from news_agent import get_news_agent
+            sentiment = get_news_agent().get_market_sentiment()
+            sentiment_score = sentiment.get("score", 0)
+            sentiment_label = sentiment.get("overall", "NEUTRAL")
+            logger.info(f"📰 News Sentiment: {sentiment_label} (score={sentiment_score:.2f})")
+            # Only block buys on extreme bearish sentiment (< -0.6)
+            if sentiment_score < -0.6:
+                logger.warning(f"📰 Extreme bearish sentiment ({sentiment_score:.2f}) — pausing new buys")
+                _news_blocks_buys = True
+        except Exception as e:
+            logger.debug(f"News agent unavailable: {e}")
+            _news_blocks_buys = False
+
         # 2. Generate fresh signals (also returns the already-fetched price data)
         signals, all_data = self.aggregator.run()
 
@@ -2887,6 +2948,39 @@ class TradingAgent:
                     skip_reasons["sector_correlation"] = skip_reasons.get("sector_correlation", 0) + 1
                     continue
 
+            # Guard-rail: Regime / VaR / News blocks
+            if _regime_blocks_buys or _var_blocks_buys or _news_blocks_buys:
+                block_reason = []
+                if _regime_blocks_buys: block_reason.append(f"regime={_regime_name}")
+                if _var_blocks_buys: block_reason.append("var>5%")
+                if _news_blocks_buys: block_reason.append("extreme_bearish_news")
+                logger.info(f"🛑 BLOCKED {ticker}: {', '.join(block_reason)}")
+                skip_reasons["agent_block"] = skip_reasons.get("agent_block", 0) + 1
+                continue
+
+            # Regime position cap
+            if len(self.portfolio.state.get("positions", {})) >= _regime_position_cap:
+                skip_reasons["regime_pos_cap"] = skip_reasons.get("regime_pos_cap", 0) + 1
+                continue
+
+            # Insider signal boost: if ACCUMULATION signal for this ticker, boost strength by 5
+            try:
+                from insider_agent import get_insider_agent
+                insider_sigs = {s["ticker"]: s for s in get_insider_agent().get_insider_signals()}
+                if ticker in insider_sigs:
+                    isig = insider_sigs[ticker]
+                    if isig["signal"] == "ACCUMULATION":
+                        composite_strength = min(100, composite_strength + 5)
+                        logger.info(f"📈 Insider ACCUMULATION boost for {ticker}: strength→{composite_strength:.0f}")
+                    elif isig["signal"] == "DISTRIBUTION":
+                        composite_strength = max(0, composite_strength - 10)
+                        logger.info(f"📉 Insider DISTRIBUTION penalty for {ticker}: strength→{composite_strength:.0f}")
+                        if composite_strength < buy_threshold:
+                            skip_reasons["insider_distribution"] = skip_reasons.get("insider_distribution", 0) + 1
+                            continue
+            except Exception:
+                pass
+
             if self.portfolio.in_cooldown(ticker):
                 logger.info(f"⏳ COOLDOWN {ticker} — skipping (exited recently)")
                 continue
@@ -3020,6 +3114,13 @@ class TradingAgent:
             "portfolio_value": round(self.portfolio.get_total_value(), 2),
             "timestamp":       _now_ist().isoformat(),
             "buy_threshold":   learning.get_threshold(),
+            "regime":          _regime_name,
+            "regime_score":    _regime_data.get("regime_score", 50) if _regime_data else 50,
+            "agent_blocks": {
+                "regime": _regime_blocks_buys,
+                "var":    _var_blocks_buys,
+                "news":   _news_blocks_buys,
+            },
         }
         if skip_reasons:
             logger.info(f"⏭  Skip summary: {skip_reasons}")
