@@ -1821,9 +1821,10 @@ function showView(view) {
         loadTraderStatus();
         loadCapitalConfig();
       } else if (view === 'calendar') {
+        const calDesk = _currentDesk;  // capture NOW before any async
         const calTitle = document.querySelector('#page-calendar .page-title');
-        if (calTitle) calTitle.textContent = _currentDesk === 'fno' ? '📅 F&O P&L CALENDAR' : '📅 P&L CALENDAR';
-        loadPnlCalendar();
+        if (calTitle) calTitle.textContent = calDesk === 'fno' ? '📅 F&O P&L CALENDAR' : '📅 P&L CALENDAR';
+        loadPnlCalendar(calDesk);
       } else if (view === 'fno') {
         loadFNO();
       } else if (view === 'fno-signals') {
@@ -4668,9 +4669,10 @@ function calNav(dir) {
   renderCalendar();
 }
 
-async function loadPnlCalendar() {
+async function loadPnlCalendar(desk) {
+  const d = desk || _currentDesk;
   try {
-    const r = await fetch(_currentDesk === 'fno' ? '/api/fno/pnl_calendar' : '/api/pnl_calendar');
+    const r = await fetch(d === 'fno' ? '/api/fno/pnl_calendar' : '/api/pnl_calendar');
     const j = await r.json();
     _calData = j.days || {};
     renderCalendar();
@@ -5523,8 +5525,9 @@ async function loadMaster() {
     const init    = p.initial        || 1300000;
     const pnl     = p.total_pnl      || (tv - init);
     const pnlPct  = p.total_pnl_pct  || (init ? (pnl / init * 100) : 0);
-    // today_pnl lives at top level of data (not inside portfolio)
-    const todayPnl = typeof eqData.today_pnl === 'number' ? eqData.today_pnl : 0;
+    // today_pnl can be a plain number (when fno_adj>0 in app.py) or {day_pnl, day_pnl_pct} object
+    const _tp = eqData.today_pnl;
+    const todayPnl = (typeof _tp === 'object' && _tp !== null) ? (_tp.day_pnl ?? 0) : (typeof _tp === 'number' ? _tp : 0);
     const todayPct = tv > 0 ? (todayPnl / tv * 100) : 0;
 
     const fmt  = v => '₹' + Math.round(v).toLocaleString('en-IN');
