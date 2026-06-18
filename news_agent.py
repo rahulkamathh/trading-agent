@@ -658,6 +658,127 @@ class NewsAgent:
             })
         return result
 
+    # ------------------------------------------------------------ Spec-compatible API
+
+    def fetch_news(self, max_articles: int = 50) -> list:
+        """
+        Return a normalised list of article dicts (spec-compatible).
+        Each dict: title, source, url, published, sentiment_score, sentiment, tickers_mentioned.
+        Results are cached; underlying cache is shared with get_news_items().
+        """
+        raw = self.get_news_items()
+        out = []
+        for item in raw[:max_articles]:
+            text = item.get("title", "") + " " + item.get("description", "")
+            score = round(_sentiment_score(text), 3)
+            label = "BULLISH" if score > 0.1 else ("BEARISH" if score < -0.1 else "NEUTRAL")
+            out.append({
+                "title":             item.get("title", ""),
+                "source":            item.get("source", "RSS"),
+                "url":               item.get("link", ""),
+                "published":         item.get("published", ""),
+                "sentiment_score":   score,
+                "sentiment":         label,
+                "tickers_mentioned": item.get("tickers", []),
+            })
+        return out
+
+    def get_ticker_sentiment(self, ticker: str, news: list = None) -> dict:
+        """
+        Filter news mentioning the given ticker and return a sentiment summary.
+        Matches by ticker base name (without .NS suffix), case-insensitive.
+        """
+        if news is None:
+            news = self.fetch_news()
+
+        base = ticker.replace(".NS", "").upper()
+        relevant = []
+        for a in news:
+            title_lower = a.get("title", "").lower()
+            mentioned_bases = [t.replace(".NS", "") for t in a.get("tickers_mentioned", [])]
+            if base.lower() in title_lower or base in mentioned_bases:
+                relevant.append(a)
+
+        full_ticker = ticker if ".NS" in ticker else f"{ticker}.NS"
+        if not relevant:
+            return {
+                "ticker": full_ticker,
+                "sentiment": "NEUTRAL",
+                "score": 0.0,
+                "article_count": 0,
+                "recent_headlines": [],
+            }
+
+        avg_score = round(sum(a["sentiment_score"] for a in relevant) / len(relevant), 3)
+        label = "BULLISH" if avg_score > 0.1 else ("BEARISH" if avg_score < -0.1 else "NEUTRAL")
+        headlines = [a["title"] for a in relevant[:5]]
+
+        return {
+            "ticker": full_ticker,
+            "sentiment": label,
+            "score": avg_score,
+            "article_count": len(relevant),
+            "recent_headlines": headlines,
+        }
+
+    def get_market_sentiment(self, news: list = None) -> dict:
+        """
+        Compute overall market sentiment from all fetched articles.
+        """
+        if news is None:
+            news = self.fetch_news()
+
+        if not news:
+            return {
+                "overall": "NEUTRAL",
+                "score": 0.0,
+                "bullish_count": 0,
+                "bearish_count": 0,
+                "neutral_count": 0,
+                "top_bullish": [],
+                "top_bearish": [],
+                "last_fetched": datetime.now().isoformat(timespec="seconds"),
+            }
+
+        bullish = [a for a in news if a["sentiment"] == "BULLISH"]
+        bearish = [a for a in news if a["sentiment"] == "BEARISH"]
+        neutral = [a for a in news if a["sentiment"] == "NEUTRAL"]
+
+        avg_score = round(sum(a["sentiment_score"] for a in news) / len(news), 3)
+        label = "BULLISH" if avg_score > 0.1 else ("BEARISH" if avg_score < -0.1 else "NEUTRAL")
+
+        top_bullish = sorted(bullish, key=lambda x: x["sentiment_score"], reverse=True)[:3]
+        top_bearish = sorted(bearish, key=lambda x: x["sentiment_score"])[:3]
+
+        return {
+            "overall": label,
+            "score": avg_score,
+            "bullish_count": len(bullish),
+            "bearish_count": len(bearish),
+            "neutral_count": len(neutral),
+            "top_bullish": [a["title"] for a in top_bullish],
+            "top_bearish": [a["title"] for a in top_bearish],
+            "last_fetched": datetime.now().isoformat(timespec="seconds"),
+        }
+
+    def get_dashboard_data(self) -> dict:
+        """
+        Return data bundle for the dashboard:
+          - market_sentiment
+          - recent_news (last 20 articles)
+          - last_fetched timestamp
+        """
+        news = self.fetch_news()
+        market_sentiment = self.get_market_sentiment(news)
+        recent_news = news[:20]
+        last_fetched = datetime.now().isoformat(timespec="seconds")
+
+        return {
+            "market_sentiment": market_sentiment,
+            "recent_news": recent_news,
+            "last_fetched": last_fetched,
+        }
+
 
 # ---------------------------------------------------------------------------
 # Pre-market Briefing  (sent to Telegram at 8:45 AM IST before market open)
