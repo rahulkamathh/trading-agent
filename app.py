@@ -56,7 +56,7 @@ _LOGIN_PAGE = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>RK::TERMINAL — Login</title>
+<title>KAMATH TERMINAL — Login</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{background:#0a0a0a;color:#e0e0e0;font-family:'IBM Plex Mono',monospace;display:flex;align-items:center;justify-content:center;min-height:100vh}
@@ -74,7 +74,7 @@ _LOGIN_PAGE = """<!DOCTYPE html>
 </head>
 <body>
 <div class="box">
-  <div class="logo">RK::TERMINAL</div>
+  <div class="logo">KAMATH TERMINAL</div>
   <div class="sub">NSE PAPER TRADING — RESTRICTED ACCESS</div>
   {% if blocked %}<div class="blocked">Too many attempts. Try again in 15 minutes.</div>{% endif %}
   {% if error %}<div class="err">{{ error }}</div>{% endif %}
