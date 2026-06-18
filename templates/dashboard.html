@@ -800,8 +800,8 @@
       <div class="table-wrap">
         <table>
           <thead><tr>
-            <th>#</th><th>Time</th><th>Type</th><th>Action</th><th>Ticker</th>
-            <th>Qty</th><th>Price</th><th>P&amp;L</th><th>R:R</th><th>Hold</th><th style="text-align:center">RSI</th><th style="text-align:center">Score</th><th>Strategy</th><th>Exit</th>
+            <th>Date / Time</th><th>Type</th><th>Action</th><th>Ticker</th>
+            <th>Qty</th><th>Price</th><th>P&amp;L</th><th>R:R</th><th>Hold</th><th>Strategy</th><th>Exit Reason</th>
           </tr></thead>
           <tbody id="tradeBody"></tbody>
         </table>
@@ -2681,7 +2681,7 @@ function _updateTaxSummary(trades) {
 }
 
 function renderTrades(trades) {
-  const el  = document.getElementById('tradeBody');
+  const el = document.getElementById('tradeBody');
   if (!trades || !trades.length) {
     el.innerHTML = '';
     show('noTrades');
@@ -2691,39 +2691,77 @@ function renderTrades(trades) {
   hide('noTrades');
   _updateTaxSummary(trades);
 
-  // Newest first
-  el.innerHTML = trades.slice().reverse().map(t => {
-    const isBuy  = t.action === 'BUY';
-    const rrStr  = t.actual_rr != null
-      ? `<span style="color:${t.actual_rr >= 2 ? 'var(--green)' : t.actual_rr >= 1 ? 'var(--yellow)' : 'var(--red)'}">${t.actual_rr >= 0 ? '+' : ''}${t.actual_rr.toFixed(2)}R</span>`
-      : (t.planned_rr ? `<span style="color:var(--muted)">1:${t.planned_rr}p</span>` : '—');
-    const holdStr  = t.hold_days != null ? `${t.hold_days}d` : '—';
-    const rsiStr   = t.rsi_at_entry != null ? `<span style="color:${t.rsi_at_entry>70?'var(--red)':t.rsi_at_entry<30?'var(--green)':'var(--muted)'}">${t.rsi_at_entry.toFixed(0)}</span>` : '—';
-    const scoreStr = t.signal_score != null ? `<span style="color:var(--cyan)">${(t.signal_score*100).toFixed(0)}</span>` : '—';
-    // Shorten strategy: take first segment before '+' and cap at 14 chars
-    const strat    = (t.strategy || '—');
-    const stratShort = strat.split('+')[0].slice(0, 14);
-    const stratFull  = strat;
-    // Exit reason: abbreviate exits, truncate signal combos
+  // Backend already sends newest-first (reversed in engine.py) — do NOT re-reverse
+  el.innerHTML = trades.map(t => {
+    const isBuy = t.action === 'BUY';
+
+    // Date/Time: "15 Jun · 09:15" — compact, readable
+    const raw = (t.time || '').replace('T', ' ');
+    let dateStr = raw.slice(0, 16);
+    try {
+      const d = new Date(raw);
+      const dd = String(d.getDate()).padStart(2,'0');
+      const mo = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()];
+      const hh = String(d.getHours()).padStart(2,'0');
+      const mm = String(d.getMinutes()).padStart(2,'0');
+      dateStr = `${dd} ${mo} · ${hh}:${mm}`;
+    } catch(e) {}
+
+    // R:R — show actual if available, else hide for BUYs (planned R:R is noise)
+    let rrStr = '—';
+    if (t.actual_rr != null) {
+      const c = t.actual_rr >= 2 ? 'var(--green)' : t.actual_rr >= 1 ? 'var(--yellow)' : 'var(--red)';
+      rrStr = `<span style="color:${c};font-weight:600">${t.actual_rr >= 0 ? '+' : ''}${t.actual_rr.toFixed(2)}R</span>`;
+    } else if (!isBuy && t.planned_rr) {
+      rrStr = `<span style="color:var(--muted);font-size:10px">1:${t.planned_rr}</span>`;
+    }
+
+    // Hold days
+    const holdStr = t.hold_days != null ? `${t.hold_days}d` : '—';
+
+    // Strategy: shorten compound names (MOMENTUM+MULTIFACTOR+SMA → MOMENTUM), full on hover
+    const stratFull  = t.strategy || '—';
+    const stratParts = stratFull.split('+');
+    const stratShort = stratParts[0].replace(/_/g,' ').replace('MULTIFACTOR','MULTIFACT').slice(0,13);
+    const stratExtra = stratParts.length > 1 ? `<span style="color:var(--muted);font-size:9px"> +${stratParts.length-1}</span>` : '';
+
+    // Exit reason: human-readable
     const rawReason = t.reason || '';
-    const exitMap   = {STOP_LOSS:'SL', TAKE_PROFIT:'TP', SIGNAL_EXIT:'Sig', ROTATION_EXIT:'Rot',
-                       DEAD_MONEY:'Dead', GAP_DOWN:'Gap', PARTIAL_PROFIT:'Part', HEDGE_LIQUIDATION:'Hedge'};
-    const exitStr   = exitMap[rawReason] || (rawReason.length > 16 ? rawReason.slice(0,14)+'…' : rawReason) || '—';
-    return `<tr>
-      <td style="color:var(--muted);font-size:10px">${t.id}</td>
-      <td style="color:var(--muted);white-space:nowrap;font-size:10px">${(t.time||'').replace('T',' ').slice(0,16)}</td>
+    const exitMap = {
+      STOP_LOSS:'Stop Loss', TAKE_PROFIT:'Take Profit', SIGNAL_EXIT:'Signal Exit',
+      ROTATION_EXIT:'Rotation', DEAD_MONEY:'Dead Money', GAP_DOWN_PROTECTION:'Gap Down',
+      PARTIAL_PROFIT:'Partial TP', HEDGE_LIQUIDATION:'Hedge Liq.', PENNY_STOCK_EXIT:'Penny Exit',
+      TRAILING_STOP:'Trail Stop', CHANDELIER_EXIT:'Trail Stop'
+    };
+    // Match partial keys too
+    let exitStr = '—';
+    if (rawReason) {
+      const matched = Object.keys(exitMap).find(k => rawReason.toUpperCase().startsWith(k));
+      exitStr = matched ? exitMap[matched] : rawReason.replace(/_/g,' ').slice(0,18);
+    }
+
+    // P&L: only meaningful for SELLs
+    const pnlStr = t.pnl != null
+      ? `<span class="${cls(t.pnl)}" style="font-weight:700">${fmt(t.pnl)}</span>`
+      : '<span style="color:var(--muted)">—</span>';
+
+    // Row accent colour: faint left-border by action
+    const rowStyle = isBuy
+      ? 'border-left:2px solid #00c80522'
+      : (t.pnl > 0 ? 'border-left:2px solid #00c80544' : t.pnl < 0 ? 'border-left:2px solid #ff3b3044' : '');
+
+    return `<tr style="${rowStyle}">
+      <td style="white-space:nowrap;color:var(--muted);font-size:10px">${dateStr}</td>
       <td>${_tradePill(t.trade_type)}</td>
       <td>${isBuy ? '<span class="pill pill-buy">BUY</span>' : '<span class="pill pill-sell">SELL</span>'}</td>
-      <td><strong>${(t.ticker||'').replace('.NS','')}</strong></td>
-      <td style="color:var(--muted)">${t.qty}</td>
-      <td>${fmt(t.price)}</td>
-      <td class="${cls(t.pnl)}" style="font-weight:${t.pnl!=null&&t.pnl!==0?'700':'400'}">${t.pnl != null ? fmt(t.pnl) : '—'}</td>
-      <td>${rrStr}</td>
-      <td style="color:var(--muted)">${holdStr}</td>
-      <td style="text-align:center">${rsiStr}</td>
-      <td style="text-align:center">${scoreStr}</td>
-      <td style="color:var(--amber);font-size:11px" title="${stratFull}">${stratShort}</td>
-      <td style="color:var(--muted);font-size:11px">${exitStr}</td>
+      <td><strong style="letter-spacing:.3px">${(t.ticker||'').replace('.NS','')}</strong></td>
+      <td style="color:var(--muted);text-align:right">${t.qty}</td>
+      <td style="text-align:right">${fmt(t.price)}</td>
+      <td style="text-align:right">${pnlStr}</td>
+      <td style="text-align:center">${rrStr}</td>
+      <td style="color:var(--muted);text-align:center;font-size:11px">${holdStr}</td>
+      <td title="${stratFull}" style="color:var(--amber);font-size:11px;cursor:default">${stratShort}${stratExtra}</td>
+      <td style="color:var(--muted);font-size:11px">${isBuy ? '<span style="color:#444">—</span>' : exitStr}</td>
     </tr>`;
   }).join('');
 }
