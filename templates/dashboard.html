@@ -2361,7 +2361,7 @@ function renderPositions(positions) {
   window._ribbonPositions = [];
   positions.forEach(p => {
     window._posCache[p.ticker] = { avg: p.avg_price, qty: p.qty };
-    window._ribbonPositions.push({ label: p.ticker.replace('.NS',''), price: p.ltp, change_pct: p.pnl_pct });
+    window._ribbonPositions.push({ label: p.ticker.replace('.NS',''), _ticker: p.ticker, price: p.ltp, change_pct: p.pnl_pct });
   });
   if (window._ribbonIndexData) _updateTickerTape(window._ribbonIndexData);
 
@@ -3609,6 +3609,23 @@ async function loadLivePrices() {
           chgEl.className   = 'cc-chg ' + cls(data.chg_pct);
         }
       });
+    }
+
+    // ── Ribbon: update positions with LIVE daily chg_pct, refresh tape every 5s ──
+    if (window._ribbonPositions && window._ribbonPositions.length) {
+      window._ribbonPositions.forEach(function(rp) {
+        const live = prices[rp._ticker] || prices[(rp._ticker||'') + '.NS'] || prices[(rp._ticker||'').replace('.NS','')];
+        if (live) {
+          rp.price      = live.ltp;
+          rp.change_pct = live.chg_pct !== undefined ? live.chg_pct : rp.change_pct;
+        }
+      });
+    }
+    // Rebuild ribbon every 5s — fixes race condition where indices were missing
+    if (window._ribbonIndexData) {
+      _updateTickerTape(window._ribbonIndexData);
+    } else if (window._ribbonPositions && window._ribbonPositions.length) {
+      _updateTickerTape({ nifty: null, banknifty: null });
     }
 
     // Save for next diff
