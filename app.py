@@ -29,6 +29,7 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 # ── Auth config ───────────────────────────────────────────────────────────────
 # Set DASHBOARD_PASSWORD and SECRET_KEY in Railway environment variables.
 # SECRET_KEY must be a long random string (generate with: python -c "import secrets; print(secrets.token_hex(32))")
+_DASHBOARD_USERNAME = os.environ.get("DASHBOARD_USERNAME", "")
 _DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
 app.secret_key       = os.environ.get("SECRET_KEY", os.urandom(32))
 app.config["PERMANENT_SESSION_LIFETIME"] = 86400  # 24h session expiry (one trading day)
@@ -78,8 +79,10 @@ _LOGIN_PAGE = """<!DOCTYPE html>
   {% if blocked %}<div class="blocked">Too many attempts. Try again in 15 minutes.</div>{% endif %}
   {% if error %}<div class="err">{{ error }}</div>{% endif %}
   <form method="POST" action="/login">
-    <label>ACCESS PASSWORD</label>
-    <input type="password" name="password" autofocus autocomplete="current-password" placeholder="••••••••••••">
+    <label>USERNAME</label>
+    <input type="text" name="username" autofocus autocomplete="username" placeholder="username" style="width:100%;background:#0a0a0a;border:1px solid #2a2a2a;color:#e0e0e0;padding:10px 12px;font-family:inherit;font-size:13px;outline:none;margin-bottom:14px">
+    <label>PASSWORD</label>
+    <input type="password" name="password" autocomplete="current-password" placeholder="••••••••••••">
     <button type="submit">AUTHENTICATE →</button>
   </form>
 </div>
@@ -101,21 +104,23 @@ def _require_auth():
 def login():
     if session.get("authenticated"):
         return redirect("/")
-    if not _DASHBOARD_PASSWORD:
-        # No password configured → show setup instructions instead of blocking
-        return render_template_string(_LOGIN_PAGE, error="DASHBOARD_PASSWORD env var not set on Railway.", blocked=False)
+    if not _DASHBOARD_PASSWORD or not _DASHBOARD_USERNAME:
+        return render_template_string(_LOGIN_PAGE, error="DASHBOARD_USERNAME / DASHBOARD_PASSWORD env vars not set on Railway.", blocked=False)
     ip = request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
     if request.method == "POST":
         if not _rate_ok(ip):
             return render_template_string(_LOGIN_PAGE, error=None, blocked=True), 429
+        usr = request.form.get("username", "")
         pwd = request.form.get("password", "")
-        # Constant-time comparison to prevent timing attacks
-        if hmac.compare_digest(pwd, _DASHBOARD_PASSWORD):
+        # Constant-time comparisons to prevent timing attacks
+        user_ok = hmac.compare_digest(usr, _DASHBOARD_USERNAME)
+        pass_ok = hmac.compare_digest(pwd, _DASHBOARD_PASSWORD)
+        if user_ok and pass_ok:
             _clear_rate(ip)
             session.permanent = True
             session["authenticated"] = True
             return redirect("/")
-        return render_template_string(_LOGIN_PAGE, error="Incorrect password.", blocked=False), 401
+        return render_template_string(_LOGIN_PAGE, error="Incorrect username or password.", blocked=False), 401
     return render_template_string(_LOGIN_PAGE, error=None, blocked=False)
 
 @app.route("/logout")
