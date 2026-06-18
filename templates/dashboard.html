@@ -1146,6 +1146,51 @@
         <strong style="color:#f5a623">EXTREME macro:</strong> Zero new buys until risk normalises. Existing positions held until SL/TP.
       </div>
     </div>
+
+    <!-- ══ SECURITY SECTION ══ -->
+    <div class="card" style="margin-top:20px;border-top:2px solid #ff3b30" id="securityPanel">
+      <div class="section-header" style="margin-bottom:14px">
+        <span class="section-title" style="color:#ff3b30">🔒 SECURITY</span>
+        <button class="btn btn-ghost" style="font-size:12px;padding:5px 12px" onclick="loadSecurityPanel()">↻ Refresh</button>
+      </div>
+
+      <!-- Kill switch status card -->
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+        <div style="background:#000;border:1px solid var(--border);padding:14px 18px;flex:1;min-width:220px">
+          <div style="font-size:10px;color:var(--muted);letter-spacing:1px;margin-bottom:6px">DAILY LOSS KILL SWITCH</div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span id="killSwitchDot" style="width:12px;height:12px;background:#238636;display:inline-block;flex-shrink:0"></span>
+            <span id="killSwitchLabel" style="font-size:18px;font-weight:700;color:#238636">CLEAR</span>
+          </div>
+          <div id="killSwitchReason" style="font-size:11px;color:var(--muted);margin-top:5px">No limit breach</div>
+        </div>
+        <div style="background:#000;border:1px solid var(--border);padding:14px 18px;flex:1;min-width:220px;display:flex;flex-direction:column;justify-content:center;gap:8px">
+          <div style="font-size:10px;color:var(--muted);letter-spacing:1px;margin-bottom:4px">CONTROLS</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-red" onclick="killSwitchActivate()" style="font-size:11px">🔴 Activate Kill Switch</button>
+            <button class="btn btn-green" onclick="killSwitchReset()" style="font-size:11px">✅ Reset Kill Switch</button>
+          </div>
+          <div id="killSwitchMsg" style="font-size:11px;color:var(--muted);margin-top:4px"></div>
+        </div>
+      </div>
+
+      <!-- TOTP setup URI -->
+      <div style="background:#000;border:1px solid var(--border);padding:12px 16px;margin-bottom:16px">
+        <div style="font-size:10px;color:var(--muted);letter-spacing:1px;margin-bottom:8px">TOTP 2FA SETUP URI</div>
+        <div id="totpUriBlock" style="font-size:11px;color:var(--muted)">Loading…</div>
+      </div>
+
+      <!-- Last 10 audit log entries -->
+      <div>
+        <div style="font-size:10px;color:var(--amber);letter-spacing:1px;margin-bottom:8px;font-weight:700">RECENT SECURITY EVENTS (last 10)</div>
+        <div class="table-wrap">
+          <table id="auditLogTable">
+            <thead><tr><th style="text-align:left">TIME</th><th style="text-align:left">EVENT</th><th style="text-align:left">IP</th><th style="text-align:left">DETAIL</th></tr></thead>
+            <tbody id="auditLogBody"><tr><td colspan="4" style="color:var(--muted);text-align:center">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- ══ Telegram Intelligence page ══ -->
@@ -1867,6 +1912,7 @@ function showView(view) {
         loadRiskStatus();
         loadTraderStatus();
         loadCapitalConfig();
+        loadSecurityPanel();
       } else if (view === 'calendar') {
         const calDesk = _currentDesk;  // capture NOW before any async
         const calTitle = document.querySelector('#page-calendar .page-title');
@@ -4982,6 +5028,11 @@ window.addEventListener('DOMContentLoaded', () => {
     if (_currentView === 'fno') loadFNO();
   }, 30000);
 
+  // ── Session keep-alive: POST every 30 min to prevent session expiry ──
+  setInterval(async () => {
+    try { await fetch('/api/auth/refresh', { method: 'POST' }); } catch(e) {}
+  }, 1800000);
+
 });
 
 // ══════════════════════════════════════════════
@@ -5563,6 +5614,92 @@ async function traderSync() {
 }
 
 setInterval(() => { if (_currentView === 'controls') loadTraderStatus(); }, 30000);
+
+
+// ── Security panel ───────────────────────────────────────────────────────────
+
+async function loadSecurityPanel() {
+  // Kill switch status
+  try {
+    const r = await fetch('/api/kill_switch/status');
+    const d = await r.json();
+    const dot    = document.getElementById('killSwitchDot');
+    const lbl    = document.getElementById('killSwitchLabel');
+    const reason = document.getElementById('killSwitchReason');
+    if (d.active) {
+      if (dot) { dot.style.background = '#ff3b30'; }
+      if (lbl) { lbl.style.color = '#ff3b30'; lbl.textContent = 'ACTIVE'; }
+      if (reason) reason.textContent = d.reason || 'Activated';
+    } else {
+      if (dot) { dot.style.background = '#238636'; }
+      if (lbl) { lbl.style.color = '#238636'; lbl.textContent = 'CLEAR'; }
+      if (reason) reason.textContent = 'No limit breach';
+    }
+  } catch(e) {}
+
+  // TOTP URI
+  try {
+    const r = await fetch('/api/auth/totp_uri');
+    const d = await r.json();
+    const el = document.getElementById('totpUriBlock');
+    if (el) {
+      if (d.uri) {
+        el.innerHTML = `<span style="color:var(--green)">TOTP configured.</span><br>
+          <span style="color:var(--muted);font-size:10px">URI (scan with Google Authenticator):</span><br>
+          <code style="background:#111;border:1px solid var(--border);padding:4px 8px;display:block;margin-top:4px;word-break:break-all;font-size:10px">${d.uri}</code>`;
+      } else {
+        el.innerHTML = `<span style="color:var(--yellow)">TOTP not configured.</span>
+          Visit <a href="/auth/setup-totp" target="_blank" style="color:var(--amber)">/auth/setup-totp</a> to generate a secret.`;
+      }
+    }
+  } catch(e) {}
+
+  // Audit log (last 10)
+  try {
+    const r = await fetch('/api/security/audit_log');
+    const d = await r.json();
+    const tbody = document.getElementById('auditLogBody');
+    if (tbody) {
+      const entries = (d.entries || []).slice(-10).reverse();
+      if (!entries.length) {
+        tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted);text-align:center">No events yet</td></tr>';
+      } else {
+        tbody.innerHTML = entries.map(e => {
+          const evtColor = e.event.includes('FAIL') || e.event.includes('BLOCK') || e.event.includes('ACTIVATE')
+            ? 'var(--red)' : e.event.includes('SUCCESS') ? 'var(--green)' : 'var(--text)';
+          return `<tr>
+            <td style="color:var(--muted);white-space:nowrap">${e.ts.split('T')[1] || e.ts}</td>
+            <td style="color:${evtColor};font-weight:600">${e.event}</td>
+            <td style="color:var(--muted)">${e.ip || '—'}</td>
+            <td style="color:var(--muted);max-width:300px;overflow:hidden;text-overflow:ellipsis">${e.detail || '—'}</td>
+          </tr>`;
+        }).join('');
+      }
+    }
+  } catch(e) {}
+}
+
+async function killSwitchActivate() {
+  if (!confirm('Activate kill switch? This will block all new buys and cycle triggers.')) return;
+  const r = await fetch('/api/kill_switch/activate', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({reason: 'Manual activation from dashboard'})
+  });
+  const d = await r.json();
+  const msg = document.getElementById('killSwitchMsg');
+  if (msg) msg.textContent = d.ok ? 'Kill switch activated.' : (d.error || 'Error');
+  await loadSecurityPanel();
+}
+
+async function killSwitchReset() {
+  const r = await fetch('/api/kill_switch/reset', {method: 'POST'});
+  const d = await r.json();
+  const msg = document.getElementById('killSwitchMsg');
+  if (msg) msg.textContent = d.ok ? 'Kill switch cleared.' : (d.error || 'Error');
+  await loadSecurityPanel();
+}
+
+setInterval(() => { if (_currentView === 'controls') loadSecurityPanel(); }, 30000);
 
 
 // ── Desk switcher ────────────────────────────────────────────────────────

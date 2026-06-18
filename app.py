@@ -19,6 +19,7 @@ load_dotenv()  # Load .env before anything else
 
 import hmac
 import hashlib
+import pyotp  # type: ignore[import-untyped]
 from flask import Flask, jsonify, request, send_from_directory, session, redirect, render_template_string
 
 from engine import INITIAL_CAPITAL, INDEX_TICKERS, DataFetcher, get_agent
@@ -31,11 +32,49 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 # SECRET_KEY must be a long random string (generate with: python -c "import secrets; print(secrets.token_hex(32))")
 _DASHBOARD_USERNAME = os.environ.get("DASHBOARD_USERNAME", "")
 _DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
+_TOTP_SECRET        = os.environ.get("TOTP_SECRET", "")          # base32 secret; leave blank to skip 2FA
 app.secret_key       = os.environ.get("SECRET_KEY", os.urandom(32))
-app.config["PERMANENT_SESSION_LIFETIME"] = 86400  # 24h session expiry (one trading day)
+app.config["PERMANENT_SESSION_LIFETIME"] = 43200  # 12h session lifetime (survive a full trading day)
 
 # Simple in-memory brute-force protection: max 5 failed attempts per IP per 15 min
 _login_attempts: dict = {}   # ip → [timestamps]
+
+# ── Security audit log (in-memory ring buffer, last 200 events) ─────────────
+_audit_log: deque = deque(maxlen=200)
+_audit_lock = threading.Lock()
+
+def _audit(event: str, detail: str = "") -> None:
+    """Append one record to the in-memory security audit log."""
+    ip = ""
+    try:
+        ip = request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
+    except RuntimeError:
+        pass  # called outside request context (background thread)
+    entry = {
+        "ts":     datetime.now(ZoneInfo("Asia/Kolkata")).isoformat(timespec="seconds"),
+        "event":  event,
+        "ip":     ip,
+        "detail": detail,
+    }
+    with _audit_lock:
+        _audit_log.append(entry)
+
+# ── Daily max-loss kill switch ───────────────────────────────────────────────
+_KILL_SWITCH_ACTIVE: bool = False
+_KILL_SWITCH_REASON: str  = ""
+_MAX_DAILY_LOSS: float    = float(os.environ.get("MAX_DAILY_LOSS", 25000))
+
+def _kill_switch_activate(reason: str) -> None:
+    global _KILL_SWITCH_ACTIVE, _KILL_SWITCH_REASON  # noqa: PLW0603
+    _KILL_SWITCH_ACTIVE = True
+    _KILL_SWITCH_REASON = reason
+    _audit("KILL_SWITCH_ACTIVATE", reason)
+
+def _kill_switch_reset() -> None:
+    global _KILL_SWITCH_ACTIVE, _KILL_SWITCH_REASON  # noqa: PLW0603
+    _KILL_SWITCH_ACTIVE = False
+    _KILL_SWITCH_REASON = ""
+    _audit("KILL_SWITCH_RESET")
 
 def _rate_ok(ip: str) -> bool:
     """Return True if this IP is within the rate limit, False if blocked."""
@@ -64,12 +103,14 @@ _LOGIN_PAGE = """<!DOCTYPE html>
   .logo{font-size:18px;font-weight:700;color:#ff8200;letter-spacing:2px;margin-bottom:6px}
   .sub{font-size:10px;color:#555;letter-spacing:1px;margin-bottom:32px}
   label{font-size:10px;color:#666;letter-spacing:1px;display:block;margin-bottom:6px}
-  input[type=password]{width:100%;background:#0a0a0a;border:1px solid #2a2a2a;color:#e0e0e0;padding:10px 12px;font-family:inherit;font-size:13px;outline:none;margin-bottom:20px}
-  input[type=password]:focus{border-color:#ff8200}
+  input[type=password],input[type=text],input[type=number]{width:100%;background:#0a0a0a;border:1px solid #2a2a2a;color:#e0e0e0;padding:10px 12px;font-family:inherit;font-size:13px;outline:none;margin-bottom:20px}
+  input[type=password]:focus,input[type=text]:focus,input[type=number]:focus{border-color:#ff8200}
+  input[type=number]{letter-spacing:6px;text-align:center}
   button{width:100%;background:#ff8200;color:#000;border:none;padding:11px;font-family:inherit;font-size:12px;font-weight:700;letter-spacing:1px;cursor:pointer}
   button:hover{background:#e07000}
   .err{color:#ff3b30;font-size:11px;margin-bottom:16px;padding:8px;background:#1a0a0a;border:1px solid #ff3b3033}
   .blocked{color:#ff8200;font-size:11px;margin-bottom:16px;padding:8px;background:#1a0f00;border:1px solid #ff820033}
+  .totp-hint{font-size:10px;color:#555;margin-bottom:20px;margin-top:-14px}
 </style>
 </head>
 <body>
@@ -83,6 +124,11 @@ _LOGIN_PAGE = """<!DOCTYPE html>
     <input type="text" name="username" autofocus autocomplete="username" placeholder="username" style="width:100%;background:#0a0a0a;border:1px solid #2a2a2a;color:#e0e0e0;padding:10px 12px;font-family:inherit;font-size:13px;outline:none;margin-bottom:14px">
     <label>PASSWORD</label>
     <input type="password" name="password" autocomplete="current-password" placeholder="••••••••••••">
+    {% if totp_enabled %}
+    <label>2FA CODE</label>
+    <input type="number" name="totp_code" inputmode="numeric" autocomplete="one-time-code" placeholder="000000" min="0" max="999999" style="width:100%;background:#0a0a0a;border:1px solid #2a2a2a;color:#e0e0e0;padding:10px 12px;font-family:inherit;font-size:13px;outline:none;margin-bottom:8px">
+    <div class="totp-hint">6-digit code from Google Authenticator</div>
+    {% endif %}
     <button type="submit">AUTHENTICATE →</button>
   </form>
 </div>
@@ -104,24 +150,35 @@ def _require_auth():
 def login():
     if session.get("authenticated"):
         return redirect("/")
+    totp_enabled = bool(_TOTP_SECRET)
     if not _DASHBOARD_PASSWORD or not _DASHBOARD_USERNAME:
-        return render_template_string(_LOGIN_PAGE, error="DASHBOARD_USERNAME / DASHBOARD_PASSWORD env vars not set on Railway.", blocked=False)
+        return render_template_string(_LOGIN_PAGE, error="DASHBOARD_USERNAME / DASHBOARD_PASSWORD env vars not set on Railway.", blocked=False, totp_enabled=totp_enabled)
     ip = request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
     if request.method == "POST":
         if not _rate_ok(ip):
-            return render_template_string(_LOGIN_PAGE, error=None, blocked=True), 429
+            _audit("LOGIN_BLOCKED", f"Rate limit hit for ip={ip}")
+            return render_template_string(_LOGIN_PAGE, error=None, blocked=True, totp_enabled=totp_enabled), 429
         usr = request.form.get("username", "")
         pwd = request.form.get("password", "")
         # Constant-time comparisons to prevent timing attacks
         user_ok = hmac.compare_digest(usr, _DASHBOARD_USERNAME)
         pass_ok = hmac.compare_digest(pwd, _DASHBOARD_PASSWORD)
         if user_ok and pass_ok:
+            # Check TOTP if configured
+            if totp_enabled:
+                code = request.form.get("totp_code", "").strip().zfill(6)
+                totp_ok = pyotp.TOTP(_TOTP_SECRET).verify(code, valid_window=1)
+                if not totp_ok:
+                    _audit("LOGIN_FAIL", f"user={usr} — wrong TOTP code")
+                    return render_template_string(_LOGIN_PAGE, error="Invalid 2FA code.", blocked=False, totp_enabled=totp_enabled), 401
             _clear_rate(ip)
             session.permanent = True
             session["authenticated"] = True
+            _audit("LOGIN_SUCCESS", f"user={usr}")
             return redirect("/")
-        return render_template_string(_LOGIN_PAGE, error="Incorrect username or password.", blocked=False), 401
-    return render_template_string(_LOGIN_PAGE, error=None, blocked=False)
+        _audit("LOGIN_FAIL", f"user={usr} — wrong credentials")
+        return render_template_string(_LOGIN_PAGE, error="Incorrect username or password.", blocked=False, totp_enabled=totp_enabled), 401
+    return render_template_string(_LOGIN_PAGE, error=None, blocked=False, totp_enabled=totp_enabled)
 
 @app.route("/logout")
 def logout():
@@ -549,8 +606,11 @@ def api_run_cycle():
     The cycle downloads data for 500+ stocks and takes 3-5 minutes.
     Poll /api/dashboard to see when signals update.
     """
+    if _KILL_SWITCH_ACTIVE:
+        return jsonify({"ok": False, "error": f"Kill switch active — daily loss limit reached: {_KILL_SWITCH_REASON}"}), 403
     if _state.running:
         return jsonify({"ok": False, "error": "Agent cycle already running — check back in a few minutes"})
+    _audit("RUN_CYCLE", "Manual cycle triggered")
     threading.Thread(target=_run_cycle_safe, daemon=True, name="manual-cycle").start()
     return jsonify({"ok": True, "message": "Cycle started in background — signals will update in 3-5 minutes"})
 
@@ -584,10 +644,13 @@ def api_refresh_signals():
 @app.route("/api/manual_buy", methods=["POST"])
 def api_manual_buy():
     """Manually buy a stock at current LTP using standard position sizing."""
+    if _KILL_SWITCH_ACTIVE:
+        return jsonify({"ok": False, "error": f"Kill switch active — daily loss limit reached: {_KILL_SWITCH_REASON}"}), 403
     body = request.get_json(force=True)
     ticker = body.get("ticker", "").upper()
     if not ticker.endswith(".NS"):
         ticker += ".NS"
+    _audit("MANUAL_BUY", f"ticker={ticker}")
     price = DataFetcher.get_current_price(ticker)
     if price <= 0:
         return jsonify({"ok": False, "error": f"Could not fetch price for {ticker}"}), 400
@@ -605,6 +668,7 @@ def api_manual_sell():
     """Manually exit an entire position at current LTP."""
     body = request.get_json(force=True)
     ticker = body.get("ticker", "")
+    _audit("MANUAL_SELL", f"ticker={ticker}")
     price = DataFetcher.get_current_price(ticker)
     trade = get_agent().portfolio.execute_sell(ticker, price, "MANUAL")
     if trade:
@@ -853,6 +917,89 @@ def api_set_interval():
     secs = int(body.get("seconds", 900))
     _state.auto_interval = max(60, secs)
     return jsonify({"ok": True, "interval": _state.auto_interval})
+
+
+# ── Session keep-alive ───────────────────────────────────────────────────────
+
+@app.route("/api/auth/refresh", methods=["POST"])
+def api_auth_refresh():
+    """Reset session expiry — call every 30 min from the dashboard to survive long trading days."""
+    session.modified = True
+    return jsonify({"ok": True})
+
+
+# ── TOTP setup helper ────────────────────────────────────────────────────────
+
+@app.route("/auth/setup-totp")
+def auth_setup_totp():
+    """Show TOTP setup page with QR URI (only if TOTP not yet configured)."""
+    if _TOTP_SECRET:
+        return jsonify({"ok": False, "error": "TOTP already configured — manage it via the Security panel"}), 400
+    import secrets as _sec
+    new_secret = pyotp.random_base32()
+    uri = pyotp.totp.TOTP(new_secret).provisioning_uri(
+        name="rahul", issuer_name="KamathTerminal"
+    )
+    page = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>TOTP Setup</title>
+<style>body{{background:#0a0a0a;color:#e0e0e0;font-family:monospace;padding:40px;max-width:600px;margin:auto}}
+h2{{color:#ff8200}}code{{background:#111;border:1px solid #333;padding:4px 8px;display:block;margin:12px 0;word-break:break-all;font-size:13px}}
+.hint{{color:#666;font-size:12px;margin-top:8px}}</style></head><body>
+<h2>TOTP 2FA Setup</h2>
+<p>TOTP_SECRET is not set. To enable 2FA:</p>
+<ol>
+<li>Copy this base32 secret into your <code>.env</code> as <code>TOTP_SECRET={new_secret}</code></li>
+<li>Restart the server</li>
+<li>Scan the URI below with Google Authenticator or any TOTP app:</li>
+</ol>
+<code>{uri}</code>
+<p class="hint">Or search for a QR-code generator app and paste the URI above.</p>
+</body></html>"""
+    return page
+
+
+@app.route("/api/auth/totp_uri")
+def api_auth_totp_uri():
+    """Return the TOTP provisioning URI (auth required). Returns null uri if not configured."""
+    if not _TOTP_SECRET:
+        return jsonify({"uri": None})
+    uri = pyotp.TOTP(_TOTP_SECRET).provisioning_uri(
+        name="rahul", issuer_name="KamathTerminal"
+    )
+    return jsonify({"uri": uri})
+
+
+# ── Kill switch endpoints ────────────────────────────────────────────────────
+
+@app.route("/api/kill_switch/status")
+def api_kill_switch_status():
+    """Return current kill switch state."""
+    return jsonify({"active": _KILL_SWITCH_ACTIVE, "reason": _KILL_SWITCH_REASON})
+
+
+@app.route("/api/kill_switch/activate", methods=["POST"])
+def api_kill_switch_activate():
+    """Manually activate the kill switch (auth required)."""
+    body   = request.get_json(force=True, silent=True) or {}
+    reason = body.get("reason", "Manual activation from dashboard")
+    _kill_switch_activate(reason)
+    return jsonify({"ok": True, "active": True, "reason": _KILL_SWITCH_REASON})
+
+
+@app.route("/api/kill_switch/reset", methods=["POST"])
+def api_kill_switch_reset():
+    """Reset (deactivate) the kill switch (auth required)."""
+    _kill_switch_reset()
+    return jsonify({"ok": True, "active": False})
+
+
+# ── Security audit log endpoint ──────────────────────────────────────────────
+
+@app.route("/api/security/audit_log")
+def api_security_audit_log():
+    """Return the in-memory security audit log (auth required)."""
+    with _audit_lock:
+        entries = list(_audit_log)
+    return jsonify({"ok": True, "entries": entries, "total": len(entries)})
 
 
 
@@ -2047,6 +2194,44 @@ if __name__ == "__main__":
         print("  🤖  Bot command listener started (/analyze, /grade, /help)")
     except Exception as _ble:
         print(f"  ⚠️   Bot listener failed to start: {_ble}")
+
+    # ── Daily max-loss kill switch monitor (every 5 min) ─────────────────────
+    def _kill_switch_monitor():
+        import time as _time
+        while True:
+            _time.sleep(300)  # check every 5 minutes
+            try:
+                from engine import TRADE_LOG_FILE as _TLF  # noqa: PLC0415
+                today = _ist_now().strftime("%Y-%m-%d")
+                eq_day_pnl = 0.0
+                if _TLF.exists():
+                    for _t in json.loads(_TLF.read_text(encoding="utf-8")):
+                        if _t.get("action") == "SELL" and (_t.get("time") or "").startswith(today):
+                            eq_day_pnl += float(_t.get("pnl") or 0)
+                fno_day_pnl = 0.0
+                try:
+                    from pathlib import Path as _P  # noqa: PLC0415
+                    _fno_f = _P("data/fno_trades.json")
+                    if _fno_f.exists():
+                        for _t in json.loads(_fno_f.read_text()):
+                            if (_t.get("action") in ("SELL", "CLOSE") and
+                                    (_t.get("time") or _t.get("timestamp") or "").startswith(today)):
+                                fno_day_pnl += float(_t.get("pnl") or 0)
+                except Exception:
+                    pass
+                combined_pnl = eq_day_pnl + fno_day_pnl
+                if combined_pnl < -_MAX_DAILY_LOSS and not _KILL_SWITCH_ACTIVE:
+                    reason = (
+                        f"Daily loss ₹{abs(combined_pnl):,.0f} exceeded limit ₹{_MAX_DAILY_LOSS:,.0f} "
+                        f"(equity ₹{eq_day_pnl:,.0f}, FnO ₹{fno_day_pnl:,.0f})"
+                    )
+                    _kill_switch_activate(reason)
+                    logging.getLogger("app").warning(f"[KillSwitch] ACTIVATED — {reason}")
+            except Exception as _ke:
+                logging.getLogger("app").warning(f"[KillSwitch] Monitor error: {_ke}")
+
+    threading.Thread(target=_kill_switch_monitor, daemon=True, name="kill-switch-monitor").start()
+    print("  🛡️  Daily max-loss kill switch monitor started (5-min loop)")
 
     # ── Start market-aware background agent loop ──────────────────────────────
     threading.Thread(target=_background_loop, daemon=True).start()
