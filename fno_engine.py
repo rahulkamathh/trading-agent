@@ -1965,7 +1965,7 @@ class HedgeStrategy:
             ticker = eq_pos.get("ticker", "")
             if ticker in hedged:
                 continue
-            if ticker not in LOT_SIZES:
+            if not is_fno_eligible(ticker):
                 continue
 
             try:

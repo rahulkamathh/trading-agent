@@ -397,6 +397,7 @@
     <div class="nav-item" data-view="signals" onclick="showView('signals')"><span class="fkey">F3</span>Signals</div>
     <div class="nav-item" data-view="trades" onclick="showView('trades')"><span class="fkey">F4</span>Trades</div>
     <div class="nav-item" data-view="screener" onclick="showView('screener')"><span class="fkey">F5</span>Screener</div>
+    <div class="nav-item" data-view="leaderboard" onclick="showView('leaderboard')"><span class="fkey">F6</span>Strategy</div>
   </div>
 
   <!-- F&O desk group -->
@@ -800,7 +801,7 @@
         <table>
           <thead><tr>
             <th>#</th><th>Time</th><th>Type</th><th>Action</th><th>Ticker</th>
-            <th>Qty</th><th>Price</th><th>Value</th><th>P&amp;L</th><th>RR</th><th>Hold</th><th>Strategy</th><th>Reason</th>
+            <th>Qty</th><th>Price</th><th>P&amp;L</th><th>R:R</th><th>Hold</th><th style="text-align:center">RSI</th><th style="text-align:center">Score</th><th>Strategy</th><th>Exit</th>
           </tr></thead>
           <tbody id="tradeBody"></tbody>
         </table>
@@ -1517,6 +1518,43 @@
     </div>
   </div>
 
+  <!-- ══ Strategy Leaderboard ══ -->
+  <div id="page-leaderboard" class="page-section hidden">
+    <div class="page-header">
+      <span class="page-title">📊 Strategy Leaderboard</span>
+      <button class="btn btn-sm" onclick="loadLeaderboard()">↻ Refresh</button>
+    </div>
+
+    <!-- Summary cards -->
+    <div id="lbCards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-bottom:16px"></div>
+
+    <!-- Detail table -->
+    <div class="card" style="padding:0;overflow:hidden">
+      <div style="font-size:10px;color:var(--muted);letter-spacing:1px;padding:10px 14px;border-bottom:1px solid var(--border)">CLOSED TRADES · EQUITY DESK</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Strategy</th>
+            <th style="text-align:center">Trades</th>
+            <th style="text-align:center">Win Rate</th>
+            <th style="text-align:right">Total P&amp;L</th>
+            <th style="text-align:right">Avg P&amp;L</th>
+            <th style="text-align:center">Avg R</th>
+            <th style="text-align:right">Best</th>
+            <th style="text-align:right">Worst</th>
+            <th style="text-align:center" title="LOW regime">LOW</th>
+            <th style="text-align:center" title="MEDIUM regime">MED</th>
+            <th style="text-align:center" title="HIGH regime">HIGH</th>
+            <th style="text-align:center" title="EXTREME regime">EXTR</th>
+          </tr></thead>
+          <tbody id="lbBody">
+            <tr><td colspan="12" style="text-align:center;padding:30px;color:var(--muted)">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
   <div id="page-fno-overview" class="page-section hidden">
     <!-- F&O summary KPIs -->
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px">
@@ -1770,7 +1808,7 @@ function closeSidebar() {
 // ══════════════════════════════════════════════
 let _currentView = 'overview';
 
-const _ALL_PAGES = ['master','overview','portfolio','fno-overview','fno-signals','fno-trades','fno-charts','fno-strategy','positions','signals','trades','controls','report','telegram','screener','agentlog','calendar','fno'];
+const _ALL_PAGES = ['master','overview','portfolio','fno-overview','fno-signals','fno-trades','fno-charts','fno-strategy','positions','signals','trades','controls','report','telegram','screener','agentlog','calendar','fno','leaderboard'];
 const _lazyLoaded = new Set();
 
 function showView(view) {
@@ -1833,6 +1871,8 @@ function showView(view) {
         loadFNOTrades();
       } else if (view === 'fno-charts') {
         loadFNORiskGraph();
+      } else if (view === 'leaderboard') {
+        loadLeaderboard();
       } else if (view === 'fno-strategy') {
         loadFNOStrategy();
       // events/commodity removed
@@ -2643,28 +2683,39 @@ function renderTrades(trades) {
   hide('noTrades');
   _updateTaxSummary(trades);
 
+  // Newest first
   el.innerHTML = trades.slice().reverse().map(t => {
     const isBuy  = t.action === 'BUY';
     const rrStr  = t.actual_rr != null
-      ? `<span style="color:${t.actual_rr >= 2 ? 'var(--green)' : t.actual_rr >= 1 ? 'var(--yellow)' : 'var(--red)'}">${t.actual_rr >= 0 ? '1:' : '-1:'}${Math.abs(t.actual_rr).toFixed(2)}</span>`
-      : (t.planned_rr ? `<span style="color:var(--muted)">1:${t.planned_rr} planned</span>` : '—');
-    const holdStr = t.hold_days != null
-      ? `${t.hold_days}d`
-      : '—';
+      ? `<span style="color:${t.actual_rr >= 2 ? 'var(--green)' : t.actual_rr >= 1 ? 'var(--yellow)' : 'var(--red)'}">${t.actual_rr >= 0 ? '+' : ''}${t.actual_rr.toFixed(2)}R</span>`
+      : (t.planned_rr ? `<span style="color:var(--muted)">1:${t.planned_rr}p</span>` : '—');
+    const holdStr  = t.hold_days != null ? `${t.hold_days}d` : '—';
+    const rsiStr   = t.rsi_at_entry != null ? `<span style="color:${t.rsi_at_entry>70?'var(--red)':t.rsi_at_entry<30?'var(--green)':'var(--muted)'}">${t.rsi_at_entry.toFixed(0)}</span>` : '—';
+    const scoreStr = t.signal_score != null ? `<span style="color:var(--cyan)">${(t.signal_score*100).toFixed(0)}</span>` : '—';
+    // Shorten strategy: take first segment before '+' and cap at 14 chars
+    const strat    = (t.strategy || '—');
+    const stratShort = strat.split('+')[0].slice(0, 14);
+    const stratFull  = strat;
+    // Exit reason: abbreviate exits, truncate signal combos
+    const rawReason = t.reason || '';
+    const exitMap   = {STOP_LOSS:'SL', TAKE_PROFIT:'TP', SIGNAL_EXIT:'Sig', ROTATION_EXIT:'Rot',
+                       DEAD_MONEY:'Dead', GAP_DOWN:'Gap', PARTIAL_PROFIT:'Part', HEDGE_LIQUIDATION:'Hedge'};
+    const exitStr   = exitMap[rawReason] || (rawReason.length > 16 ? rawReason.slice(0,14)+'…' : rawReason) || '—';
     return `<tr>
-      <td style="color:var(--muted)">${t.id}</td>
-      <td style="color:var(--muted);white-space:nowrap">${(t.time||'').replace('T',' ').slice(0,16)} IST</td>
+      <td style="color:var(--muted);font-size:10px">${t.id}</td>
+      <td style="color:var(--muted);white-space:nowrap;font-size:10px">${(t.time||'').replace('T',' ').slice(0,16)}</td>
       <td>${_tradePill(t.trade_type)}</td>
       <td>${isBuy ? '<span class="pill pill-buy">BUY</span>' : '<span class="pill pill-sell">SELL</span>'}</td>
       <td><strong>${(t.ticker||'').replace('.NS','')}</strong></td>
-      <td>${t.qty}</td>
+      <td style="color:var(--muted)">${t.qty}</td>
       <td>${fmt(t.price)}</td>
-      <td>${fmt(t.value)}</td>
-      <td class="${cls(t.pnl)}">${t.pnl != null ? fmt(t.pnl) : '—'}</td>
+      <td class="${cls(t.pnl)}" style="font-weight:${t.pnl!=null&&t.pnl!==0?'700':'400'}">${t.pnl != null ? fmt(t.pnl) : '—'}</td>
       <td>${rrStr}</td>
       <td style="color:var(--muted)">${holdStr}</td>
-      <td style="color:var(--muted);font-size:11px">${t.strategy||'—'}</td>
-      <td style="color:var(--muted)">${t.reason||'—'}</td>
+      <td style="text-align:center">${rsiStr}</td>
+      <td style="text-align:center">${scoreStr}</td>
+      <td style="color:var(--amber);font-size:11px" title="${stratFull}">${stratShort}</td>
+      <td style="color:var(--muted);font-size:11px">${exitStr}</td>
     </tr>`;
   }).join('');
 }
@@ -5473,7 +5524,7 @@ document.addEventListener('keydown', function(e) {
     'F3':  _currentDesk === 'fno' ? 'fno-signals' : (_currentDesk === 'eq' ? 'signals' : null),
     'F4':  _currentDesk === 'fno' ? 'fno-trades'  : (_currentDesk === 'eq' ? 'trades' : null),
     'F5':  _currentDesk === 'fno' ? 'fno-charts' : (_currentDesk === 'eq' ? 'screener' : null),
-    'F6':  _currentDesk === 'fno' ? 'fno-strategy' : null,
+    'F6':  _currentDesk === 'fno' ? 'fno-strategy' : (_currentDesk === 'eq' ? 'leaderboard' : null),
     'F7':  _currentDesk === 'fno' ? 'fno-charts' : 'charts',
     'F8':  'telegram',
     'F9':  'agentlog',
@@ -5914,6 +5965,83 @@ async function loadFNORiskGraph() {
 // F&O STRATEGY PERFORMANCE
 // ══════════════════════════════════════════════════════════════════════
 let _fnoStratChart = null;
+
+async function loadLeaderboard() {
+  try {
+    const d = await fetch('/api/strategy_leaderboard').then(r => r.json());
+    if (!d.ok) return;
+    const strats = d.strategies || [];
+    const fmtP   = v => (v >= 0 ? '+' : '') + '₹' + Math.abs(Math.round(v)).toLocaleString('en-IN');
+    const clrP   = v => v >= 0 ? 'var(--green)' : 'var(--red)';
+
+    // ── Summary cards ────────────────────────────────────────────────────────
+    const cardsEl = document.getElementById('lbCards');
+    if (cardsEl) {
+      if (!strats.length) {
+        cardsEl.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:20px">No closed trades yet.</div>';
+      } else {
+        cardsEl.innerHTML = strats.map(s => {
+          const wr    = s.win_rate || 0;
+          const barCl = wr >= 55 ? 'var(--green)' : wr >= 45 ? 'var(--yellow)' : 'var(--red)';
+          const pnlCl = clrP(s.total_pnl);
+          const rrStr = s.avg_rr != null ? (s.avg_rr >= 0 ? '+' : '') + s.avg_rr.toFixed(2) + 'R' : '—';
+          return `<div style="border:1px solid var(--border);background:var(--panel);padding:14px">
+            <div style="font-size:10px;color:var(--amber);font-weight:700;letter-spacing:.5px;margin-bottom:8px">${s.strategy.toUpperCase()}</div>
+            <div style="font-size:22px;font-weight:700;color:${pnlCl};margin-bottom:6px">${fmtP(s.total_pnl)}</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;font-size:10px;color:var(--muted);margin-bottom:8px">
+              <div>${s.wins}/${s.trades} wins<br><strong style="color:${barCl}">${wr.toFixed(0)}%</strong></div>
+              <div>Avg P&L<br><strong style="color:${clrP(s.avg_pnl)}">₹${Math.round(s.avg_pnl).toLocaleString('en-IN')}</strong></div>
+              <div>Avg R<br><strong style="color:${s.avg_rr>=1?'var(--green)':s.avg_rr>=0?'var(--yellow)':'var(--red)'}">${rrStr}</strong></div>
+            </div>
+            <div style="background:#111;border-radius:2px;height:4px;overflow:hidden">
+              <div style="height:4px;width:${wr}%;background:${barCl};transition:width .4s"></div>
+            </div>
+          </div>`;
+        }).join('');
+      }
+    }
+
+    // ── Detail table ─────────────────────────────────────────────────────────
+    const tbody = document.getElementById('lbBody');
+    if (tbody) {
+      if (!strats.length) {
+        tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;padding:30px;color:var(--muted)">No closed trades yet</td></tr>';
+      } else {
+        tbody.innerHTML = strats.map(s => {
+          const pnlCl = clrP(s.total_pnl);
+          const wrCl  = s.win_rate >= 55 ? 'var(--green)' : s.win_rate >= 45 ? 'var(--yellow)' : 'var(--red)';
+          const rrStr = s.avg_rr != null ? (s.avg_rr >= 0 ? '+' : '') + s.avg_rr.toFixed(2) + 'R' : '—';
+          // Regime cells — show count + avg P&L, coloured by P&L
+          const regCell = (r) => {
+            const rr = s.regime[r];
+            if (!rr || !rr.count) return '<td style="text-align:center;color:var(--muted)">—</td>';
+            const rc = clrP(rr.avg_pnl);
+            return `<td style="text-align:center;font-size:10px">
+              <span style="color:var(--muted)">${rr.count}×</span>
+              <span style="color:${rc}">${rr.avg_pnl>=0?'+':''}₹${Math.abs(Math.round(rr.avg_pnl)).toLocaleString('en-IN')}</span>
+            </td>`;
+          };
+          return `<tr style="border-bottom:1px solid var(--border)">
+            <td style="padding:9px 12px;color:var(--amber);font-weight:600">${s.strategy}</td>
+            <td style="padding:9px 12px;text-align:center;color:var(--muted)">${s.wins}/${s.trades}</td>
+            <td style="padding:9px 12px;text-align:center">
+              <span style="color:${wrCl};font-weight:700">${s.win_rate.toFixed(0)}%</span>
+              <div style="background:#111;height:3px;border-radius:2px;margin-top:3px;width:60px">
+                <div style="height:3px;width:${s.win_rate}%;background:${wrCl}"></div>
+              </div>
+            </td>
+            <td style="padding:9px 12px;text-align:right;color:${pnlCl};font-weight:700">${fmtP(s.total_pnl)}</td>
+            <td style="padding:9px 12px;text-align:right;color:${clrP(s.avg_pnl)}">₹${Math.round(s.avg_pnl).toLocaleString('en-IN')}</td>
+            <td style="padding:9px 12px;text-align:center;color:${s.avg_rr>=1?'var(--green)':s.avg_rr>=0?'var(--yellow)':'var(--red)'}">${rrStr}</td>
+            <td style="padding:9px 12px;text-align:right;color:var(--green)">+₹${Math.round(s.best_trade).toLocaleString('en-IN')}</td>
+            <td style="padding:9px 12px;text-align:right;color:var(--red)">₹${Math.round(s.worst_trade).toLocaleString('en-IN')}</td>
+            ${regCell('LOW')}${regCell('MEDIUM')}${regCell('HIGH')}${regCell('EXTREME')}
+          </tr>`;
+        }).join('');
+      }
+    }
+  } catch(e) { console.error('loadLeaderboard:', e); }
+}
 
 async function loadFNOStrategy() {
   try {

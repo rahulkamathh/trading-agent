@@ -1337,6 +1337,7 @@ class Portfolio:
             planned_rr=planned_rr, risk_per_unit=risk_per_unit,
             rsi_at_entry=rsi_at_entry, signal_score=signal_score,
             market_regime=_regime, strength=strength,
+            atr_at_entry=atr_val,
         )
         logger.info(
             f"BUY  {ticker:20s} qty={qty} @ ₹{price:.2f}  "
@@ -1434,6 +1435,7 @@ class Portfolio:
             signal_score=pos.get("signal_score"),
             market_regime=pos.get("market_regime"),
             strength=pos.get("strength"),
+            atr_at_entry=pos.get("atr_at_entry"),
         )
         rr_str   = f"  RR={actual_rr:+.2f}(planned 1:{planned_rr})" if planned_rr else ""
         type_str = f"  [{trade_type}/{hold_days}d]"
@@ -1708,7 +1710,8 @@ class Portfolio:
                    actual_rr=None, risk_per_unit=None,
                    trade_type=None, hold_days=None,
                    rsi_at_entry=None, signal_score=None,
-                   market_regime=None, strength=None) -> dict:
+                   market_regime=None, strength=None,
+                   atr_at_entry=None) -> dict:
         log = []
         if TRADE_LOG_FILE.exists():
             with open(TRADE_LOG_FILE) as f:
@@ -1738,6 +1741,7 @@ class Portfolio:
             "rsi_at_entry":  round(rsi_at_entry, 1) if rsi_at_entry is not None else None,
             "signal_score":  round(signal_score, 4) if signal_score is not None else None,
             "market_regime": market_regime,   # LOW/MEDIUM/HIGH/EXTREME risk
+            "atr_at_entry":  round(atr_at_entry, 2) if atr_at_entry is not None else None,
         }
         log.append(trade)
         with open(TRADE_LOG_FILE, "w") as f:

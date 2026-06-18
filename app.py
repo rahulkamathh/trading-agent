@@ -289,7 +289,7 @@ def api_pnl_calendar():
             for t in json.loads(TRADE_LOG_FILE.read_text(encoding="utf-8")):
                 if t.get("action") != "SELL":
                     continue
-                ts  = (t.get("timestamp") or t.get("date") or "")[:10]
+                ts  = (t.get("time") or t.get("timestamp") or t.get("date") or "")[:10]
                 pnl = float(t.get("pnl") or 0)
                 if ts:
                     _add(ts, pnl, pnl > 0)
@@ -307,6 +307,70 @@ def api_pnl_calendar():
         }
 
     return jsonify({"ok": True, "days": result})
+
+
+@app.route("/api/strategy_leaderboard")
+def api_strategy_leaderboard():
+    """Per-strategy win rate, avg P&L, total P&L and regime breakdown from closed equity trades."""
+    from engine import TRADE_LOG_FILE  # pylint: disable=import-outside-toplevel
+    REGIMES = ["LOW", "MEDIUM", "HIGH", "EXTREME"]
+    strats: dict = {}
+    try:
+        trades = json.loads(TRADE_LOG_FILE.read_text(encoding="utf-8")) if TRADE_LOG_FILE.exists() else []
+        for t in trades:
+            if t.get("action") != "SELL":
+                continue
+            s = t.get("strategy") or "UNKNOWN"
+            if s not in strats:
+                strats[s] = {"trades": 0, "wins": 0, "total_pnl": 0.0,
+                             "pnl_list": [], "rr_list": [],
+                             "regime": {r: {"count": 0, "wins": 0, "pnl": 0.0} for r in REGIMES}}
+            d = strats[s]
+            pnl = float(t.get("pnl") or 0)
+            d["trades"] += 1
+            d["total_pnl"] += pnl
+            d["pnl_list"].append(pnl)
+            if pnl > 0:
+                d["wins"] += 1
+            rr = t.get("actual_rr")
+            if rr is not None:
+                d["rr_list"].append(float(rr))
+            regime = (t.get("market_regime") or "LOW").upper()
+            if regime in d["regime"]:
+                d["regime"][regime]["count"] += 1
+                d["regime"][regime]["pnl"]   += pnl
+                if pnl > 0:
+                    d["regime"][regime]["wins"] += 1
+
+        result = []
+        for s, d in strats.items():
+            n = d["trades"]
+            result.append({
+                "strategy":    s,
+                "trades":      n,
+                "wins":        d["wins"],
+                "win_rate":    round(d["wins"] / n * 100, 1) if n else 0.0,
+                "total_pnl":   round(d["total_pnl"], 2),
+                "avg_pnl":     round(d["total_pnl"] / n, 2) if n else 0.0,
+                "avg_rr":      round(sum(d["rr_list"]) / len(d["rr_list"]), 3) if d["rr_list"] else None,
+                "best_trade":  round(max(d["pnl_list"]), 2) if d["pnl_list"] else 0.0,
+                "worst_trade": round(min(d["pnl_list"]), 2) if d["pnl_list"] else 0.0,
+                "regime": {
+                    r: {
+                        "count":    d["regime"][r]["count"],
+                        "avg_pnl":  round(d["regime"][r]["pnl"] / d["regime"][r]["count"], 2)
+                                    if d["regime"][r]["count"] else 0.0,
+                        "win_rate": round(d["regime"][r]["wins"] / d["regime"][r]["count"] * 100, 1)
+                                    if d["regime"][r]["count"] else 0.0,
+                    }
+                    for r in REGIMES
+                },
+            })
+        result.sort(key=lambda x: x["total_pnl"], reverse=True)
+        return jsonify({"ok": True, "strategies": result})
+    except Exception as e:
+        logger.exception("strategy_leaderboard error")
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/trades")
