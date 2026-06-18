@@ -6377,40 +6377,56 @@ function _updateTickerTape(data) {
   var track = document.getElementById('tickerTrack');
   if (!track || !data) return;
   var items = [];
-  // Indices first (always shown)
-  if (data.nifty)     items.push({ label: 'NIFTY',     price: data.nifty.price,     chg: data.nifty.change_pct,     bold: true });
-  if (data.banknifty) items.push({ label: 'BANKNIFTY', price: data.banknifty.price, chg: data.banknifty.change_pct, bold: true });
-  // Equity positions (shown if available)
+  if (data.nifty)     items.push({ key: 'NIFTY',     label: 'NIFTY',     price: data.nifty.price,     chg: data.nifty.change_pct,     bold: true });
+  if (data.banknifty) items.push({ key: 'BANKNIFTY', label: 'BANKNIFTY', price: data.banknifty.price, chg: data.banknifty.change_pct, bold: true });
   var pos = window._ribbonPositions || [];
   pos.forEach(function(p) {
-    items.push({ label: p.label, price: p.price, chg: p.change_pct, bold: false });
+    items.push({ key: p.label, label: p.label, price: p.price, chg: p.change_pct, bold: false });
   });
   if (items.length === 0) return;
 
-  // Duplicate items to fill ribbon seamlessly (indices repeat more)
-  var allItems = [];
-  // Repeat the whole set enough times to fill the tape continuously
   var repeats = Math.max(3, Math.ceil(40 / Math.max(items.length, 1)));
-  for (var k = 0; k < repeats; k++) {
-    items.forEach(function(t) { allItems.push(t); });
-  }
 
-  var html = allItems.map(function(t) {
-    var c    = (t.chg >= 0) ? 'pos' : 'neg';
-    var sign = (t.chg >= 0) ? '+' : '';
-    var name = t.bold ? '<b>' + t.label + '</b>' : t.label;
-    var sep  = t.bold ? ' ₹' : ' ';
-    return '<span class="tick">' + name + sep +
-           Number(t.price).toLocaleString('en-IN', {maximumFractionDigits:2}) +
-           ' <span class="' + c + '">' + sign + Number(t.chg).toFixed(2) + '%</span></span>';
-  }).join('');
-  track.innerHTML = html;
+  // ── Build ribbon only once; after that just patch text in-place ──────────
+  var existingKeys = Array.from(track.querySelectorAll('[data-rkey]')).map(function(el){ return el.dataset.rkey; });
+  var newKeys = [];
+  for (var k = 0; k < repeats; k++) { items.forEach(function(t){ newKeys.push(t.key + '_' + k); }); }
+  var needRebuild = existingKeys.length !== newKeys.length || existingKeys.some(function(k,i){ return k !== newKeys[i]; });
 
-  // Adjust scroll speed: more items = slightly faster to keep pace
-  var tape = track.parentElement;
-  if (tape) {
+  if (needRebuild) {
+    // First render or item list changed — replace HTML (animation resets, acceptable)
+    var allItems = [];
+    for (var k = 0; k < repeats; k++) { items.forEach(function(t){ allItems.push({t:t, idx:k}); }); }
+    track.innerHTML = allItems.map(function(x, i) {
+      var t = x.t, k = x.idx;
+      var c = (t.chg >= 0) ? 'pos' : 'neg';
+      var s = (t.chg >= 0) ? '+' : '';
+      var name = t.bold ? '<b>' + t.label + '</b>' : t.label;
+      return '<span class="tick" data-rkey="' + t.key + '_' + k + '">' +
+             name + (t.bold ? ' ₹' : ' ') +
+             '<span data-rprice>' + Number(t.price).toLocaleString('en-IN', {maximumFractionDigits:2}) + '</span>' +
+             ' <span class="' + c + '" data-rchg>' + s + Number(t.chg).toFixed(2) + '%</span></span>';
+    }).join('');
     var secs = Math.max(30, items.length * 3);
     track.style.animationDuration = secs + 's';
+  } else {
+    // Items unchanged — patch price/chg text in-place without touching innerHTML (animation keeps running)
+    var spans = track.querySelectorAll('[data-rkey]');
+    var idx = 0;
+    for (var k = 0; k < repeats; k++) {
+      items.forEach(function(t) {
+        var span = spans[idx++];
+        if (!span) return;
+        var priceEl = span.querySelector('[data-rprice]');
+        var chgEl   = span.querySelector('[data-rchg]');
+        if (priceEl) priceEl.textContent = Number(t.price).toLocaleString('en-IN', {maximumFractionDigits:2});
+        if (chgEl) {
+          var s = (t.chg >= 0) ? '+' : '';
+          chgEl.textContent = s + Number(t.chg).toFixed(2) + '%';
+          chgEl.className = (t.chg >= 0) ? 'pos' : 'neg';
+        }
+      });
+    }
   }
 }
 
