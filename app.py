@@ -59,6 +59,9 @@ except ImportError: get_insider_agent = None
 try:
     from execution_agent import get_execution_agent
 except ImportError: get_execution_agent = None
+try:
+    from accounts_agent import get_accounts_agent
+except ImportError: get_accounts_agent = None
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
@@ -1321,6 +1324,30 @@ def api_agents_execution():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/limit_breach')
+def api_limit_breach():
+    """Return the Zerodha limit breach log. Non-empty = critical bug was detected."""
+    from pathlib import Path as _P
+    breach_file = _P("data/limit_breach.json")
+    if not breach_file.exists():
+        return jsonify({"ok": True, "breaches": [], "count": 0})
+    try:
+        import json as _j
+        breaches = _j.loads(breach_file.read_text())
+        return jsonify({"ok": True, "breaches": list(reversed(breaches)), "count": len(breaches)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.route('/api/agents/accounts')
+def api_agents_accounts():
+    """CA-style accounting report: P&L waterfall, tax, fees, monthly statements."""
+    if not get_accounts_agent: return jsonify({"error": "accounts_agent not loaded"}), 503
+    try:
+        fy = request.args.get("fy")   # optional ?fy=FY2025-26
+        return jsonify(get_accounts_agent().get_dashboard_data(fy=fy))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/agents/all')
 def api_agents_all():
     """Single endpoint returning status summary of all hedge fund agents."""
@@ -2353,6 +2380,19 @@ def _background_loop() -> None:
                 _bg_logger.info(
                     f"[Scheduler] Market closed. Next open in {secs/3600:.1f}h"
                 )
+
+            # ── Catch-up: generate today's closing report if missed ───────────
+            # This fires if the loop restarted after 15:30 or was sleeping through
+            # the closing window. Only runs on actual trading days (not holidays).
+            if (not _is_nse_holiday(today)
+                    and now.time() >= dt_time(15, 30)
+                    and today not in _state.closing_report_dates):
+                _bg_logger.info(
+                    f"[Scheduler] Catch-up closing report for {today}"
+                )
+                _generate_closing_report()
+                _state.closing_report_dates.add(today)
+
             # Sleep at most 5 min at a time so we catch the open promptly
             time.sleep(min(300, secs))
 

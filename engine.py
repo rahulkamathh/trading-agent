@@ -471,6 +471,17 @@ class DataFetcher:
         Result is cached for _PRICE_TTL seconds to avoid hammering yfinance
         on every stop-loss check across hundreds of positions.
         """
+        # 0. Kite Connect live price (sub-second, highest priority when connected)
+        try:
+            from kite_broker import get_broker as _get_kite_broker  # pylint: disable=import-outside-toplevel
+            _broker = _get_kite_broker()
+            if _broker.is_connected():
+                kite_price = _broker.get_price(ticker)
+                if kite_price and kite_price > 0:
+                    return kite_price
+        except Exception:
+            pass
+
         # 1. Angel One live feed
         try:
             from angelone_feed import get_feed  # pylint: disable=import-outside-toplevel
@@ -1151,6 +1162,65 @@ def _compute_sl_tp(ticker: str, entry: float, strength: float) -> tuple[float, f
 
 
 # ---------------------------------------------------------------------------
+# Zerodha Transaction Cost Model + Slippage Simulation
+# ---------------------------------------------------------------------------
+
+def _compute_zerodha_costs(qty: int, price: float, action: str, product: str = "CNC") -> dict:
+    """
+    Exact Zerodha statutory charges for NSE equity trades.
+
+    CNC (equity delivery):
+      Brokerage    : ₹0 (Zerodha charges zero on delivery)
+      STT          : 0.1% on buy + 0.1% on sell (both sides)
+      Exchange (NSE): 0.00297% of turnover
+      SEBI          : ₹10 per crore (0.0001%)
+      GST           : 18% on (brokerage + exchange + SEBI)
+      Stamp duty    : 0.015% on buy side only
+
+    Returns a dict with full breakdown and 'total' key.
+    Source: zerodha.com/charges
+    """
+    turnover = qty * price
+
+    brokerage        = 0.0
+    stt              = turnover * 0.001          # 0.1% both buy and sell
+    exchange_charges = turnover * 0.0000297      # NSE 0.00297%
+    stamp_duty       = (turnover * 0.00015) if action == "BUY" else 0.0  # 0.015% buy only
+    sebi_charges     = turnover * 0.000001       # ₹10 per crore
+    gst              = (brokerage + exchange_charges + sebi_charges) * 0.18
+
+    total = brokerage + stt + exchange_charges + gst + sebi_charges + stamp_duty
+
+    return {
+        "brokerage":        round(brokerage,        4),
+        "stt":              round(stt,              4),
+        "exchange_charges": round(exchange_charges, 4),
+        "gst":              round(gst,              4),
+        "sebi_charges":     round(sebi_charges,     4),
+        "stamp_duty":       round(stamp_duty,       4),
+        "total":            round(total,            4),
+    }
+
+
+def _apply_slippage(signal_price: float, action: str) -> float:
+    """
+    Simulate execution slippage (bid-ask spread + market impact).
+
+    Nifty 50 large-cap stocks trade with ~3-5 bps spread.
+    We use 5 bps (0.05%) — conservative but realistic for a ₹10-50L order.
+
+    BUY  → executes slightly ABOVE signal price (market takes the ask)
+    SELL → executes slightly BELOW signal price (market hits the bid)
+    """
+    SLIPPAGE_BPS = 5  # 5 basis points
+    factor = SLIPPAGE_BPS / 10_000
+    if action == "BUY":
+        return round(signal_price * (1 + factor), 4)
+    else:
+        return round(signal_price * (1 - factor), 4)
+
+
+# ---------------------------------------------------------------------------
 # Portfolio Manager
 # ---------------------------------------------------------------------------
 
@@ -1304,8 +1374,20 @@ class Portfolio:
         if qty < 1:
             return None
 
-        cost = qty * price
+        # ── Realistic execution: slippage + Zerodha statutory charges ──────
+        signal_price = price
+        exec_price   = _apply_slippage(price, "BUY")
+        fees         = _compute_zerodha_costs(qty, exec_price, "BUY", "CNC")
+        cost         = qty * exec_price + fees["total"]
         self.state["cash"] -= cost
+        # Track cumulative costs for dashboard reporting
+        self.state.setdefault("total_fees",     0.0)
+        self.state.setdefault("total_slippage", 0.0)
+        self.state["total_fees"]     += fees["total"]
+        self.state["total_slippage"] += (exec_price - signal_price) * qty
+        # Use exec_price as avg_price — this is what was actually paid per share
+        price = exec_price
+
         # ── Capture market regime at entry ──────────────────────────────────
         _regime = market_regime
         if _regime is None:
@@ -1338,6 +1420,8 @@ class Portfolio:
             rsi_at_entry=rsi_at_entry, signal_score=signal_score,
             market_regime=_regime, strength=strength,
             atr_at_entry=atr_val,
+            fees=fees,
+            slippage_cost=(exec_price - signal_price) * qty,
         )
         logger.info(
             f"BUY  {ticker:20s} qty={qty} @ ₹{price:.2f}  "
@@ -1389,11 +1473,20 @@ class Portfolio:
             except Exception:
                 pass
 
-        qty      = pos["qty"]
-        proceeds = qty * price
-        pnl      = (price - pos["avg_price"]) * qty
+        qty          = pos["qty"]
+        signal_price = price
+        exec_price   = _apply_slippage(price, "SELL")
+        fees         = _compute_zerodha_costs(qty, exec_price, "SELL", "CNC")
+        proceeds     = qty * exec_price - fees["total"]
+        # P&L net of all costs: sell proceeds minus original buy cost (avg_price = buy exec_price)
+        pnl          = proceeds - pos["avg_price"] * qty
         self.state["cash"]         += proceeds
         self.state["realised_pnl"] += pnl
+        self.state.setdefault("total_fees",     0.0)
+        self.state.setdefault("total_slippage", 0.0)
+        self.state["total_fees"]     += fees["total"]
+        self.state["total_slippage"] += (signal_price - exec_price) * qty
+        price    = exec_price
         strategy = pos["strategy"]
 
         # Compute actual RR: how many units of risk did we make/lose?
@@ -1436,6 +1529,8 @@ class Portfolio:
             market_regime=pos.get("market_regime"),
             strength=pos.get("strength"),
             atr_at_entry=pos.get("atr_at_entry"),
+            fees=fees,
+            slippage_cost=(signal_price - exec_price) * qty,
         )
         rr_str   = f"  RR={actual_rr:+.2f}(planned 1:{planned_rr})" if planned_rr else ""
         type_str = f"  [{trade_type}/{hold_days}d]"
@@ -1711,7 +1806,8 @@ class Portfolio:
                    trade_type=None, hold_days=None,
                    rsi_at_entry=None, signal_score=None,
                    market_regime=None, strength=None,
-                   atr_at_entry=None) -> dict:
+                   atr_at_entry=None,
+                   fees=None, slippage_cost=None) -> dict:
         log = []
         if TRADE_LOG_FILE.exists():
             with open(TRADE_LOG_FILE) as f:
@@ -1742,6 +1838,10 @@ class Portfolio:
             "signal_score":  round(signal_score, 4) if signal_score is not None else None,
             "market_regime": market_regime,   # LOW/MEDIUM/HIGH/EXTREME risk
             "atr_at_entry":  round(atr_at_entry, 2) if atr_at_entry is not None else None,
+            # ── Execution costs ───────────────────────────────────────────────
+            "fees":          fees,           # dict with breakdown (stt, gst, etc.)
+            "fees_total":    round(fees["total"], 2) if fees else None,
+            "slippage_cost": round(slippage_cost, 2) if slippage_cost is not None else None,
         }
         log.append(trade)
         with open(TRADE_LOG_FILE, "w") as f:
@@ -3235,6 +3335,8 @@ class TradingAgent:
                 "unrealised_pnl": round(unreal_pnl, 2),
                 "total_pnl":      round(total_pnl, 2),
                 "total_pnl_pct":  round(total_pnl_pct, 2),
+                "total_fees":     round(port.state.get("total_fees", 0.0), 2),
+                "total_slippage": round(port.state.get("total_slippage", 0.0), 2),
                 "last_updated":   port.state.get("last_updated", ""),
             },
             "positions":      port.get_positions_display(),

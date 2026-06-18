@@ -316,11 +316,90 @@ class KiteBroker:
                 logger.info(f"[KiteBroker] ✅ LIVE ORDER PLACED: {action} {qty} × {kite_sym} | order_id={order_id}")
 
             except Exception as e:
+                err_str = str(e).lower()
                 order_rec["status"] = "FAILED"
                 order_rec["error"] = str(e)
                 logger.error(f"[KiteBroker] ❌ Order failed: {e}")
 
+                # ── CRITICAL: Zerodha daily limit hit ────────────────────────
+                # This means check_equity_trade_allowed() had a bug and let
+                # a trade through that exceeded our set capital limit.
+                # Zerodha's server-side wall caught it. Treat this as a
+                # critical system failure — halt everything and alert.
+                _LIMIT_KEYWORDS = (
+                    "margin", "insufficient fund", "insufficient margin",
+                    "exceed", "daily limit", "trading limit", "funds",
+                    "not enough", "order value limit",
+                )
+                if any(kw in err_str for kw in _LIMIT_KEYWORDS):
+                    self._trigger_limit_breach_alert(
+                        ticker=ticker, qty=qty, action=action,
+                        order_value=round(qty * price, 2),
+                        error=str(e),
+                    )
+
         return order_rec
+
+    def _trigger_limit_breach_alert(
+        self, ticker: str, qty: int, action: str,
+        order_value: float, error: str,
+    ) -> None:
+        """
+        Called when Zerodha rejects an order due to margin/limit breach.
+        This means our capital limit check had a bug. Response:
+          1. Emergency halt — block all further orders immediately
+          2. Critical log entry
+          3. Notifier alert (Telegram / email / webhook)
+          4. Security audit log
+        """
+        reason = (
+            f"🚨 ZERODHA DAILY LIMIT HIT — capital guard bypass detected. "
+            f"Attempted {action} {qty}×{ticker} ₹{order_value:,.0f}. "
+            f"Broker error: {error[:120]}"
+        )
+        logger.critical(f"[KiteBroker] {reason}")
+
+        # 1. Emergency halt via trading_config
+        try:
+            from trading_config import update_trading_config
+            update_trading_config(
+                trading_halted=True,
+                halt_reason=reason,
+            )
+            logger.critical("[KiteBroker] 🛑 Trading HALTED due to limit breach")
+        except Exception as he:
+            logger.error(f"[KiteBroker] Could not set halt: {he}")
+
+        # 2. Notifier — critical alert
+        try:
+            from notifier import get_notifier
+            get_notifier().send_alert(
+                title="🚨 CRITICAL: Zerodha Limit Breach",
+                message=reason,
+                level="critical",
+            )
+        except Exception as ne:
+            logger.error(f"[KiteBroker] Notifier alert failed: {ne}")
+
+        # 3. Write to a dedicated breach log file for post-mortem
+        try:
+            breach_file = DATA_DIR / "limit_breach.json"
+            import json as _j
+            breaches = []
+            if breach_file.exists():
+                breaches = _j.loads(breach_file.read_text())
+            breaches.append({
+                "timestamp":   datetime.now(IST).isoformat(),
+                "ticker":      ticker,
+                "action":      action,
+                "qty":         qty,
+                "order_value": order_value,
+                "error":       error,
+                "halt_reason": reason,
+            })
+            breach_file.write_text(_j.dumps(breaches, indent=2))
+        except Exception as fe:
+            logger.error(f"[KiteBroker] Could not write breach log: {fe}")
 
     def cancel_order(self, order_id: str, variety: str = "regular") -> bool:
         """Cancel a pending order."""

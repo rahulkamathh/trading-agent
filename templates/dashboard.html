@@ -421,9 +421,9 @@
     <div class="nav-item" data-view="controls" onclick="showView('controls')"><span class="fkey">F10</span>Controls</div>
     <div class="nav-item" data-view="report" onclick="showView('report')"><span class="fkey">F11</span>Daily Report</div>
     <div class="nav-item" data-view="calendar" onclick="showView('calendar')"><span class="fkey">F12</span>P&amp;L Calendar</div>
-    <div class="nav-item" data-view="intelligence" onclick="showView('intelligence')"><span class="fkey" style="font-size:8px">INT</span>Intelligence</div>
-    <div class="nav-item" data-view="riskdash" onclick="showView('riskdash')"><span class="fkey" style="font-size:8px">RSK</span>Risk Dashboard</div>
-    <div class="nav-item" data-view="analytics" onclick="showView('analytics')"><span class="fkey" style="font-size:8px">ANA</span>Analytics</div>
+    <div class="nav-item" data-view="ag-news" onclick="showView('ag-news')"><span class="fkey" style="font-size:8px">INT</span>Intelligence</div>
+    <div class="nav-item" data-view="ag-risk" onclick="showView('ag-risk')"><span class="fkey" style="font-size:8px">RSK</span>Risk Dashboard</div>
+    <div class="nav-item" data-view="screener" onclick="showView('screener')"><span class="fkey" style="font-size:8px">ANA</span>Analytics</div>
   </div>
 
   <!-- Agents group — shown on equity & fno desks alongside tools -->
@@ -436,6 +436,7 @@
     <div class="nav-item" data-view="ag-fii" onclick="showView('ag-fii')"><span class="fkey" style="font-size:8px">FI</span>FII/DII</div>
     <div class="nav-item" data-view="ag-execution" onclick="showView('ag-execution')"><span class="fkey" style="font-size:8px">EX</span>Execution</div>
     <div class="nav-item" data-view="ag-broker" onclick="showView('ag-broker')"><span class="fkey" style="font-size:8px">BR</span>Broker</div>
+    <div class="nav-item" data-view="ag-accounts" onclick="showView('ag-accounts')"><span class="fkey" style="font-size:8px">AC</span>Accounts</div>
   </div>
 </nav>
 
@@ -451,6 +452,8 @@
   <div class="kpi"><div class="kpi-lbl">TOTAL P&amp;L</div><div class="kpi-val" id="kpiPnl">₹—</div></div>
   <div class="kpi"><div class="kpi-lbl">REALISED</div><div class="kpi-sub" id="kpiReal">₹—</div></div>
   <div class="kpi"><div class="kpi-lbl">UNREALISED</div><div class="kpi-sub" id="kpiUnreal">₹—</div></div>
+  <div class="kpi" title="Zerodha STT + exchange + GST + stamp duty across all trades"><div class="kpi-lbl" style="color:var(--red)">FEES PAID</div><div class="kpi-sub" id="kpiFees" style="color:var(--red)">₹—</div></div>
+  <div class="kpi" title="Bid-ask spread cost across all trades"><div class="kpi-lbl" style="color:#ff6b35">SLIPPAGE</div><div class="kpi-sub" id="kpiSlippage" style="color:#ff6b35">₹—</div></div>
   <div class="kpi-sep"></div>
   <div class="kpi"><div class="kpi-lbl">CASH</div><div class="kpi-val" id="kpiCash">₹—</div><div class="progress" style="width:50px;margin-top:3px"><div class="progress-fill" id="cashBar" style="width:100%;background:var(--cyan)"></div></div></div>
   <div class="kpi"><div class="kpi-lbl">POSITIONS</div><div class="kpi-val" id="kpiPositions">—</div></div>
@@ -636,6 +639,13 @@
         <tbody id="port-all-body"><tr><td colspan="9" style="text-align:center;padding:24px;color:var(--muted)">Loading…</td></tr></tbody>
       </table>
     </div>
+  </div>
+
+  <!-- ══ CRITICAL: Zerodha limit breach banner (shown on ALL pages if triggered) ══ -->
+  <div id="limitBreachBanner" style="display:none;position:sticky;top:0;z-index:9999;background:#ff0000;color:#000;padding:12px 20px;font-weight:700;font-size:13px;letter-spacing:.5px;border-bottom:2px solid #ff6b6b;text-align:center">
+    🚨 CRITICAL: ZERODHA DAILY LIMIT HIT — capital guard bypass detected. Bot is HALTED.
+    <span id="limitBreachDetail" style="font-size:11px;font-weight:400;margin-left:12px"></span>
+    <button onclick="document.getElementById('limitBreachBanner').style.display='none'" style="margin-left:16px;background:#000;color:#ff0000;border:none;padding:3px 10px;cursor:pointer;font-size:11px;font-weight:700">DISMISS</button>
   </div>
 
   <!-- ══ Dashboard page ══ -->
@@ -1123,66 +1133,70 @@
       </div>
     </div>
 
-    <!-- ── Live Trading Panel ──────────────────────────────────────────── -->
+    <!-- ── Kite Connect Broker Panel ──────────────────────────────────── -->
     <div class="card" style="margin-top:20px" id="liveTraderCard">
       <div class="section-header" style="margin-bottom:14px">
-        <span class="section-title">⚡ Live Trading</span>
-        <button class="btn btn-ghost" style="font-size:12px;padding:5px 12px" onclick="loadTraderStatus()">↻ Refresh</button>
+        <span class="section-title">⚡ Kite Connect — Execution Mode</span>
+        <button class="btn btn-ghost" style="font-size:12px;padding:5px 12px" onclick="loadKitePanel()">↻ Refresh</button>
       </div>
 
-      <!-- Status row -->
-      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
-        <div style="background:#000000;border:1px solid var(--border);border-radius:8px;padding:12px 16px;min-width:180px;flex:1">
-          <div style="font-size:11px;color:var(--muted);margin-bottom:5px">MODE</div>
-          <div style="display:flex;align-items:center;gap:8px">
-            <span id="traderModeDot" style="width:10px;height:10px;border-radius:50%;background:#f0a800;flex-shrink:0"></span>
-            <span id="traderModeLabel" style="font-size:16px;font-weight:700;color:#f0a800">PAPER</span>
+      <!-- Kite connection status -->
+      <div id="kiteConnStatus" style="display:flex;align-items:center;gap:8px;margin-bottom:16px;padding:8px 12px;border:1px solid var(--border);background:#000">
+        <span id="kiteConnDot" style="width:8px;height:8px;border-radius:50%;background:#555;flex-shrink:0"></span>
+        <span id="kiteConnLabel" style="font-size:11px;color:var(--muted)">Checking Kite connection…</span>
+        <button onclick="runKiteAuth()" style="margin-left:auto;background:transparent;border:1px solid var(--border);color:var(--muted);font-size:10px;padding:3px 10px;cursor:pointer;letter-spacing:1px;font-family:var(--mono)">RE-AUTH</button>
+      </div>
+
+      <!-- EQ / FNO toggles — side by side -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+
+        <!-- EQUITY -->
+        <div style="border:1px solid var(--border);padding:16px;background:#050505">
+          <div style="font-size:10px;color:var(--cyan);letter-spacing:1px;margin-bottom:10px">EQUITY DESK</div>
+          <div style="display:flex;gap:0;border:1px solid var(--border);border-radius:4px;overflow:hidden;margin-bottom:10px">
+            <button id="eqPaperBtn" onclick="setKiteMode('equity','paper')"
+              style="flex:1;padding:8px;font-size:12px;font-weight:700;font-family:var(--mono);border:none;cursor:pointer;letter-spacing:1px;background:#f0a800;color:#000">
+              PAPER
+            </button>
+            <button id="eqLiveBtn" onclick="setKiteMode('equity','live')"
+              style="flex:1;padding:8px;font-size:12px;font-weight:700;font-family:var(--mono);border:none;cursor:pointer;letter-spacing:1px;background:#1a1a1a;color:#555">
+              LIVE
+            </button>
           </div>
-          <div style="font-size:11px;color:var(--muted);margin-top:4px">Set <code>LIVE_TRADING=true</code> to go live</div>
+          <div id="eqModeNote" style="font-size:10px;color:var(--muted)">Paper — orders logged, not sent to Zerodha</div>
         </div>
-        <div style="background:#000000;border:1px solid var(--border);border-radius:8px;padding:12px 16px;min-width:180px;flex:1">
-          <div style="font-size:11px;color:var(--muted);margin-bottom:5px">HALT STATUS</div>
-          <div style="display:flex;align-items:center;gap:8px">
-            <span id="traderHaltDot" style="width:10px;height:10px;border-radius:50%;background:#238636;flex-shrink:0"></span>
-            <span id="traderHaltLabel" style="font-size:16px;font-weight:700;color:#238636">CLEAR</span>
+
+        <!-- F&O -->
+        <div style="border:1px solid var(--border);padding:16px;background:#050505">
+          <div style="font-size:10px;color:var(--cyan);letter-spacing:1px;margin-bottom:10px">F&amp;O DESK</div>
+          <div style="display:flex;gap:0;border:1px solid var(--border);border-radius:4px;overflow:hidden;margin-bottom:10px">
+            <button id="fnoPaperBtn" onclick="setKiteMode('fno','paper')"
+              style="flex:1;padding:8px;font-size:12px;font-weight:700;font-family:var(--mono);border:none;cursor:pointer;letter-spacing:1px;background:#f0a800;color:#000">
+              PAPER
+            </button>
+            <button id="fnoLiveBtn" onclick="setKiteMode('fno','live')"
+              style="flex:1;padding:8px;font-size:12px;font-weight:700;font-family:var(--mono);border:none;cursor:pointer;letter-spacing:1px;background:#1a1a1a;color:#555">
+              LIVE
+            </button>
           </div>
-          <div style="font-size:11px;color:var(--muted);margin-top:4px" id="traderHaltReason">No halt active</div>
-        </div>
-        <div style="background:#000000;border:1px solid var(--border);border-radius:8px;padding:12px 16px;min-width:160px;flex:1">
-          <div style="font-size:11px;color:var(--muted);margin-bottom:5px">ORDERS TODAY</div>
-          <div id="traderOrderCount" style="font-size:24px;font-weight:700;color:var(--text)">—</div>
-          <div style="font-size:11px;color:var(--muted);margin-top:4px">live + paper</div>
+          <div id="fnoModeNote" style="font-size:10px;color:var(--muted)">Paper — orders logged, not sent to Zerodha</div>
         </div>
       </div>
 
-      <!-- Action buttons -->
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">
-        <button class="btn btn-red" onclick="traderHalt()" id="btnTraderHalt">🛑 Emergency Halt</button>
-        <button class="btn btn-green" onclick="traderResume()" id="btnTraderResume" style="display:none">▶ Resume Trading</button>
-        <button class="btn btn-ghost" onclick="traderSync()">🔄 Sync with Angel One</button>
+      <!-- Halt status + emergency halt -->
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+        <div id="kiteHaltStatus" style="flex:1;padding:8px 14px;background:#000;border:1px solid var(--border);font-size:12px">
+          <span id="kiteHaltDot" style="color:var(--green)">●</span>
+          <span id="kiteHaltLabel" style="color:var(--green);font-weight:700;margin-left:6px">CLEAR</span>
+          <span id="kiteHaltReason" style="color:var(--muted);font-size:10px;margin-left:8px"></span>
+        </div>
+        <button class="btn btn-red" onclick="haltTrading()" style="letter-spacing:1px">🛑 HALT ALL</button>
+        <button id="kiteResumeBtn" class="btn btn-green" onclick="resumeTrading()" style="display:none;letter-spacing:1px">▶ RESUME</button>
       </div>
 
-      <!-- Sync result -->
-      <div id="traderSyncResult" style="display:none;padding:10px 14px;border-radius:8px;font-size:13px;background:#000000;border:1px solid var(--border);margin-bottom:12px"></div>
-
-      <!-- Recent orders -->
-      <div style="font-size:12px;color:var(--muted);margin-bottom:8px;font-weight:600">RECENT ORDERS</div>
-      <div id="traderOrderTable" style="font-size:12px;color:var(--muted)">—</div>
-
-      <!-- Go-live instructions -->
-      <details style="margin-top:16px">
-        <summary style="cursor:pointer;font-size:12px;color:var(--muted);user-select:none">▸ How to go live when ready</summary>
-        <div style="margin-top:10px;padding:12px;background:#000000;border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--muted);line-height:1.9">
-          <strong style="color:var(--text)">Steps to enable real order placement (equity only):</strong><br>
-          <strong style="color:#4fc3f7">1.</strong> Confirm paper trading is profitable for at least 4 weeks.<br>
-          <strong style="color:#4fc3f7">2.</strong> Add to Railway Variables: <code>LIVE_TRADING=true</code><br>
-          <strong style="color:#4fc3f7">3.</strong> Reduce <code>NSE_CAPITAL</code> to match your actual deposit (e.g. ₹10,000 to start).<br>
-          <strong style="color:#4fc3f7">4.</strong> Watch first few cycles — check orders here and in Angel One match.<br>
-          <strong style="color:#4fc3f7">5.</strong> Use <em>Sync with Angel One</em> after each Railway restart.<br>
-          <strong style="color:#f5a623">⚠️ Circuit breaker:</strong> portfolio drops &gt;3% in a day → all buying auto-halts + Telegram alert.<br>
-          <strong style="color:#f5a623">⚠️ Equity only:</strong> F&amp;O and commodities remain paper-only until separately enabled.
-        </div>
-      </details>
+      <!-- Today's orders -->
+      <div style="font-size:10px;color:var(--muted);letter-spacing:1px;margin-bottom:6px">ORDERS TODAY (KITE)</div>
+      <div id="kiteOrderTable" style="font-size:11px;color:var(--muted)">No orders today.</div>
     </div>
 
     <!-- ── Dynamic Risk Manager ─────────────────────────────────────────── -->
@@ -1491,6 +1505,19 @@
     <div id="agExecError" class="hidden" style="background:#1a0a0a;border:1px solid #ff3b3055;padding:12px 16px;margin-bottom:12px;color:var(--red);font-size:11px"></div>
     <div id="agExecBody">
       <div style="color:var(--muted);padding:40px;text-align:center;font-size:11px">Loading execution data…</div>
+    </div>
+  </div>
+
+  <!-- Accounts Agent (CA-style financials) -->
+  <div id="page-ag-accounts" class="page-section hidden">
+    <div class="page-header">
+      <span class="page-title">Accounts — CA Statement</span>
+      <span id="agAccTs" style="font-size:10px;color:var(--muted)"></span>
+      <select id="agAccFySelect" onchange="loadAgentAccounts()" style="margin-left:auto;background:var(--panel);border:1px solid var(--border);color:var(--text);font-size:11px;padding:3px 8px"></select>
+    </div>
+    <div id="agAccError" class="hidden" style="background:#1a0a0a;border:1px solid #ff3b3055;padding:12px 16px;margin-bottom:12px;color:var(--red);font-size:11px"></div>
+    <div id="agAccBody">
+      <div style="color:var(--muted);padding:40px;text-align:center;font-size:11px">Loading accounting data…</div>
     </div>
   </div>
 
@@ -2045,7 +2072,7 @@ function closeSidebar() {
 // ══════════════════════════════════════════════
 let _currentView = 'overview';
 
-const _ALL_PAGES = ['master','overview','portfolio','fno-overview','fno-signals','fno-trades','fno-charts','fno-strategy','positions','signals','trades','controls','report','telegram','screener','agentlog','calendar','fno','leaderboard','ag-risk','ag-regime','ag-news','ag-tax','ag-fii','ag-execution','ag-broker'];
+const _ALL_PAGES = ['master','overview','portfolio','fno-overview','fno-signals','fno-trades','fno-charts','fno-strategy','positions','signals','trades','controls','report','telegram','screener','agentlog','calendar','fno','leaderboard','ag-risk','ag-regime','ag-news','ag-tax','ag-fii','ag-execution','ag-broker','ag-accounts'];
 const _lazyLoaded = new Set();
 
 function showView(view) {
@@ -2129,6 +2156,8 @@ function showView(view) {
         loadAgentExecution();
       } else if (view === 'ag-broker') {
         loadAgentBroker();
+      } else if (view === 'ag-accounts') {
+        loadAgentAccounts();
       }
     }
   }
@@ -2478,6 +2507,25 @@ async function loadMarketOverview() {
   } catch(e) { console.warn('Market overview error:', e); }
 }
 
+// ── Limit breach watcher — polls every 60s, shows red banner immediately ──────
+async function _checkLimitBreach() {
+  try {
+    const r = await fetch('/api/limit_breach');
+    const d = await r.json();
+    const banner = document.getElementById('limitBreachBanner');
+    const detail = document.getElementById('limitBreachDetail');
+    if (!banner) return;
+    if (d.ok && d.count > 0) {
+      const latest = d.breaches[0];
+      if (detail) detail.textContent =
+        `${latest.ticker} ${latest.action} ₹${(latest.order_value||0).toLocaleString('en-IN')} — ${latest.timestamp?.substring(0,16)||''}`;
+      banner.style.display = 'block';
+    }
+  } catch(e) { /* silent */ }
+}
+_checkLimitBreach();
+setInterval(_checkLimitBreach, 60_000);
+
 async function loadDashboard() {
   try {
     const r = await fetch('/api/dashboard');
@@ -2521,6 +2569,14 @@ function renderKPIs(p) {
   document.getElementById('kpiReal').textContent   = fmt(p.realised_pnl);
   document.getElementById('kpiUnreal').textContent = fmt(p.unrealised_pnl);
   document.getElementById('kpiCash').textContent   = fmt(p.cash);
+  const kpiFees = document.getElementById('kpiFees');
+  if (kpiFees && p.total_fees != null) {
+    kpiFees.textContent = '₹' + Number(p.total_fees).toLocaleString('en-IN', {minimumFractionDigits:0, maximumFractionDigits:0});
+  }
+  const kpiSlip = document.getElementById('kpiSlippage');
+  if (kpiSlip && p.total_slippage != null) {
+    kpiSlip.textContent = '₹' + Number(p.total_slippage).toLocaleString('en-IN', {minimumFractionDigits:0, maximumFractionDigits:0});
+  }
 
   const cashPct = p.total_value ? (p.cash / p.total_value * 100) : 100;
   document.getElementById('cashBar').style.width  = cashPct + '%';
@@ -5895,112 +5951,142 @@ async function loadPortfolio() {
 
 setInterval(() => { if (_currentView === 'portfolio') loadPortfolio(); }, 30000);
 
-// ── Live Trader panel ───────────────────────────────────────────────────────
-async function loadTraderStatus() {
+// ── Kite Connect panel ──────────────────────────────────────────────────────
+async function loadKitePanel() {
   try {
-    const r = await fetch('/api/trader/status');
-    const d = await r.json();
-    const live = d.is_live;
-    const halted = d.halted;
+    const cfg = await fetch('/api/trading_config').then(r => r.json());
+    const eqLive  = !cfg.equity_paper_mode;
+    const fnoLive = !cfg.fno_paper_mode;
+    const halted  = cfg.trading_halted;
 
-    // Mode badge
-    document.getElementById('traderModeDot').style.background = live ? '#ff3b30' : '#f0a800';
-    document.getElementById('traderModeLabel').textContent = live ? 'LIVE' : 'PAPER';
-    document.getElementById('traderModeLabel').style.color  = live ? '#ff3b30' : '#f0a800';
+    // EQ toggles
+    _setKiteToggle('eq', eqLive);
+    // FNO toggles
+    _setKiteToggle('fno', fnoLive);
 
-    // Halt badge
-    const haltDot   = document.getElementById('traderHaltDot');
-    const haltLabel = document.getElementById('traderHaltLabel');
-    const haltReason = document.getElementById('traderHaltReason');
+    // Halt status
+    const haltDot    = document.getElementById('kiteHaltDot');
+    const haltLabel  = document.getElementById('kiteHaltLabel');
+    const haltReason = document.getElementById('kiteHaltReason');
+    const resumeBtn  = document.getElementById('kiteResumeBtn');
     if (halted) {
-      haltDot.style.background = '#ff3b30';
-      haltLabel.textContent    = 'HALTED';
-      haltLabel.style.color    = '#ff3b30';
-      haltReason.textContent   = d.halt_reason || 'Manual halt';
-      document.getElementById('btnTraderHalt').style.display   = 'none';
-      document.getElementById('btnTraderResume').style.display = '';
+      haltDot.style.color   = '#ff3b30';
+      haltLabel.textContent = 'HALTED';
+      haltLabel.style.color = '#ff3b30';
+      haltReason.textContent = cfg.halt_reason ? `— ${cfg.halt_reason}` : '';
+      resumeBtn.style.display = '';
     } else {
-      haltDot.style.background = '#238636';
-      haltLabel.textContent    = 'CLEAR';
-      haltLabel.style.color    = '#238636';
-      haltReason.textContent   = 'No halt active';
-      document.getElementById('btnTraderHalt').style.display   = '';
-      document.getElementById('btnTraderResume').style.display = 'none';
+      haltDot.style.color   = 'var(--green)';
+      haltLabel.textContent = 'CLEAR';
+      haltLabel.style.color = 'var(--green)';
+      haltReason.textContent = '';
+      resumeBtn.style.display = 'none';
     }
 
-    // Order count
-    const orders = d.orders_today || [];
-    document.getElementById('traderOrderCount').textContent = orders.length;
+    // Kite connection status
+    try {
+      const ks = await fetch('/api/broker/status').then(r => r.json());
+      const conn = ks.connected;
+      document.getElementById('kiteConnDot').style.background = conn ? '#00c805' : '#ff3b30';
+      document.getElementById('kiteConnLabel').textContent = conn
+        ? `Kite connected — ${ks.profile || 'authenticated'}`
+        : `Kite disconnected — ${ks.error || 'check credentials'}`;
+    } catch(_) {
+      document.getElementById('kiteConnDot').style.background = '#555';
+      document.getElementById('kiteConnLabel').textContent = 'Kite status unavailable';
+    }
 
-    // Order table
-    const tbl = document.getElementById('traderOrderTable');
+    // Orders today
+    const tbl = document.getElementById('kiteOrderTable');
+    const orders = cfg.orders_today || [];
     if (!orders.length) {
       tbl.textContent = 'No orders today.';
     } else {
       const rows = orders.slice(-10).reverse().map(o => {
-        const side  = o.side || o.transactiontype || '—';
+        const side  = o.side || '—';
         const color = side === 'BUY' ? 'var(--green)' : 'var(--red)';
         const paper = o.paper ? ' <span style="color:var(--muted)">(paper)</span>' : '';
         const ts    = (o.timestamp || '').slice(11, 19);
         return `<tr>
-          <td style="padding:5px 8px;color:var(--muted)">${ts}</td>
-          <td style="padding:5px 8px;font-weight:600;color:${color}">${side}</td>
-          <td style="padding:5px 8px">${o.ticker || o.tradingsymbol || '—'}${paper}</td>
-          <td style="padding:5px 8px;text-align:right">${o.qty || '—'}</td>
-          <td style="padding:5px 8px;text-align:right">₹${o.price ? Number(o.price).toLocaleString('en-IN',{maximumFractionDigits:2}) : '—'}</td>
-          <td style="padding:5px 8px;color:var(--muted)">${o.order_id || '—'}</td>
+          <td style="padding:4px 8px;color:var(--muted)">${ts}</td>
+          <td style="padding:4px 8px;font-weight:700;color:${color}">${side}</td>
+          <td style="padding:4px 8px">${o.ticker || '—'}${paper}</td>
+          <td style="padding:4px 8px;text-align:right">${o.qty || '—'}</td>
+          <td style="padding:4px 8px;text-align:right">₹${o.price ? Number(o.price).toLocaleString('en-IN',{maximumFractionDigits:2}) : '—'}</td>
+          <td style="padding:4px 8px;color:var(--muted)">${o.order_id || '—'}</td>
         </tr>`;
       }).join('');
-      tbl.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px">
+      tbl.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:11px">
         <thead><tr style="color:var(--muted);border-bottom:1px solid var(--border)">
-          <th style="padding:5px 8px;font-weight:500;text-align:left">Time</th>
-          <th style="padding:5px 8px;font-weight:500;text-align:left">Side</th>
-          <th style="padding:5px 8px;font-weight:500;text-align:left">Ticker</th>
-          <th style="padding:5px 8px;font-weight:500;text-align:right">Qty</th>
-          <th style="padding:5px 8px;font-weight:500;text-align:right">Price</th>
-          <th style="padding:5px 8px;font-weight:500;text-align:left">Order ID</th>
+          <th style="padding:4px 8px;font-weight:500;text-align:left">Time</th>
+          <th style="padding:4px 8px;font-weight:500;text-align:left">Side</th>
+          <th style="padding:4px 8px;font-weight:500;text-align:left">Ticker</th>
+          <th style="padding:4px 8px;font-weight:500;text-align:right">Qty</th>
+          <th style="padding:4px 8px;font-weight:500;text-align:right">Price</th>
+          <th style="padding:4px 8px;font-weight:500;text-align:left">Order ID</th>
         </tr></thead>
         <tbody>${rows}</tbody></table>`;
     }
-  } catch(e) { console.error('Trader status error', e); }
+  } catch(e) { console.error('Kite panel error', e); }
 }
 
-async function traderHalt() {
-  if (!confirm('Halt all new orders now?')) return;
-  await fetch('/api/trader/halt', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({reason: 'Manual halt from dashboard'})
+function _setKiteToggle(desk, isLive) {
+  const paperBtn = document.getElementById(`${desk}PaperBtn`);
+  const liveBtn  = document.getElementById(`${desk}LiveBtn`);
+  const note     = document.getElementById(`${desk}ModeNote`);
+  if (!paperBtn) return;
+  if (isLive) {
+    paperBtn.style.background = '#1a1a1a'; paperBtn.style.color = '#555';
+    liveBtn.style.background  = '#ff3b30'; liveBtn.style.color  = '#fff';
+    note.textContent = 'LIVE — orders will be sent to Zerodha';
+    note.style.color = '#ff3b30';
+  } else {
+    paperBtn.style.background = '#f0a800'; paperBtn.style.color = '#000';
+    liveBtn.style.background  = '#1a1a1a'; liveBtn.style.color  = '#555';
+    note.textContent = 'Paper — orders logged, not sent to Zerodha';
+    note.style.color = 'var(--muted)';
+  }
+}
+
+async function setKiteMode(desk, mode) {
+  const isLive = mode === 'live';
+  if (isLive && !confirm(`Enable LIVE trading for ${desk.toUpperCase()} on Zerodha?\n\nReal orders will be placed. Only proceed if you are fully ready.`)) return;
+  const key = desk === 'equity' || desk === 'eq' ? 'equity_paper_mode' : 'fno_paper_mode';
+  const body = {};
+  body[key] = !isLive;
+  await fetch('/api/trading_config', {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
   });
-  await loadTraderStatus();
+  await loadKitePanel();
 }
 
-async function traderResume() {
-  await fetch('/api/trader/resume', {method: 'POST'});
-  await loadTraderStatus();
+async function haltTrading() {
+  if (!confirm('Halt all new orders immediately?')) return;
+  await fetch('/api/trading_config', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({trading_halted: true, halt_reason: 'Manual halt from dashboard'})
+  });
+  await loadKitePanel();
 }
 
-async function traderSync() {
-  const el = document.getElementById('traderSyncResult');
-  el.style.display = '';
-  el.textContent   = 'Syncing with Angel One…';
-  try {
-    const r = await fetch('/api/trader/sync', {method: 'POST'});
-    const d = await r.json();
-    const disc = d.discrepancies || [];
-    if (disc.length === 0) {
-      el.style.border  = '1px solid #238636';
-      el.style.color   = '#00c805';
-      el.textContent   = '✅ Agent matches Angel One holdings — no discrepancies.';
-    } else {
-      el.style.border = '1px solid #ff3b30';
-      el.style.color  = '#ff3b30';
-      el.textContent  = `⚠️ ${disc.length} discrepanc${disc.length>1?'ies':'y'}: ` +
-        disc.map(d => `${d.type} ${d.ticker||d.symbol}`).join(', ');
-    }
-  } catch(e) { el.textContent = 'Sync failed — check Angel One connection.'; }
+async function resumeTrading() {
+  await fetch('/api/trading_config', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({trading_halted: false, halt_reason: ''})
+  });
+  await loadKitePanel();
 }
 
-setInterval(() => { if (_currentView === 'controls') loadTraderStatus(); }, 30000);
+async function runKiteAuth() {
+  const r = await fetch('/api/broker/reauth', {method: 'POST'}).catch(() => null);
+  alert(r ? 'Re-auth requested — check Telegram for the login URL.' : 'Re-auth endpoint unavailable.');
+  await loadKitePanel();
+}
+
+// Alias for controls page load
+const loadTraderStatus = loadKitePanel;
+
+setInterval(() => { if (_currentView === 'controls') loadKitePanel(); }, 30000);
 
 
 // ── Security panel ───────────────────────────────────────────────────────────
@@ -7448,6 +7534,257 @@ async function loadAgentExecution() {
     `;
   } catch(e) {
     body.innerHTML = _agentErrorCard(e.message);
+  }
+}
+
+// ── Accounts Agent (CA-style financial statements) ────────────────────────────
+
+async function loadAgentAccounts() {
+  const body  = document.getElementById('agAccBody');
+  const errEl = document.getElementById('agAccError');
+  const tsEl  = document.getElementById('agAccTs');
+  const fyEl  = document.getElementById('agAccFySelect');
+  if (!body) return;
+  body.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center;font-size:11px">Running accounting engine…</div>';
+  const fy = fyEl ? fyEl.value : '';
+  try {
+    const url = fy ? `/api/agents/accounts?fy=${encodeURIComponent(fy)}` : '/api/agents/accounts';
+    const r = await fetch(url);
+    const d = await r.json();
+    if (d.error) {
+      errEl.textContent = d.error;
+      errEl.classList.remove('hidden');
+      body.innerHTML = '';
+      return;
+    }
+    errEl.classList.add('hidden');
+    if (tsEl) tsEl.textContent = d.last_updated ? 'as of ' + d.last_updated.substring(11,16) + ' IST' : '';
+
+    // Populate FY selector (only once)
+    if (fyEl && fyEl.options.length === 0) {
+      const fys = Object.keys(d.by_fy || {}).sort().reverse();
+      fys.forEach(f => {
+        const opt = document.createElement('option');
+        opt.value = f; opt.textContent = f;
+        if (f === d.current_fy) opt.selected = true;
+        fyEl.appendChild(opt);
+      });
+    }
+
+    const cur   = d.current_fy_data || {};
+    const life  = d.lifetime || {};
+    const feeB  = d.fee_breakdown || {};
+    const adv   = d.advance_tax || [];
+    const tlh   = d.tlh_opportunities || [];
+    const monthly = d.monthly || [];
+    const ledger  = d.ledger || [];
+    const curFy = d.current_fy || '';
+
+    const c = v => `₹${(v||0).toLocaleString('en-IN',{maximumFractionDigits:0})}`;
+    const pct = v => `${(v||0).toFixed(2)}%`;
+    const clr = v => v >= 0 ? 'var(--green)' : 'var(--red)';
+
+    // ── Waterfall cards ──────────────────────────────────────────────────────
+    const wfCards = [
+      { lbl:'Gross P&L',    val: cur.gross_pnl || 0,    color:'var(--text)' },
+      { lbl:'− Slippage',   val:-(cur.total_slippage||0), color:'#ff6b35' },
+      { lbl:'− Fees',       val:-(cur.total_fees||0),    color:'var(--red)' },
+      { lbl:'= Net P&L',    val: cur.net_pnl || 0,       color: clr(cur.net_pnl) },
+      { lbl:'− Tax',        val:-(cur.total_tax||0),     color:'var(--muted)' },
+      { lbl:'= Take-home',  val: cur.take_home || 0,     color: clr(cur.take_home) },
+    ];
+    const wfHtml = wfCards.map((w,i) => `
+      <div style="border:1px solid var(--border);padding:12px 16px;background:${i===5?'#0a1a0a':i===3?'#0a0a1a':'var(--panel)'}">
+        <div style="font-size:10px;color:var(--muted);letter-spacing:1px">${w.lbl}</div>
+        <div style="font-size:20px;font-weight:700;color:${w.color};margin-top:4px">${c(w.val)}</div>
+      </div>`).join('');
+
+    // ── Tax cards ─────────────────────────────────────────────────────────────
+    const taxHtml = `
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px">
+        <div style="border:1px solid var(--border);padding:12px;background:var(--panel)">
+          <div style="font-size:10px;color:var(--muted);letter-spacing:1px">INTRADAY P&L</div>
+          <div style="font-size:16px;font-weight:700;color:${clr(cur.intraday_pnl)}">${c(cur.intraday_pnl)}</div>
+          <div style="font-size:10px;color:var(--muted)">Tax @ 30%: ${c(cur.intraday_tax)}</div>
+        </div>
+        <div style="border:1px solid var(--border);padding:12px;background:var(--panel)">
+          <div style="font-size:10px;color:var(--muted);letter-spacing:1px">STCG (&lt;1 yr)</div>
+          <div style="font-size:16px;font-weight:700;color:${clr(cur.stcg_pnl)}">${c(cur.stcg_pnl)}</div>
+          <div style="font-size:10px;color:var(--muted)">Tax @ 20%: ${c(cur.stcg_tax)}</div>
+        </div>
+        <div style="border:1px solid var(--border);padding:12px;background:var(--panel)">
+          <div style="font-size:10px;color:var(--muted);letter-spacing:1px">LTCG (≥1 yr)</div>
+          <div style="font-size:16px;font-weight:700;color:${clr(cur.ltcg_pnl)}">${c(cur.ltcg_pnl)}</div>
+          <div style="font-size:10px;color:var(--muted)">Taxable: ${c(cur.ltcg_taxable)} @ 12.5%: ${c(cur.ltcg_tax)}</div>
+        </div>
+      </div>
+      <div style="border:1px solid var(--amber);padding:12px;background:#0d0a00;display:flex;align-items:center;gap:24px;flex-wrap:wrap">
+        <span style="font-size:11px;color:var(--amber);letter-spacing:1px">TOTAL TAX LIABILITY</span>
+        <span style="font-size:22px;font-weight:700;color:var(--amber)">${c(cur.total_tax)}</span>
+        <span style="font-size:10px;color:var(--muted)">Fee drag: ${pct(cur.fee_drag_pct)}</span>
+        <span style="font-size:10px;color:var(--muted)">Trades: ${cur.trade_count||0}</span>
+      </div>`;
+
+    // ── Advance tax ───────────────────────────────────────────────────────────
+    let advHtml = '';
+    if (adv.length) {
+      advHtml = `<div style="margin-top:14px">
+        <div style="font-size:10px;color:var(--cyan);letter-spacing:1px;margin-bottom:8px">ADVANCE TAX SCHEDULE — ${curFy}</div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+        ${adv.map(a=>`<div style="border:1px solid var(--border);padding:10px;background:var(--panel)">
+          <div style="font-size:10px;color:var(--muted)">${a.cumulative_pct}% by ${a.due}</div>
+          <div style="font-size:15px;font-weight:700;color:var(--amber)">${c(a.amount)}</div>
+        </div>`).join('')}
+        </div></div>`;
+    }
+
+    // ── Fee breakdown ─────────────────────────────────────────────────────────
+    const feeTotal = Object.values(feeB).reduce((a,b)=>a+b,0);
+    const feeItems = [
+      {k:'stt', label:'STT', color:'#ff6b35'},
+      {k:'exchange_charges', label:'Exchange', color:'#ff8200'},
+      {k:'gst', label:'GST', color:'#ffb700'},
+      {k:'stamp_duty', label:'Stamp Duty', color:'#e0e0e0'},
+      {k:'sebi_charges', label:'SEBI', color:'#aaaaaa'},
+      {k:'slippage', label:'Slippage', color:'#ff3b30'},
+    ];
+    const feeBarsHtml = feeItems.map(fi => {
+      const v = feeB[fi.k] || 0;
+      const barW = feeTotal > 0 ? Math.round(v/feeTotal*100) : 0;
+      return `<div style="margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-bottom:2px">
+          <span>${fi.label}</span><span style="color:${fi.color}">${c(v)} (${barW}%)</span>
+        </div>
+        <div style="height:4px;background:var(--border);border-radius:2px">
+          <div style="height:4px;width:${barW}%;background:${fi.color};border-radius:2px"></div>
+        </div>
+      </div>`;
+    }).join('');
+
+    // ── Monthly chart data ───────────────────────────────────────────────────
+    const mLabels = monthly.map(m=>m.month);
+    const mGross  = monthly.map(m=>m.gross_pnl);
+    const mNet    = monthly.map(m=>m.net_pnl);
+
+    // ── TLH ──────────────────────────────────────────────────────────────────
+    const tlhHtml = tlh.length ? `
+      <div style="margin-top:14px">
+        <div style="font-size:10px;color:var(--cyan);letter-spacing:1px;margin-bottom:8px">TAX-LOSS HARVESTING ALERTS</div>
+        ${tlh.map(t=>`<div style="border:1px solid var(--border);padding:10px 12px;margin-bottom:6px;background:#0a0a0a;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+          <span style="color:var(--amber);font-size:12px;font-weight:700">${t.ticker}</span>
+          <span style="font-size:11px;color:var(--red)">${c(t.unrealised_pnl)} unrealised</span>
+          <span style="font-size:11px;color:var(--green)">Save ≈ ${c(t.potential_tax_saving)} tax</span>
+          <span style="font-size:10px;color:var(--muted)">${t.note}</span>
+        </div>`).join('')}
+      </div>` : '';
+
+    // ── Ledger table ─────────────────────────────────────────────────────────
+    const ledgerRows = ledger.filter(r=>r.action==='SELL').slice(0,50).map(r=>`
+      <tr style="font-size:11px">
+        <td style="color:var(--amber)">${r.ticker}</td>
+        <td>${r.date}</td>
+        <td style="color:var(--muted)">${r.buy_date||'-'}</td>
+        <td>${r.hold_days != null ? r.hold_days+'d' : '-'}</td>
+        <td style="color:var(--muted)">${r.qty}</td>
+        <td>${c(r.buy_price||0)}</td>
+        <td>${c(r.exec_price||0)}</td>
+        <td style="color:${clr(r.gross_pnl)}">${c(r.gross_pnl)}</td>
+        <td style="color:var(--red)">${c(r.fees_total)}</td>
+        <td style="color:#ff6b35">${c(r.slippage_cost)}</td>
+        <td style="color:${clr(r.net_pnl)};font-weight:700">${c(r.net_pnl)}</td>
+        <td><span style="padding:2px 6px;font-size:9px;border:1px solid;border-color:${r.tax_category==='LTCG'?'var(--green)':r.tax_category==='STCG'?'var(--amber)':'var(--red)'};">${r.tax_category||'-'}</span></td>
+        <td style="color:var(--muted)">${r.strategy||'-'}</td>
+      </tr>`).join('');
+
+    body.innerHTML = `
+      <!-- P&L Waterfall -->
+      <div style="font-size:10px;color:var(--cyan);letter-spacing:1px;margin-bottom:8px">P&L WATERFALL — ${curFy}</div>
+      <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:16px">${wfHtml}</div>
+
+      <!-- Tax Breakdown -->
+      <div style="font-size:10px;color:var(--cyan);letter-spacing:1px;margin-bottom:8px">TAX COMPUTATION — ${curFy}</div>
+      ${taxHtml}
+      ${advHtml}
+
+      <!-- Monthly Bar Chart + Fee Breakdown 2-col -->
+      <div style="display:grid;grid-template-columns:1.6fr 1fr;gap:12px;margin-top:16px">
+        <div style="border:1px solid var(--border);padding:14px;background:var(--panel)">
+          <div style="font-size:10px;color:var(--cyan);letter-spacing:1px;margin-bottom:10px">MONTHLY P&L</div>
+          <canvas id="accMonthlyChart" height="120"></canvas>
+        </div>
+        <div style="border:1px solid var(--border);padding:14px;background:var(--panel)">
+          <div style="font-size:10px;color:var(--cyan);letter-spacing:1px;margin-bottom:10px">FEE DRAG BREAKDOWN (LIFETIME)</div>
+          ${feeBarsHtml}
+          <div style="margin-top:10px;font-size:11px;color:var(--muted)">Total: <strong style="color:var(--text)">${c(feeTotal)}</strong></div>
+        </div>
+      </div>
+
+      ${tlhHtml}
+
+      <!-- Lifetime stats -->
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:16px;margin-bottom:16px">
+        <div style="border:1px solid var(--border);padding:12px;background:var(--panel)">
+          <div style="font-size:10px;color:var(--muted);letter-spacing:1px">LIFETIME GROSS</div>
+          <div style="font-size:17px;font-weight:700;color:${clr(life.gross_pnl)}">${c(life.gross_pnl)}</div>
+        </div>
+        <div style="border:1px solid var(--border);padding:12px;background:var(--panel)">
+          <div style="font-size:10px;color:var(--muted);letter-spacing:1px">LIFETIME NET</div>
+          <div style="font-size:17px;font-weight:700;color:${clr(life.net_pnl)}">${c(life.net_pnl)}</div>
+        </div>
+        <div style="border:1px solid var(--border);padding:12px;background:var(--panel)">
+          <div style="font-size:10px;color:var(--muted);letter-spacing:1px">TOTAL FEES PAID</div>
+          <div style="font-size:17px;font-weight:700;color:var(--red)">${c(life.total_fees)}</div>
+        </div>
+        <div style="border:1px solid var(--border);padding:12px;background:var(--panel)">
+          <div style="font-size:10px;color:var(--muted);letter-spacing:1px">FEE DRAG</div>
+          <div style="font-size:17px;font-weight:700;color:#ff6b35">${pct(life.fee_drag_pct)}</div>
+        </div>
+      </div>
+
+      <!-- Trade Ledger -->
+      <div style="font-size:10px;color:var(--cyan);letter-spacing:1px;margin-bottom:8px">TRADE LEDGER (last 50 sells)</div>
+      <div style="overflow-x:auto;border:1px solid var(--border);background:var(--panel)">
+        <table style="width:100%;border-collapse:collapse;font-family:var(--mono)">
+          <thead>
+            <tr style="font-size:9px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">
+              <th style="padding:6px 10px">TICKER</th><th style="padding:6px 8px">SELL DATE</th>
+              <th style="padding:6px 8px">BUY DATE</th><th style="padding:6px 8px">HOLD</th>
+              <th style="padding:6px 8px">QTY</th><th style="padding:6px 8px">BUY ₹</th>
+              <th style="padding:6px 8px">SELL ₹</th><th style="padding:6px 8px">GROSS P&L</th>
+              <th style="padding:6px 8px">FEES</th><th style="padding:6px 8px">SLIP</th>
+              <th style="padding:6px 8px">NET P&L</th><th style="padding:6px 8px">CATEGORY</th>
+              <th style="padding:6px 8px">STRATEGY</th>
+            </tr>
+          </thead>
+          <tbody id="accLedgerBody">${ledgerRows || '<tr><td colspan="13" style="padding:20px;text-align:center;color:var(--muted)">No closed trades yet</td></tr>'}</tbody>
+        </table>
+      </div>`;
+
+    // Draw monthly chart
+    if (mLabels.length && window.Chart) {
+      const ctx = document.getElementById('accMonthlyChart');
+      if (ctx) {
+        new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels: mLabels,
+            datasets: [
+              { label: 'Gross P&L', data: mGross, backgroundColor: 'rgba(0,255,120,0.3)', borderColor:'#00ff78', borderWidth:1 },
+              { label: 'Net P&L',   data: mNet,   backgroundColor: 'rgba(255,130,0,0.3)',  borderColor:'#ff8200', borderWidth:1 },
+            ]
+          },
+          options: {
+            responsive:true, maintainAspectRatio:false,
+            plugins:{ legend:{ labels:{ color:'#888', font:{size:10} } } },
+            scales:{ x:{ ticks:{color:'#666',font:{size:9}}, grid:{color:'#1a1a1a'} },
+                     y:{ ticks:{color:'#666',font:{size:9},callback:v=>v>=0?'₹'+Math.abs(v/1000).toFixed(0)+'K':'-₹'+Math.abs(v/1000).toFixed(0)+'K'}, grid:{color:'#1a1a1a'} } }
+          }
+        });
+      }
+    }
+
+  } catch(e) {
+    body.innerHTML = `<div style="color:var(--red);padding:20px">Error: ${e.message}</div>`;
   }
 }
 
