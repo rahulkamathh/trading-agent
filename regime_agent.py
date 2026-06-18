@@ -180,9 +180,8 @@ class RegimeAgent:
             return result
 
     def get_dashboard_data(self) -> dict:
-        """Return cached detect() result. Returns empty structure if never run."""
-        with self._lock:
-            return self._cached_result
+        """Return cached detect() result, triggering detection if not yet run."""
+        return self.detect()
 
     # ------------------------------------------------------------------
     # Internal computation

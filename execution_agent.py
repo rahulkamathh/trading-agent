@@ -109,7 +109,12 @@ def _load_signals() -> list:
     try:
         if SIGNALS_PATH.exists():
             with open(SIGNALS_PATH, "r") as f:
-                return json.load(f)
+                data = json.load(f)
+            # signals.json may be a plain list or a dict {"signals": [...]}
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                return data.get("signals", []) or data.get("data", [])
     except Exception as exc:
         logger.warning("Could not load signals.json: %s", exc)
     return []

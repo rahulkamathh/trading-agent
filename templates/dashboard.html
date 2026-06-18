@@ -6756,7 +6756,7 @@ async function loadAgentRisk() {
     const beta     = d.beta   ?? d.portfolio_beta ?? null;
     const sharpe   = d.sharpe ?? d.sharpe_ratio   ?? null;
     const maxdd    = d.max_drawdown ?? d.maxDrawdown ?? null;
-    const conc     = d.concentration ?? d.top_concentration ?? null;
+    const conc     = (d.concentration ?? {}).top_position_pct ?? d.top_concentration ?? null;
     const corr     = d.top_correlations ?? d.correlations ?? [];
 
     body.innerHTML = `
@@ -6893,12 +6893,13 @@ async function loadAgentNews() {
     errEl.classList.add('hidden');
     tsEl.textContent = _agentTs();
 
-    const sentiment = d.market_sentiment ?? d.overall_sentiment ?? d.sentiment ?? '—';
-    const score     = d.sentiment_score  ?? d.score ?? null;
-    const headlines = d.headlines        ?? d.news  ?? [];
-    const bullish   = d.bullish_count    ?? headlines.filter(h => /bull/i.test(h.sentiment||'')).length;
-    const bearish   = d.bearish_count    ?? headlines.filter(h => /bear/i.test(h.sentiment||'')).length;
-    const neutral   = d.neutral_count    ?? headlines.filter(h => !/bull|bear/i.test(h.sentiment||'')).length;
+    const ms        = (typeof d.market_sentiment === 'object' && d.market_sentiment) ? d.market_sentiment : {};
+    const sentiment = ms.overall ?? d.overall_sentiment ?? d.sentiment ?? '—';
+    const score     = ms.score   ?? d.sentiment_score ?? d.score ?? null;
+    const headlines = d.recent_news ?? d.headlines ?? d.news ?? [];
+    const bullish   = ms.bullish_count  ?? d.bullish_count  ?? headlines.filter(h => /bull/i.test(h.sentiment||'')).length;
+    const bearish   = ms.bearish_count  ?? d.bearish_count  ?? headlines.filter(h => /bear/i.test(h.sentiment||'')).length;
+    const neutral   = ms.neutral_count  ?? d.neutral_count  ?? headlines.filter(h => !/bull|bear/i.test(h.sentiment||'')).length;
 
     const sentColor = /bull/i.test(sentiment) ? 'var(--green)'
                     : /bear/i.test(sentiment) ? 'var(--red)'
@@ -6969,15 +6970,16 @@ async function loadAgentTax() {
     errEl.classList.add('hidden');
     tsEl.textContent = _agentTs();
 
-    const stcg_pnl  = d.stcg_pnl   ?? d.stcg?.pnl   ?? null;
-    const stcg_tax  = d.stcg_tax   ?? d.stcg?.tax   ?? null;
-    const ltcg_pnl  = d.ltcg_pnl   ?? d.ltcg?.pnl   ?? null;
-    const ltcg_tax  = d.ltcg_tax   ?? d.ltcg?.tax   ?? null;
-    const intra_pnl = d.intraday_pnl ?? d.intraday?.pnl ?? null;
-    const intra_tax = d.intraday_tax ?? d.intraday?.tax ?? null;
-    const total_tax = d.total_tax   ?? d.tax_liability ?? null;
-    const net_pnl   = d.net_pnl_after_tax ?? d.net_pnl ?? null;
-    const tips      = d.optimisation_tips ?? d.tips ?? d.recommendations ?? [];
+    const s         = d.summary ?? d;
+    const stcg_pnl  = s.stcg_pnl   ?? null;
+    const stcg_tax  = s.stcg_tax   ?? null;
+    const ltcg_pnl  = s.ltcg_pnl   ?? null;
+    const ltcg_tax  = s.ltcg_tax   ?? null;
+    const intra_pnl = s.intraday_pnl ?? null;
+    const intra_tax = s.intraday_tax ?? null;
+    const total_tax = s.total_tax_liability ?? s.total_tax ?? null;
+    const net_pnl   = s.net_pnl_after_tax ?? s.net_pnl ?? null;
+    const tips      = d.optimisation_tips ?? d.tips ?? [];
 
     body.innerHTML = `
       <div class="grid-3" style="margin-bottom:14px">
@@ -7041,9 +7043,9 @@ async function loadAgentFii() {
     tsEl.textContent = _agentTs();
 
     const signal    = d.flow_signal ?? d.signal ?? d.overall_signal ?? '—';
-    const fii5d     = d.fii_5d_avg  ?? d.fii_avg_5d ?? d.fii?.avg_5d ?? null;
-    const dii5d     = d.dii_5d_avg  ?? d.dii_avg_5d ?? d.dii?.avg_5d ?? null;
-    const history   = d.history     ?? d.daily_flows ?? d.flows ?? [];
+    const fii5d     = d.fii_5day_avg ?? d.fii_5d_avg ?? d.fii_avg_5d ?? null;
+    const dii5d     = d.dii_5day_avg ?? d.dii_5d_avg ?? d.dii_avg_5d ?? null;
+    const history   = d.last_30_days ?? d.history ?? d.daily_flows ?? d.flows ?? [];
 
     const sigColor = /bull/i.test(signal) ? 'var(--green)'
                    : /bear/i.test(signal) ? 'var(--red)'
@@ -7052,7 +7054,7 @@ async function loadAgentFii() {
     const histHtml = history.length ? (() => {
       const maxAbs = Math.max(...history.map(h => Math.abs(Number(h.fii ?? h.net ?? h.value ?? 0))), 1);
       return history.slice(-30).map(h => {
-        const v   = Number(h.fii ?? h.net ?? h.value ?? 0);
+        const v   = Number(h.fii_net ?? h.fii ?? h.net ?? h.value ?? 0);
         const pct = Math.min(100, Math.abs(v) / maxAbs * 100);
         const c   = v >= 0 ? 'var(--green)' : 'var(--red)';
         const dt  = h.date ?? h.day ?? '';
@@ -7134,11 +7136,14 @@ async function loadAgentExecution() {
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px">
         ${analyses.slice(0,10).map(a => {
           const ticker = a.ticker ?? a.symbol ?? '?';
-          const rec    = a.recommendation ?? a.action ?? a.signal ?? '—';
-          const shares = a.recommended_shares ?? a.shares ?? a.qty ?? null;
-          const limit  = a.limit_price  ?? a.entry_price ?? null;
-          const stop   = a.stop_price   ?? a.stop_loss   ?? null;
-          const windows= a.best_windows ?? a.entry_windows ?? a.timing ?? null;
+          const rec    = a.go_no_go ?? a.recommendation ?? a.action ?? '—';
+          const ps     = a.position_size ?? {};
+          const lp     = a.limit_price_data ?? {};
+          const ew     = a.entry_window ?? {};
+          const shares = ps.recommended_shares ?? a.recommended_shares ?? null;
+          const limit  = lp.limit_price ?? a.limit_price ?? null;
+          const stop   = ps.stop_price ?? a.stop_price ?? null;
+          const windows= ew.best_buy_windows ?? a.best_windows ?? null;
           const bc     = badgeColor(rec);
           return `<div class="card" style="border-top:2px solid ${bc}">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
