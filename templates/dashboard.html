@@ -7538,6 +7538,7 @@ async function loadAgentExecution() {
 }
 
 // ── Accounts Agent (CA-style financial statements) ────────────────────────────
+let _accMonthlyChartInst = null;  // singleton — destroy before recreating
 
 async function loadAgentAccounts() {
   const body  = document.getElementById('agAccBody');
@@ -7760,11 +7761,12 @@ async function loadAgentAccounts() {
         </table>
       </div>`;
 
-    // Draw monthly chart
+    // Draw monthly chart — destroy old instance first to prevent stacking
     if (mLabels.length && window.Chart) {
       const ctx = document.getElementById('accMonthlyChart');
       if (ctx) {
-        new Chart(ctx, {
+        if (_accMonthlyChartInst) { _accMonthlyChartInst.destroy(); _accMonthlyChartInst = null; }
+        _accMonthlyChartInst = new Chart(ctx, {
           type: 'bar',
           data: {
             labels: mLabels,
