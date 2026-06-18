@@ -17,12 +17,111 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv  # type: ignore[import-untyped]
 load_dotenv()  # Load .env before anything else
 
-from flask import Flask, jsonify, request, send_from_directory
+import hmac
+import hashlib
+from flask import Flask, jsonify, request, send_from_directory, session, redirect, render_template_string
 
 from engine import INITIAL_CAPITAL, INDEX_TICKERS, DataFetcher, get_agent
 from angelone_feed import get_feed
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
+
+# ── Auth config ───────────────────────────────────────────────────────────────
+# Set DASHBOARD_PASSWORD and SECRET_KEY in Railway environment variables.
+# SECRET_KEY must be a long random string (generate with: python -c "import secrets; print(secrets.token_hex(32))")
+_DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
+app.secret_key       = os.environ.get("SECRET_KEY", os.urandom(32))
+app.config["PERMANENT_SESSION_LIFETIME"] = 86400  # 24h session expiry (one trading day)
+
+# Simple in-memory brute-force protection: max 5 failed attempts per IP per 15 min
+_login_attempts: dict = {}   # ip → [timestamps]
+
+def _rate_ok(ip: str) -> bool:
+    """Return True if this IP is within the rate limit, False if blocked."""
+    now = time.time()
+    attempts = [t for t in _login_attempts.get(ip, []) if now - t < 900]
+    _login_attempts[ip] = attempts
+    if len(attempts) >= 5:
+        return False
+    attempts.append(now)
+    _login_attempts[ip] = attempts
+    return True
+
+def _clear_rate(ip: str) -> None:
+    _login_attempts.pop(ip, None)
+
+_LOGIN_PAGE = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RK::TERMINAL — Login</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0a0a0a;color:#e0e0e0;font-family:'IBM Plex Mono',monospace;display:flex;align-items:center;justify-content:center;min-height:100vh}
+  .box{background:#111;border:1px solid #222;padding:40px 36px;width:340px}
+  .logo{font-size:18px;font-weight:700;color:#ff8200;letter-spacing:2px;margin-bottom:6px}
+  .sub{font-size:10px;color:#555;letter-spacing:1px;margin-bottom:32px}
+  label{font-size:10px;color:#666;letter-spacing:1px;display:block;margin-bottom:6px}
+  input[type=password]{width:100%;background:#0a0a0a;border:1px solid #2a2a2a;color:#e0e0e0;padding:10px 12px;font-family:inherit;font-size:13px;outline:none;margin-bottom:20px}
+  input[type=password]:focus{border-color:#ff8200}
+  button{width:100%;background:#ff8200;color:#000;border:none;padding:11px;font-family:inherit;font-size:12px;font-weight:700;letter-spacing:1px;cursor:pointer}
+  button:hover{background:#e07000}
+  .err{color:#ff3b30;font-size:11px;margin-bottom:16px;padding:8px;background:#1a0a0a;border:1px solid #ff3b3033}
+  .blocked{color:#ff8200;font-size:11px;margin-bottom:16px;padding:8px;background:#1a0f00;border:1px solid #ff820033}
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="logo">RK::TERMINAL</div>
+  <div class="sub">NSE PAPER TRADING — RESTRICTED ACCESS</div>
+  {% if blocked %}<div class="blocked">Too many attempts. Try again in 15 minutes.</div>{% endif %}
+  {% if error %}<div class="err">{{ error }}</div>{% endif %}
+  <form method="POST" action="/login">
+    <label>ACCESS PASSWORD</label>
+    <input type="password" name="password" autofocus autocomplete="current-password" placeholder="••••••••••••">
+    <button type="submit">AUTHENTICATE →</button>
+  </form>
+</div>
+</body>
+</html>"""
+
+@app.before_request
+def _require_auth():
+    """Protect every route. Only /login and /logout are public."""
+    if request.path in ("/login", "/logout"):
+        return None  # public
+    if not session.get("authenticated"):
+        if request.path.startswith("/api/"):
+            return jsonify({"ok": False, "error": "Unauthorized — please log in at /login"}), 401
+        return redirect("/login")
+    return None
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if session.get("authenticated"):
+        return redirect("/")
+    if not _DASHBOARD_PASSWORD:
+        # No password configured → show setup instructions instead of blocking
+        return render_template_string(_LOGIN_PAGE, error="DASHBOARD_PASSWORD env var not set on Railway.", blocked=False)
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
+    if request.method == "POST":
+        if not _rate_ok(ip):
+            return render_template_string(_LOGIN_PAGE, error=None, blocked=True), 429
+        pwd = request.form.get("password", "")
+        # Constant-time comparison to prevent timing attacks
+        if hmac.compare_digest(pwd, _DASHBOARD_PASSWORD):
+            _clear_rate(ip)
+            session.permanent = True
+            session["authenticated"] = True
+            return redirect("/")
+        return render_template_string(_LOGIN_PAGE, error="Incorrect password.", blocked=False), 401
+    return render_template_string(_LOGIN_PAGE, error=None, blocked=False)
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect("/login")
 
 # ── In-memory agent log (ring buffer, last 500 lines) ────────────────────────
 _agent_log: deque = deque(maxlen=500)
