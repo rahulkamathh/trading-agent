@@ -906,6 +906,86 @@
   <div id="page-learning" class="page-section hidden"></div>
   <div id="page-controls" class="page-section hidden">
     <div class="page-header"><span class="page-title" id="ctrlPageTitle">⚙️ Controls</span></div>
+
+    <!-- ── TRADING MODE & HARD CAPITAL LIMITS ──────────────────────────── -->
+    <div id="tradingRulesPanel" style="border:1px solid var(--red);background:#0d0000;padding:16px;margin-bottom:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+        <div style="font-size:12px;color:var(--red);font-weight:700;letter-spacing:.5px">🛡 TRADING MODE &amp; CAPITAL LIMITS</div>
+        <div id="haltStatusBadge" style="font-size:11px;padding:3px 12px;border:1px solid;font-weight:700"></div>
+      </div>
+
+      <!-- Mode toggles -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+        <!-- Equity mode -->
+        <div style="border:1px solid var(--border);padding:12px">
+          <div style="font-size:10px;color:var(--muted);letter-spacing:.5px;margin-bottom:8px">EQUITY MODE</div>
+          <div id="eqModeLabel" style="font-size:14px;font-weight:700;margin-bottom:8px">—</div>
+          <div style="display:flex;gap:6px">
+            <button id="btnEqPaper" onclick="setTradingMode('equity','paper')"
+              class="btn" style="font-size:11px;padding:4px 12px">PAPER</button>
+            <button id="btnEqLive" onclick="setTradingMode('equity','live')"
+              class="btn" style="font-size:11px;padding:4px 12px">LIVE</button>
+          </div>
+          <div style="font-size:10px;color:var(--muted);margin-top:6px">LIVE = real orders via Kite Connect</div>
+        </div>
+        <!-- F&O mode -->
+        <div style="border:1px solid var(--border);padding:12px">
+          <div style="font-size:10px;color:var(--muted);letter-spacing:.5px;margin-bottom:8px">F&amp;O MODE</div>
+          <div id="fnoModeLabel" style="font-size:14px;font-weight:700;margin-bottom:8px">—</div>
+          <div style="display:flex;gap:6px">
+            <button id="btnFnoPaper" onclick="setTradingMode('fno','paper')"
+              class="btn" style="font-size:11px;padding:4px 12px">PAPER</button>
+            <button id="btnFnoLive" onclick="setTradingMode('fno','live')"
+              class="btn" style="font-size:11px;padding:4px 12px">LIVE</button>
+          </div>
+          <div style="font-size:10px;color:var(--muted);margin-top:6px">LIVE = real F&amp;O orders via Kite Connect</div>
+        </div>
+      </div>
+
+      <!-- Capital limits -->
+      <div style="font-size:11px;color:var(--amber);margin-bottom:10px;font-weight:600">
+        HARD CAPITAL LIMITS — bot cannot deploy beyond these amounts, ever
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-bottom:10px">
+        <div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:4px;letter-spacing:.5px">EQUITY LIMIT (₹)</div>
+          <input id="cfgEqLimit" type="number" min="0" step="100000"
+            style="width:100%;background:#0a0a0a;border:1px solid var(--border);color:var(--green);
+                   font-size:14px;font-family:monospace;padding:7px 10px;outline:none;box-sizing:border-box"/>
+          <div id="eqDeployedBar" style="margin-top:4px;font-size:10px;color:var(--muted)"></div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:4px;letter-spacing:.5px">F&amp;O LIMIT (₹)</div>
+          <input id="cfgFnoLimit" type="number" min="0" step="50000"
+            style="width:100%;background:#0a0a0a;border:1px solid var(--border);color:#4fc3f7;
+                   font-size:14px;font-family:monospace;padding:7px 10px;outline:none;box-sizing:border-box"/>
+          <div id="fnoDeployedBar" style="margin-top:4px;font-size:10px;color:var(--muted)"></div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:4px;letter-spacing:.5px">EQUITY DAILY LOSS STOP (%)</div>
+          <input id="cfgEqDailyLoss" type="number" min="0.5" max="10" step="0.5"
+            style="width:100%;background:#0a0a0a;border:1px solid var(--border);color:var(--text);
+                   font-size:14px;font-family:monospace;padding:7px 10px;outline:none;box-sizing:border-box"/>
+          <div style="font-size:10px;color:var(--muted);margin-top:3px">Halt buys if daily loss &gt; this % of equity limit</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:4px;letter-spacing:.5px">EQUITY MAX DRAWDOWN (%)</div>
+          <input id="cfgEqDrawdown" type="number" min="1" max="30" step="1"
+            style="width:100%;background:#0a0a0a;border:1px solid var(--border);color:var(--text);
+                   font-size:14px;font-family:monospace;padding:7px 10px;outline:none;box-sizing:border-box"/>
+          <div style="font-size:10px;color:var(--muted);margin-top:3px">Halt buys if portfolio down &gt; this % from peak</div>
+        </div>
+      </div>
+
+      <!-- Save + Halt row -->
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:4px">
+        <button onclick="saveTradingRules()" class="btn btn-amber" style="font-size:12px;padding:7px 20px">Save Rules</button>
+        <button id="btnHalt" onclick="haltTrading()" class="btn btn-red" style="font-size:12px;padding:7px 20px;font-weight:700">🛑 HALT ALL TRADING</button>
+        <button id="btnResume" onclick="resumeTrading()" class="btn btn-green" style="font-size:12px;padding:7px 20px;display:none">▶ RESUME TRADING</button>
+        <span id="tradingRulesMsg" style="font-size:11px;color:var(--muted)"></span>
+      </div>
+    </div>
+
     <div class="grid-3" style="margin-bottom:16px">
       <div class="card">
         <div class="card-title">Manual Buy</div>
@@ -2011,6 +2091,7 @@ function showView(view) {
         if (ctrlTitle) ctrlTitle.textContent = _currentDesk === 'fno' ? '⚙️ F&O Controls' : '⚙️ Equity Controls';
         const runLbl = document.getElementById('runCycleLabel');
         if (runLbl) runLbl.textContent = _currentDesk === 'fno' ? 'Run F&O Cycle' : 'Run Equity Cycle';
+        loadTradingRules();
         loadNotifierStatus();
         loadRiskStatus();
         loadTraderStatus();
@@ -3234,6 +3315,195 @@ async function restoreFnoGap() {
 }
 
 // ══════════════════════════════════════════════
+// ══════════════════════════════════════════════
+// Trading Mode & Capital Limits
+// ══════════════════════════════════════════════
+
+async function loadTradingRules() {
+  try {
+    const d = await fetch('/api/trading_config').then(r => r.json());
+    if (!d.ok) return;
+    const c = d.config;
+
+    // Capital limit inputs
+    const eqInput  = document.getElementById('cfgEqLimit');
+    const fnoInput = document.getElementById('cfgFnoLimit');
+    const eqDl     = document.getElementById('cfgEqDailyLoss');
+    const eqDd     = document.getElementById('cfgEqDrawdown');
+    if (eqInput)  eqInput.value  = c.equity_capital_limit  ?? '';
+    if (fnoInput) fnoInput.value = c.fno_capital_limit     ?? '';
+    if (eqDl)     eqDl.value    = c.equity_daily_loss_pct ?? 2.0;
+    if (eqDd)     eqDd.value    = c.equity_max_drawdown_pct ?? 12.0;
+
+    // Mode labels + button states
+    _renderModeToggle('equity', c.equity_paper_mode !== false);
+    _renderModeToggle('fno',    c.fno_paper_mode    !== false);
+
+    // Halt status
+    _renderHaltStatus(c.trading_halted, c.halt_reason);
+
+    // Deployed bars (requires portfolio data)
+    _updateDeployedBars(c.equity_capital_limit, c.fno_capital_limit);
+  } catch(e) {
+    console.warn('loadTradingRules:', e);
+  }
+}
+
+function _renderModeToggle(desk, isPaper) {
+  const labelId  = desk === 'equity' ? 'eqModeLabel'  : 'fnoModeLabel';
+  const paperBtn = desk === 'equity' ? 'btnEqPaper'   : 'btnFnoPaper';
+  const liveBtn  = desk === 'equity' ? 'btnEqLive'    : 'btnFnoLive';
+  const label    = document.getElementById(labelId);
+  const pbtn     = document.getElementById(paperBtn);
+  const lbtn     = document.getElementById(liveBtn);
+  if (!label) return;
+
+  if (isPaper) {
+    label.textContent = 'PAPER';
+    label.style.color = 'var(--amber)';
+    if (pbtn) { pbtn.style.background = 'var(--amber)'; pbtn.style.color = '#000'; pbtn.style.border = '1px solid var(--amber)'; }
+    if (lbtn) { lbtn.style.background = 'transparent'; lbtn.style.color = 'var(--muted)'; lbtn.style.border = '1px solid var(--border)'; }
+  } else {
+    label.textContent = '🔴 LIVE';
+    label.style.color = 'var(--red)';
+    if (lbtn) { lbtn.style.background = 'var(--red)'; lbtn.style.color = '#fff'; lbtn.style.border = '1px solid var(--red)'; }
+    if (pbtn) { pbtn.style.background = 'transparent'; pbtn.style.color = 'var(--muted)'; pbtn.style.border = '1px solid var(--border)'; }
+  }
+}
+
+function _renderHaltStatus(halted, reason) {
+  const badge   = document.getElementById('haltStatusBadge');
+  const haltBtn = document.getElementById('btnHalt');
+  const resumeBtn = document.getElementById('btnResume');
+  if (!badge) return;
+  if (halted) {
+    badge.textContent = '🛑 TRADING HALTED' + (reason ? ': ' + reason : '');
+    badge.style.color = 'var(--red)'; badge.style.borderColor = 'var(--red)';
+    if (haltBtn) haltBtn.style.display = 'none';
+    if (resumeBtn) resumeBtn.style.display = '';
+  } else {
+    badge.textContent = '▶ TRADING ACTIVE';
+    badge.style.color = 'var(--green)'; badge.style.borderColor = 'var(--green)';
+    if (haltBtn) haltBtn.style.display = '';
+    if (resumeBtn) resumeBtn.style.display = 'none';
+  }
+}
+
+async function _updateDeployedBars(eqLimit, fnoLimit) {
+  // Fetch portfolio data to compute deployed value
+  try {
+    const pd = await fetch('/api/dashboard').then(r => r.json());
+    const positions = pd.positions ?? {};
+    let eqDeployed = 0;
+    Object.values(positions).forEach(p => { eqDeployed += (p.qty ?? 0) * (p.current_price ?? p.avg_price ?? 0); });
+
+    const eqBar = document.getElementById('eqDeployedBar');
+    if (eqBar && eqLimit) {
+      const pct = Math.min(100, eqDeployed / eqLimit * 100).toFixed(1);
+      const col = pct > 90 ? 'var(--red)' : pct > 70 ? 'var(--amber)' : 'var(--green)';
+      eqBar.innerHTML = `
+        <div style="width:100%;height:4px;background:#111;margin-bottom:3px;border-radius:2px;overflow:hidden">
+          <div style="width:${pct}%;height:100%;background:${col}"></div>
+        </div>
+        Deployed ₹${(eqDeployed/1e5).toFixed(1)}L of ₹${(eqLimit/1e5).toFixed(1)}L limit (${pct}%)`;
+    }
+  } catch(e) {}
+}
+
+async function setTradingMode(desk, mode) {
+  const key   = desk === 'equity' ? 'equity_paper_mode' : 'fno_paper_mode';
+  const value = (mode === 'paper');
+  const msg   = document.getElementById('tradingRulesMsg');
+
+  if (!value) {
+    // Going LIVE — require explicit confirmation
+    const ok = confirm(
+      `⚠️  Switch ${desk.toUpperCase()} to LIVE mode?\n\n` +
+      `This will send REAL orders to Zerodha via Kite Connect.\n` +
+      `Make sure your Kite API credentials are set and the token is valid.\n\n` +
+      `Are you sure?`
+    );
+    if (!ok) return;
+  }
+
+  try {
+    const r = await fetch('/api/trading_config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({[key]: value}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      _renderModeToggle(desk, value);
+      if (msg) { msg.style.color = 'var(--green)'; msg.textContent = `✓ ${desk.toUpperCase()} mode set to ${mode.toUpperCase()}`; }
+      toast(`${desk.toUpperCase()} → ${mode.toUpperCase()} mode ✓`, value ? 'warning' : 'error');
+    } else {
+      if (msg) { msg.style.color = 'var(--red)'; msg.textContent = d.error; }
+    }
+  } catch(e) {
+    if (msg) { msg.style.color = 'var(--red)'; msg.textContent = e.message; }
+  }
+}
+
+async function saveTradingRules() {
+  const msg    = document.getElementById('tradingRulesMsg');
+  const eqLim  = parseInt(document.getElementById('cfgEqLimit')?.value)    || null;
+  const fnoLim = parseInt(document.getElementById('cfgFnoLimit')?.value)   || null;
+  const eqDl   = parseFloat(document.getElementById('cfgEqDailyLoss')?.value) || null;
+  const eqDd   = parseFloat(document.getElementById('cfgEqDrawdown')?.value)  || null;
+
+  const body = {};
+  if (eqLim  != null) body.equity_capital_limit    = eqLim;
+  if (fnoLim != null) body.fno_capital_limit        = fnoLim;
+  if (eqDl   != null) body.equity_daily_loss_pct   = eqDl;
+  if (eqDd   != null) body.equity_max_drawdown_pct = eqDd;
+
+  if (!Object.keys(body).length) return;
+
+  try {
+    const r = await fetch('/api/trading_config', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      if (msg) { msg.style.color = 'var(--green)'; msg.textContent = '✓ Rules saved'; }
+      toast('Capital rules saved ✓', 'success');
+      _updateDeployedBars(eqLim, fnoLim);
+    } else {
+      if (msg) { msg.style.color = 'var(--red)'; msg.textContent = d.error; }
+    }
+  } catch(e) {
+    if (msg) { msg.style.color = 'var(--red)'; msg.textContent = e.message; }
+  }
+}
+
+async function haltTrading() {
+  const ok = confirm('🛑 HALT ALL TRADING?\n\nThe engine will stop executing any new buys or sells until you resume.\nExisting positions will remain open.');
+  if (!ok) return;
+  const reason = prompt('Reason for halt (optional):') || 'Manual halt via dashboard';
+  try {
+    const r = await fetch('/api/trading_halt', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({halt: true, reason}),
+    });
+    const d = await r.json();
+    if (d.ok) { _renderHaltStatus(true, reason); toast('🛑 Trading halted', 'error'); }
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function resumeTrading() {
+  const ok = confirm('▶ Resume trading?\n\nThe engine will resume normal operation on the next cycle.');
+  if (!ok) return;
+  try {
+    const r = await fetch('/api/trading_halt', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({halt: false}),
+    });
+    const d = await r.json();
+    if (d.ok) { _renderHaltStatus(false, ''); toast('▶ Trading resumed', 'success'); }
+  } catch(e) { toast(e.message, 'error'); }
+}
+
 // Capital Allocation Config
 // ══════════════════════════════════════════════
 

@@ -857,6 +857,69 @@ def api_capital_config_set():
     return jsonify({"ok": True, "config": cfg, "message": f"Saved: ₹{total:,} total | ₹{equity:,} equity | ₹{fno:,} F&O"})
 
 
+@app.route("/api/trading_config", methods=["GET"])
+def api_trading_config_get():
+    """Return current trading config (modes, capital limits, guardrails)."""
+    try:
+        from trading_config import get_dashboard_data
+        return jsonify({"ok": True, "config": get_dashboard_data()})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/trading_config", methods=["POST"])
+def api_trading_config_set():
+    """
+    Update trading config.
+    Body: any subset of config keys, e.g.:
+      { equity_paper_mode: true, equity_capital_limit: 500000,
+        fno_capital_limit: 200000, equity_daily_loss_pct: 2.0,
+        equity_max_drawdown_pct: 12.0 }
+    """
+    try:
+        from trading_config import update_trading_config, get_dashboard_data
+    except ImportError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+    body = request.get_json(force=True, silent=True) or {}
+    # Whitelist of allowed keys to update via API
+    allowed_keys = {
+        "equity_paper_mode", "fno_paper_mode",
+        "equity_capital_limit", "fno_capital_limit",
+        "equity_daily_loss_pct", "equity_max_drawdown_pct",
+        "fno_daily_loss_pct", "fno_max_drawdown_pct",
+        "trading_halted", "halt_reason",
+    }
+    updates = {k: v for k, v in body.items() if k in allowed_keys}
+    if not updates:
+        return jsonify({"ok": False, "error": "No valid config keys provided"}), 400
+
+    cfg = update_trading_config(**updates)
+    logging.getLogger(__name__).info(f"[Config] Updated trading config: {updates}")
+    return jsonify({"ok": True, "config": get_dashboard_data(), "updated": list(updates.keys())})
+
+
+@app.route("/api/trading_halt", methods=["POST"])
+def api_trading_halt():
+    """
+    Emergency halt or resume.
+    Body: { "halt": true, "reason": "Manual halt" }
+         { "halt": false }
+    """
+    try:
+        from trading_config import update_trading_config, get_dashboard_data
+    except ImportError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+    body = request.get_json(force=True, silent=True) or {}
+    halt = bool(body.get("halt", True))
+    reason = str(body.get("reason", "Manual halt via dashboard")) if halt else ""
+    cfg = update_trading_config(trading_halted=halt, halt_reason=reason)
+    action = "HALTED" if halt else "RESUMED"
+    logging.getLogger(__name__).warning(f"🛑 Trading {action}: {reason}")
+    return jsonify({"ok": True, "config": get_dashboard_data(), "action": action})
+
+
 @app.route("/api/add_capital", methods=["POST"])
 def api_add_capital():
     """Add capital to the portfolio cash balance. Body: {amount: 300000}"""

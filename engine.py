@@ -2824,6 +2824,41 @@ class TradingAgent:
                     f"⚠️  UPCOMING EVENT in {ev['days_away']}d: {ev['label']} ({ev['date']})"
                 )
 
+        # ── Capital Limit Guard-rail ────────────────────────────────────────
+        # Hard stop: bot cannot deploy more than the user's configured limit.
+        _capital_blocks_buys = False
+        _capital_block_reason = ""
+        _equity_capital_limit = float("inf")
+        _equity_remaining_capital = float("inf")
+        try:
+            from trading_config import get_trading_config, check_equity_trade_allowed
+            _tc = get_trading_config()
+
+            # Emergency halt takes precedence over everything
+            if _tc.get("trading_halted"):
+                _capital_blocks_buys = True
+                _capital_block_reason = _tc.get("halt_reason") or "Emergency halt active"
+                logger.warning(f"🛑 TRADING HALTED: {_capital_block_reason}")
+            else:
+                _equity_capital_limit = float(_tc.get("equity_capital_limit", float("inf")))
+                # Compute total value currently deployed in open positions
+                _deployed = sum(
+                    pos.get("qty", 0) * (DataFetcher.get_current_price(tk) or pos.get("avg_price", 0))
+                    for tk, pos in self.portfolio.state.get("positions", {}).items()
+                )
+                _allowed, _reason, _equity_remaining_capital = check_equity_trade_allowed(_deployed)
+                if not _allowed:
+                    _capital_blocks_buys = True
+                    _capital_block_reason = _reason
+                    logger.warning(f"💰 CAPITAL LIMIT: {_reason}")
+                else:
+                    logger.info(
+                        f"💰 Capital: ₹{_deployed:,.0f} deployed / ₹{_equity_capital_limit:,.0f} limit "
+                        f"(₹{_equity_remaining_capital:,.0f} available)"
+                    )
+        except Exception as _tc_err:
+            logger.debug(f"Trading config unavailable: {_tc_err}")
+
         # ── Execute BUY signals ────────────────────────────────────────────
         # Sort by composite strength descending (strongest conviction first)
         learning = get_learning_engine()
@@ -2946,6 +2981,28 @@ class TradingAgent:
                         f"(max {MAX_STOCKS_PER_SECTOR} per sector)"
                     )
                     skip_reasons["sector_correlation"] = skip_reasons.get("sector_correlation", 0) + 1
+                    continue
+
+            # Guard-rail: Capital limit / Emergency halt
+            if _capital_blocks_buys:
+                logger.info(f"🛑 BLOCKED {ticker}: {_capital_block_reason}")
+                skip_reasons["capital_limit"] = skip_reasons.get("capital_limit", 0) + 1
+                continue
+
+            # Per-trade capital check: recompute remaining before each buy
+            # (previous buys in this same cycle reduce the remaining budget)
+            if _equity_capital_limit < float("inf"):
+                _deployed_now = sum(
+                    pos.get("qty", 0) * (DataFetcher.get_current_price(tk) or pos.get("avg_price", 0))
+                    for tk, pos in self.portfolio.state.get("positions", {}).items()
+                )
+                _equity_remaining_capital = _equity_capital_limit - _deployed_now
+                if _equity_remaining_capital < price:
+                    logger.info(
+                        f"⏭  SKIP {ticker} @ ₹{price:.0f} — "
+                        f"remaining capital ₹{_equity_remaining_capital:,.0f} < 1 share"
+                    )
+                    skip_reasons["capital_insufficient"] = skip_reasons.get("capital_insufficient", 0) + 1
                     continue
 
             # Guard-rail: Regime / VaR / News blocks
