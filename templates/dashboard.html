@@ -2169,10 +2169,11 @@ async function loadMarketOverview() {
       if (tsEl) tsEl.textContent = bn.last_updated || '';
     }
     // Update ticker tape with live data
-    _updateTickerTape({
+    window._ribbonIndexData = {
       nifty:     ni ? { price: ni.price, change_pct: ni.chg_pct } : null,
       banknifty: bn ? { price: bn.price, change_pct: bn.chg_pct } : null,
-    });
+    };
+    _updateTickerTape(window._ribbonIndexData);
     // Market status chip
     const chip = document.getElementById('marketStatusChip');
     if (chip) {
@@ -2209,7 +2210,7 @@ async function loadDashboard() {
 // KPIs
 // ──────────────────────────────────────────────
 function renderKPIs(p) {
-  if (_currentDesk === 'fno') return;  // F&O desk manages its own header
+  if (_currentDesk === 'fno' || _currentDesk === 'master') return;  // these desks manage their own headers
   // ── Summary bar ──
   const totalEl = document.getElementById('kpiTotal');
   totalEl.textContent = fmt(p.total_value);
@@ -2306,7 +2307,17 @@ function segmentPill(ticker) {
 }
 
 function renderPositions(positions) {
-  if (_currentDesk === 'fno') return;
+  // Always update ribbon cache regardless of current desk
+  window._posCache = {};
+  window._ribbonPositions = [];
+  positions.forEach(p => {
+    window._posCache[p.ticker] = { avg: p.avg_price, qty: p.qty };
+    window._ribbonPositions.push({ label: p.ticker.replace('.NS',''), price: p.ltp, change_pct: p.pnl_pct });
+  });
+  if (window._ribbonIndexData) _updateTickerTape(window._ribbonIndexData);
+
+  if (_currentDesk === 'fno' || _currentDesk === 'master') return;
+
   document.getElementById('kpiPositions').textContent = positions.length;
   const dp = document.getElementById('dash-positions');
   if (dp) dp.textContent = positions.length + ' / 20';
@@ -2320,9 +2331,6 @@ function renderPositions(positions) {
   }
   hide('noPositions');
   const color = s => STRAT_COLORS[s] || '#888888';
-  // Cache avg_price + qty for live P&L recalculation
-  window._posCache = {};
-  positions.forEach(p => { window._posCache[p.ticker] = { avg: p.avg_price, qty: p.qty }; });
 
   tbody.innerHTML = positions.map(p => `
     <tr data-ticker="${p.ticker}">
@@ -4801,6 +4809,9 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('navMaster').classList.add('active');
   _currentView = 'master';
   _currentDesk = 'master';
+  // KPI strip is only for Equity/F&O desks — hide on master start
+  var _sb = document.getElementById('summary-bar');
+  if (_sb) _sb.style.display = 'none';
   refreshAll();
   loadMaster();
   loadMarketStatus();
@@ -5436,6 +5447,9 @@ function switchDesk(desk) {
   // Highlight master nav item when on master
   var nm = document.getElementById('navMaster');
   if (nm) nm.classList.toggle('active', desk === 'master');
+  // Hide KPI bar on master — master has its own summary cards
+  var sb = document.getElementById('summary-bar');
+  if (sb) sb.style.display = (desk === 'master') ? 'none' : '';
   // Navigate to default view for each desk
   if (desk === 'master') { showView('master'); loadMaster(); }
   else if (desk === 'eq') {
@@ -6190,20 +6204,41 @@ function _updateTickerTape(data) {
   var track = document.getElementById('tickerTrack');
   if (!track || !data) return;
   var items = [];
-  if (data.nifty)     items.push(['NIFTY', data.nifty.price, data.nifty.change_pct]);
-  if (data.banknifty) items.push(['BANKNIFTY', data.banknifty.price, data.banknifty.change_pct]);
+  // Indices first (always shown)
+  if (data.nifty)     items.push({ label: 'NIFTY',     price: data.nifty.price,     chg: data.nifty.change_pct,     bold: true });
+  if (data.banknifty) items.push({ label: 'BANKNIFTY', price: data.banknifty.price, chg: data.banknifty.change_pct, bold: true });
+  // Equity positions (shown if available)
+  var pos = window._ribbonPositions || [];
+  pos.forEach(function(p) {
+    items.push({ label: p.label, price: p.price, chg: p.change_pct, bold: false });
+  });
   if (items.length === 0) return;
-  var html = '';
-  for (var k = 0; k < 3; k++) {
-    items.forEach(function(t) {
-      var cls = (t[2] >= 0) ? 'pos' : 'neg';
-      var sign = (t[2] >= 0) ? '+' : '';
-      html += '<span class="tick"><b>' + t[0] + '</b> ₹' +
-              Number(t[1]).toLocaleString('en-IN') + ' <span class="' + cls + '">' +
-              sign + Number(t[2]).toFixed(2) + '%</span></span>';
-    });
+
+  // Duplicate items to fill ribbon seamlessly (indices repeat more)
+  var allItems = [];
+  // Repeat the whole set enough times to fill the tape continuously
+  var repeats = Math.max(3, Math.ceil(40 / Math.max(items.length, 1)));
+  for (var k = 0; k < repeats; k++) {
+    items.forEach(function(t) { allItems.push(t); });
   }
+
+  var html = allItems.map(function(t) {
+    var c    = (t.chg >= 0) ? 'pos' : 'neg';
+    var sign = (t.chg >= 0) ? '+' : '';
+    var name = t.bold ? '<b>' + t.label + '</b>' : t.label;
+    var sep  = t.bold ? ' ₹' : ' ';
+    return '<span class="tick">' + name + sep +
+           Number(t.price).toLocaleString('en-IN', {maximumFractionDigits:2}) +
+           ' <span class="' + c + '">' + sign + Number(t.chg).toFixed(2) + '%</span></span>';
+  }).join('');
   track.innerHTML = html;
+
+  // Adjust scroll speed: more items = slightly faster to keep pace
+  var tape = track.parentElement;
+  if (tape) {
+    var secs = Math.max(30, items.length * 3);
+    track.style.animationDuration = secs + 's';
+  }
 }
 
 </script>

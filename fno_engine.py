@@ -1498,71 +1498,296 @@ class FNOPortfolio:
 # F&O Strategies
 # ---------------------------------------------------------------------------
 
+def _swing_market_regime_ok() -> tuple[bool, str]:
+    """
+    Market regime gate for long calls (mentor rule: no long calls in bearish regime).
+    Blocks if: Nifty < 200 EMA  OR  50 EMA < 200 EMA  OR  VIX > 25.
+    Returns (ok, reason_string).
+    """
+    try:
+        df = yf.download("^NSEI", period="1y", interval="1d", auto_adjust=True, progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        close  = df["Close"].squeeze()
+        spot   = float(close.iloc[-1])
+        ema200 = float(close.ewm(span=200, adjust=False).mean().iloc[-1])
+        ema50  = float(close.ewm(span=50,  adjust=False).mean().iloc[-1])
+
+        if spot < ema200:
+            return False, f"Nifty {spot:.0f} < 200EMA {ema200:.0f} — bearish regime"
+        if ema50 < ema200:
+            return False, f"50EMA {ema50:.0f} < 200EMA {ema200:.0f} — death cross"
+
+        try:
+            vdf = yf.download("^INDIAVIX", period="5d", interval="1d", auto_adjust=True, progress=False)
+            if isinstance(vdf.columns, pd.MultiIndex):
+                vdf.columns = vdf.columns.get_level_values(0)
+            if not vdf.empty:
+                vix = float(vdf["Close"].squeeze().iloc[-1])
+                if vix > 25:
+                    return False, f"VIX {vix:.1f} > 25 — fear elevated, skip LONG calls"
+        except Exception:
+            pass
+
+        return True, f"Regime OK (Nifty {spot:.0f} > 200EMA {ema200:.0f})"
+    except Exception as e:
+        logger.warning(f"[SwingRegime] Check failed: {e} — defaulting OK")
+        return True, "Regime check failed — proceed"
+
+
+def _swing_trend_and_levels(ticker: str, spot: float) -> tuple[bool, int, float, float, float, str]:
+    """
+    Trend filter + conviction scoring + ATR-based stop levels for the swing framework.
+
+    Returns (passes_filter, conviction_score, atr14, stop_level, initial_R, detail_string).
+
+    Conviction scoring (0-100):
+      Fundamentals proxy (40 pts): above 200EMA, within 5% of 52w high, above 50EMA
+      Trend              (30 pts): ADX strength, full EMA stack
+      Volume             (20 pts): relative volume vs 20-day average
+      Regime             (10 pts): granted if regime OK at call site
+
+    Gate: score >= 70 to trade (mentor minimum conviction threshold).
+
+    Hard filter requirements (any failure → skip):
+      - Price > 200 EMA
+      - ADX >= 20
+      - Within 20% of 52-week high
+      - Relative volume >= 1.0
+    """
+    try:
+        df = yf.download(ticker, period="1y", interval="1d", auto_adjust=True, progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        if len(df) < 50:
+            return False, 0, 0, 0, 0, "Insufficient data"
+
+        close  = df["Close"].squeeze()
+        high   = df["High"].squeeze()
+        low    = df["Low"].squeeze()
+        volume = df["Volume"].squeeze()
+
+        ema200 = float(close.ewm(span=200, adjust=False).mean().iloc[-1])
+        ema50  = float(close.ewm(span=50,  adjust=False).mean().iloc[-1])
+
+        # 52-week high
+        high_52w      = float(high.rolling(min(252, len(high))).max().iloc[-1])
+        pct_from_52wh = (spot - high_52w) / high_52w if high_52w > 0 else -1.0
+
+        # ATR-14
+        tr = pd.concat([
+            high - low,
+            (high - close.shift()).abs(),
+            (low  - close.shift()).abs(),
+        ], axis=1).max(axis=1)
+        atr14 = float(tr.rolling(14).mean().iloc[-1])
+
+        # ADX (simplified 14-period)
+        plus_dm  = (high - high.shift()).clip(lower=0)
+        minus_dm = (low.shift() - low).clip(lower=0)
+        mask     = plus_dm < minus_dm
+        plus_dm[mask]  = 0
+        minus_dm[~mask] = 0
+        atr_smooth   = tr.ewm(span=14, adjust=False).mean()
+        plus_di      = 100 * plus_dm.ewm(span=14, adjust=False).mean()  / atr_smooth.replace(0, np.nan)
+        minus_di     = 100 * minus_dm.ewm(span=14, adjust=False).mean() / atr_smooth.replace(0, np.nan)
+        dx           = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+        adx          = float(dx.ewm(span=14, adjust=False).mean().iloc[-1])
+
+        # Relative volume (10d vs 20d)
+        vol10  = float(volume.iloc[-10:].mean())
+        vol20  = float(volume.iloc[-20:].mean())
+        rel_vol = vol10 / vol20 if vol20 > 0 else 1.0
+
+        # ── Hard filter gates ──────────────────────────────────────────────
+        if spot < ema200:
+            return False, 0, atr14, 0, 0, f"Price {spot:.0f} < 200EMA {ema200:.0f}"
+        if adx < 20:
+            return False, 0, atr14, 0, 0, f"ADX {adx:.1f} < 20 — no trend"
+        if pct_from_52wh < -0.20:
+            return False, 0, atr14, 0, 0, f"Price {pct_from_52wh:.0%} off 52w high — laggard"
+        if rel_vol < 1.0:
+            return False, 0, atr14, 0, 0, f"RelVol {rel_vol:.2f}x < 1.0 — weak participation"
+
+        # ── Conviction score ───────────────────────────────────────────────
+        score   = 0
+        reasons = []
+
+        # Fundamentals proxy (40 pts)
+        if spot > ema200:
+            score += 15; reasons.append("Above 200EMA")
+        if spot > ema50:
+            score += 10; reasons.append("Above 50EMA")
+        if pct_from_52wh >= -0.05:
+            score += 15; reasons.append(f"Near 52wH ({pct_from_52wh:.0%})")
+        elif pct_from_52wh >= -0.10:
+            score += 8
+
+        # Trend (30 pts)
+        if ema50 > ema200:
+            score += 15; reasons.append("50EMA > 200EMA")
+        if adx >= 30:
+            score += 15; reasons.append(f"ADX={adx:.0f}")
+        elif adx >= 25:
+            score += 10; reasons.append(f"ADX={adx:.0f}")
+        elif adx >= 20:
+            score += 5
+
+        # Volume (20 pts)
+        if rel_vol >= 2.0:
+            score += 20; reasons.append(f"RelVol={rel_vol:.1f}x")
+        elif rel_vol >= 1.5:
+            score += 15; reasons.append(f"RelVol={rel_vol:.1f}x")
+        elif rel_vol >= 1.0:
+            score += 8
+
+        # Regime (10 pts) — granted at call site if regime passes
+        score += 10; reasons.append("Regime OK")
+
+        score = min(score, 100)
+
+        # ── Stop and R levels ──────────────────────────────────────────────
+        stop_level = round(spot - atr14, 2)   # 1 ATR below entry (for calls)
+        initial_R  = round(spot - stop_level, 2)
+
+        detail = f"Score={score} | ADX={adx:.0f} | RelVol={rel_vol:.1f}x | {' | '.join(reasons)}"
+        return True, score, atr14, stop_level, initial_R, detail
+
+    except Exception as e:
+        logger.warning(f"[SwingTrend] Filter failed for {ticker}: {e}")
+        return True, 70, 0, 0, 0, f"Filter error: {e}"
+
+
 class DirectionalOptionsStrategy:
     """
-    Route strong equity signals to call/put options for leverage.
+    Long-Only Options Swing Framework v1.0 (mentor-defined).
 
-    Signal strength ≥ 80 BUY  → buy ATM call (1 lot)
-    Signal strength ≥ 80 SELL → buy ATM put  (1 lot)
-    Uses the nearest weekly expiry for indices, monthly for stocks.
+    Entry gates (all must pass):
+      1. Market regime: Nifty > 200 EMA, 50 EMA > 200 EMA, VIX < 25
+      2. Trend filter: price > 200 EMA, ADX >= 20, within 20% of 52w high, rel vol >= 1.0
+      3. Conviction score >= 70 (Fundamentals 40% + Trend 30% + Volume 20% + Regime 10%)
+      4. Equity signal strength >= 85
+
+    Strike: ITM1 (delta ~0.65) for calls — better delta capture than ATM
+    Expiry: 20-45 DTE monthly (never weeklies)
+    Stop: 1 ATR below underlying entry price (on underlying, not on premium)
+    Targets: T1 = entry+2R (close 50%), T2 = entry+3R (close 25%), trail rest
+    Max 5 positions total.
     """
-    name       = "Directional Options"
-    short_name = "DIR_OPT"
+    name       = "Directional Options Swing"
+    short_name = "DIR_SWING"
+
+    # Cache regime check for 30 min to avoid hammering yfinance
+    _regime_cache: tuple[bool, str, float] | None = None
+
+    def _get_regime(self) -> tuple[bool, str]:
+        now_ts = time.time()
+        if self._regime_cache and (now_ts - self._regime_cache[2]) < 1800:
+            return self._regime_cache[0], self._regime_cache[1]
+        ok, reason = _swing_market_regime_ok()
+        DirectionalOptionsStrategy._regime_cache = (ok, reason, now_ts)
+        return ok, reason
 
     def run(self, signals: list, portfolio: FNOPortfolio) -> list:
         executed = []
+
+        # ── Step 1: Market regime gate (shared for all signals this cycle) ── #
+        regime_ok, regime_reason = self._get_regime()
+        if not regime_ok:
+            logger.info(f"[DirSwing] BLOCKED — regime fail: {regime_reason}")
+            return executed
+
         for sig in signals:
             if portfolio.at_max_positions():
                 break
-            if sig.get("strength", 0) < 85:   # ≥85 conviction gate (mentor: avoid marginal trades)
+
+            # ── Step 2: Signal strength gate ─────────────────────────────── #
+            if sig.get("strength", 0) < 85:
                 continue
             ticker = sig["ticker"]
             action = sig.get("signal", "")
             if action not in ("BUY", "SELL"):
                 continue
 
-            opt_type = "call" if action == "BUY" else "put"
+            # Long-only swing: only BUY signals → CALL options
+            # (SELL signals → put hedges are handled by HedgeStrategy)
+            if action != "BUY":
+                continue
+            opt_type = "call"
 
-            # Skip if we already have this underlying open or recently closed
             if portfolio.has_open_position(ticker, opt_type):
                 continue
             if portfolio.in_cooldown(ticker):
                 continue
 
             try:
-                # Always use 20-45 DTE monthly expiry (mentor: never weeklies)
-                expiry = get_expiry_20_45dte()
-                spot   = portfolio._get_spot(ticker)
+                spot = portfolio._get_spot(ticker)
                 if spot <= 0:
                     continue
 
-                # ATM only (mentor: never OTM — theta decay kills OTM longs)
-                strike = select_strike(spot, opt_type, moneyness="ATM")
+                # ── Step 3: Trend filter + conviction score ───────────────── #
+                passes, conviction, atr14, stop_level, initial_R, detail = \
+                    _swing_trend_and_levels(ticker, spot)
+
+                if not passes:
+                    logger.info(f"[DirSwing] SKIP {ticker} — trend filter: {detail}")
+                    continue
+
+                if conviction < 70:
+                    logger.info(f"[DirSwing] SKIP {ticker} — conviction {conviction} < 70 | {detail}")
+                    continue
+
+                logger.info(f"[DirSwing] {ticker} passes | {detail}")
+
+                # ── Step 4: Strike selection — ITM1 (delta ~0.65) ─────────── #
+                # ITM1 gives 0.60-0.70 delta: better trend capture than ATM (0.50)
+                expiry = get_expiry_20_45dte()
+                strike = select_strike(spot, opt_type, moneyness="ITM1")
                 T      = days_to_expiry(expiry)
                 iv     = historical_vol(ticker)
                 prem   = BlackScholes.price(spot, strike, T, RISK_FREE_RATE, iv, opt_type)
                 lot    = get_lot_size(ticker)
                 cost   = prem * lot
 
-                if prem < 10:    # minimum ₹10 premium — below this spreads are too wide
-                    logger.info(f"[DirOpt] SKIP {ticker} — premium ₹{prem:.2f} below ₹10 minimum")
+                if prem < 10:
+                    logger.info(f"[DirSwing] SKIP {ticker} — premium ₹{prem:.2f} too low")
                     continue
-                if cost < 500:   # minimum total outlay
+                if cost < 500:
                     continue
                 if not portfolio.can_afford(cost):
-                    logger.info(f"[DirOpt] SKIP {ticker} — cannot afford ₹{cost:.0f} (cash=₹{portfolio.state['cash']:.0f})")
+                    logger.info(f"[DirSwing] SKIP {ticker} — cannot afford ₹{cost:.0f}")
                     continue
 
+                # ── Step 5: Open with swing metadata ─────────────────────── #
+                greeks = BlackScholes.greeks(spot, strike, T, RISK_FREE_RATE, iv, opt_type)
+                reason_str = (
+                    f"Swing {action} | strength={sig['strength']:.0f} | "
+                    f"conv={conviction} | delta={greeks['delta']:.2f} | "
+                    f"stop={stop_level:.0f} (1ATR={atr14:.0f}) | 2R={spot+2*initial_R:.0f}"
+                )
                 result = portfolio.open_option(
-                    underlying=ticker, strike=strike, expiry=expiry,
-                    option_type=opt_type, position="LONG", qty_lots=1,
-                    strategy=self.short_name,
-                    reason=f"Equity signal {action} strength={sig['strength']:.0f}"
+                    underlying        = ticker,
+                    strike            = strike,
+                    expiry            = expiry,
+                    option_type       = opt_type,
+                    position          = "LONG",
+                    qty_lots          = 1,
+                    strategy          = self.short_name,
+                    reason            = reason_str,
+                    underlying_entry  = spot,
+                    stop_level        = stop_level,
+                    initial_R         = initial_R,
                 )
                 if result:
+                    logger.info(
+                        f"[DirSwing] OPENED {ticker} {strike}C {expiry} @ ₹{prem:.2f} "
+                        f"stop_underlying={stop_level:.0f} 2R={spot+2*initial_R:.0f} "
+                        f"3R={spot+3*initial_R:.0f}"
+                    )
                     executed.append(result)
+
             except Exception as e:
-                logger.warning(f"[DirOpt] Error on {ticker}: {e}")
+                logger.warning(f"[DirSwing] Error on {ticker}: {e}", exc_info=True)
 
         return executed
 
