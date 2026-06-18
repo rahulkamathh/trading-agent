@@ -30,7 +30,7 @@ import logging
 import math
 import time
 from collections import defaultdict
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, time as dt_time
 from zoneinfo import ZoneInfo
 _IST = ZoneInfo("Asia/Kolkata")
 def _now_ist() -> datetime:
@@ -50,7 +50,7 @@ FNO_PORTFOLIO_FILE = DATA_DIR / "fno_portfolio.json"
 FNO_TRADE_FILE     = DATA_DIR / "fno_trades.json"
 
 FNO_INITIAL_CAPITAL = 2_00_000   # ₹2 lakhs allocated to F&O desk
-FNO_MAX_POSITIONS   = 10         # hard cap on open F&O positions
+FNO_MAX_POSITIONS   = 5          # max 5 concurrent positions (mentor: swing framework)
 FNO_MAX_RISK_PER_TRADE = 0.10   # max 10% of F&O capital per trade
 RISK_FREE_RATE      = 0.0675     # RBI repo rate approximation
 MAX_RISK_PER_TRADE  = 0.05       # max 5% of F&O capital at risk per trade
@@ -721,18 +721,23 @@ class FNOPortfolio:
 
     def open_option(self, underlying: str, strike: float, expiry: date,
                     option_type: str, position: str, qty_lots: int,
-                    strategy: str, reason: str = "") -> dict | None:
+                    strategy: str, reason: str = "",
+                    underlying_entry: float = 0.0,
+                    stop_level: float = 0.0,
+                    initial_R: float = 0.0) -> dict | None:
         """
         Open an option position.
         position: LONG (buy) | SHORT (sell/write)
+
+        Swing framework params (optional, stored in position for exit logic):
+          underlying_entry: spot price at entry (for R-multiple stops)
+          stop_level: underlying price at which to close (1 ATR below entry for calls)
+          initial_R: distance from entry to stop in ₹ (entry_spot - stop_level)
         """
-        # INTRADAY-ONLY: no new entries after 2:00 PM IST.
-        # All positions must be closed by 3:15 PM; entering after 2 PM gives less
-        # than 75 min for the trade to work — not enough time for a directional move.
+        # Swing trading: allow entries during full market hours (not just before 2 PM)
         now_time = _now_ist().time()
-        from datetime import time as _dtt  # noqa: PLC0415
-        if not (_dtt(9, 15) <= now_time <= _dtt(14, 0)):
-            logger.info(f"[FNO] BLOCKED open_option {underlying} — outside intraday window (after 2PM or pre-market)")
+        if not (dt_time(9, 15) <= now_time <= dt_time(15, 15)):
+            logger.info(f"[FNO] BLOCKED open_option {underlying} — outside market hours")
             return None
 
         spot = self._get_spot(underlying)
@@ -753,6 +758,7 @@ class FNOPortfolio:
 
         pid = f"{underlying}_{strike}_{expiry}_{option_type}_{position}_{int(time.time())}"
 
+        _entry_spot = round(underlying_entry if underlying_entry > 0 else spot, 2)
         pos = {
             "position_id":    pid,
             "instrument_type":"OPTION",
@@ -768,6 +774,12 @@ class FNOPortfolio:
             "strategy":       strategy,
             "reason":         reason,
             "entry_date":     _now_ist().isoformat(),
+            # Swing framework fields
+            "underlying_entry_price": _entry_spot,
+            "stop_level":   round(stop_level, 2) if stop_level > 0 else 0.0,
+            "initial_R":    round(initial_R,  2) if initial_R  > 0 else 0.0,
+            "_t1_done":     False,
+            "_t2_done":     False,
         }
         self.state["positions"][pid] = pos
 
@@ -992,6 +1004,97 @@ class FNOPortfolio:
             pass
         return trade
 
+    def partial_close_option(self, position_id: str, close_pct: float, reason: str = "") -> dict | None:
+        """
+        Close a fraction of an option position.
+        close_pct: 0.5 = close half the lots, 0.25 = close a quarter, 1.0 = close all.
+        Used for R-multiple profit targets (T1 = 50% at 2R, T2 = 25% at 3R).
+        If remaining qty would be 0, falls through to full close_option.
+        """
+        pos = self.state["positions"].get(position_id)
+        if not pos or pos["instrument_type"] != "OPTION":
+            return None
+
+        total_lots    = pos["qty"]
+        lots_to_close = max(1, int(round(total_lots * close_pct)))
+
+        # If closing everything (or only 1 lot left), delegate to full close
+        if lots_to_close >= total_lots:
+            return self.close_option(position_id, reason=reason)
+
+        # Fetch current premium
+        spot = self._get_spot(pos["underlying"])
+        T    = days_to_expiry(date.fromisoformat(pos["expiry"]))
+        iv   = pos.get("iv", 0.25)
+
+        curr_premium = None
+        try:
+            from angelone_feed import get_feed as _get_feed  # noqa: PLC0415
+            _feed = _get_feed()
+            if _feed.is_connected() and _feed._smart:
+                ltp = _feed.get_option_ltp(
+                    pos["underlying"], pos["strike"],
+                    date.fromisoformat(pos["expiry"]), pos["option_type"]
+                )
+                if ltp and ltp > 0:
+                    curr_premium = ltp
+        except Exception:
+            pass
+
+        if curr_premium is None:
+            curr_premium = BlackScholes.price(spot, pos["strike"], T, RISK_FREE_RATE, iv, pos["option_type"])
+
+        if curr_premium <= 0:
+            logger.warning(f"[FNO] SKIP partial_close {position_id} — premium ₹0")
+            return None
+
+        lot           = get_lot_size(pos["underlying"])
+        qty_to_close  = lots_to_close * lot
+        entry         = pos["entry_premium"]
+        pnl           = (curr_premium - entry) * qty_to_close
+
+        self._return_cash(curr_premium * qty_to_close)
+        self.state["realised_pnl"] += pnl
+        pos["qty"] -= lots_to_close   # reduce remaining size
+        self._save()
+
+        trade = {
+            "action":         f"PARTIAL_CLOSE_{pos['position']}_{pos['option_type'].upper()}",
+            "underlying":     pos["underlying"],
+            "instrument":     pos.get("underlying", ""),
+            "strike":         pos["strike"],
+            "expiry":         pos["expiry"],
+            "option_type":    pos["option_type"],
+            "qty_lots":       lots_to_close,
+            "remaining_lots": pos["qty"],
+            "premium":        round(curr_premium, 2),
+            "exit_premium":   round(curr_premium, 2),
+            "entry_premium":  entry,
+            "pnl":            round(pnl, 2),
+            "close_pct":      close_pct,
+            "strategy":       pos.get("strategy", ""),
+            "reason":         reason,
+        }
+        self._log_trade(trade)
+        logger.info(
+            f"[FNO] PARTIAL_CLOSE {lots_to_close}/{total_lots}L {pos['underlying']} "
+            f"{pos['strike']}{pos['option_type'][0].upper()} "
+            f"P&L=₹{pnl:+.0f}  ({reason})"
+        )
+        # Telegram notification
+        try:
+            from notifier import get_notifier  # noqa: PLC0415
+            get_notifier().notify_fno_close(
+                underlying=pos["underlying"], option_type=pos["option_type"],
+                strike=pos["strike"], entry_premium=entry,
+                exit_premium=round(curr_premium, 2),
+                qty_lots=lots_to_close, lot_size=lot,
+                pnl=round(pnl, 2), reason=reason,
+            )
+        except Exception:
+            pass
+        return trade
+
     def open_future(self, underlying: str, expiry: date, position: str,
                     qty_lots: int, strategy: str, reason: str = "") -> dict | None:
         spot   = self._get_spot(underlying)
@@ -1135,98 +1238,90 @@ class FNOPortfolio:
         iv = pos.get("iv", 0.25)
         return BlackScholes.price(spot, pos["strike"], T, RISK_FREE_RATE, iv, pos["option_type"])
 
-    def _dynamic_exit_decision(self, pos: dict, curr_prem: float,
-                                pnl_pct: float, days_left: int,
-                                age_hours: float) -> tuple[bool, str]:
+    def _swing_exit_decision(self, pos: dict, curr_prem: float, spot: float,
+                              days_left: int, age_days: int) -> tuple[bool, float, str]:
         """
-        Autonomous exit decision — no hardcoded targets.
+        Long-Only Options Swing Framework exit logic (mentor v1.0).
 
-        Returns (should_exit, reason_string).
+        Returns (should_exit, close_pct, reason_string).
+        close_pct: 1.0 = close all, 0.5 = close half (T1), 0.25 = close quarter (T2), 0.0 = hold
 
-        Logic layers (checked in order):
-
-        1. Hard stop: -40% on premium → always exit to cap loss
-        2. Profit-lock trailing:
-              up 10–20% → stop moves to breakeven (can never lose money on it)
-              up 20–35% → stop moves to +10% (lock some gain)
-              up >35%   → stop moves to +20% (aggressive lock)
-        3. Intraday booking: up 8%+ and after 2:00 PM → close for the day
-        4. Near-expiry tightening: ≤5 days left → stop tightens to -20%,
-              target drops to +25% (time value collapsing)
-        5. Theta drain: if position has been open >3 days and is flat (<5% up),
-              close it — theta is eating value daily
-        6. Nifty reversal: if underlying moved >1% against option direction today,
-              close regardless of P&L (directional thesis is broken)
+        Exit rules (checked in order):
+        1. Underlying stop: spot crosses stop_level → close 100%
+        2. Premium crash backstop: -50% on premium → close 100%
+        3. T1 (2R on underlying): close 50%
+        4. T2 (3R on underlying): close 25%
+        5. Max hold: 30 trading days → close 100%
+        6. Near expiry (≤7 days): close 100% to avoid expiry risk
+        7. Theta drain: open > 10 days and flat/losing → close 100%
         """
-        entry_prem  = pos.get("entry_premium", 0)
-        entry_date  = pos.get("entry_date", "")
-        option_type = pos.get("option_type", "CE")     # CE=call, PE=put
+        option_type = pos.get("option_type", "call")
+        entry_prem  = pos.get("entry_premium", 1)
+        entry_spot  = pos.get("underlying_entry_price", spot)
+        stop_level  = pos.get("stop_level", 0.0)
+        initial_R   = pos.get("initial_R", 0.0)
+        t1_done     = pos.get("_t1_done", False)
+        t2_done     = pos.get("_t2_done", False)
 
-        # ════════════════════════════════════════════════════════════════════
-        # INTRADAY-ONLY EXIT LOGIC
-        # All positions live for hours, not days. Rules are time-of-day aware.
-        # EOD force-close at 3:15 PM is handled in check_expiry_and_stops()
-        # before this function is ever called.
-        # ════════════════════════════════════════════════════════════════════
+        pnl_pct = (curr_prem - entry_prem) / entry_prem if entry_prem > 0 else 0
 
-        now_t = _now_ist().time()
-        from datetime import time as _dtt3  # noqa: PLC0415
+        # ── 1. Underlying stop-loss ───────────────────────────────────────── #
+        if stop_level > 0 and entry_spot > 0:
+            if option_type == "call" and spot <= stop_level:
+                return True, 1.0, f"UNDERLYING_STOP: {spot:.0f} ≤ {stop_level:.0f}"
+            if option_type == "put" and spot >= stop_level:
+                return True, 1.0, f"UNDERLYING_STOP: {spot:.0f} ≥ {stop_level:.0f}"
 
-        # ── 1. Hard stop: -35% on premium ────────────────────────────────── #
-        # Tighter than before (-40%) — intraday positions have no recovery time.
-        if pnl_pct <= -0.35:
-            return True, f"STOP_LOSS ({pnl_pct:.0%})"
+        # ── 2. Premium crash backstop ─────────────────────────────────────── #
+        if pnl_pct <= -0.50:
+            return True, 1.0, f"PREMIUM_STOP (-50%)"
 
-        # ── 2. Big winner: lock any +25% gain immediately ────────────────── #
-        # Intraday option premium rarely sustains above +25% — book it.
-        if pnl_pct >= 0.25:
-            return True, f"INTRADAY_TARGET ({pnl_pct:.0%})"
+        # ── 3 & 4. R-multiple profit targets ─────────────────────────────── #
+        if initial_R > 0 and entry_spot > 0:
+            if option_type == "call":
+                t1_spot = entry_spot + 2 * initial_R
+                t2_spot = entry_spot + 3 * initial_R
+                at_t1 = spot >= t1_spot
+                at_t2 = spot >= t2_spot
+            else:
+                t1_spot = entry_spot - 2 * initial_R
+                t2_spot = entry_spot - 3 * initial_R
+                at_t1 = spot <= t1_spot
+                at_t2 = spot <= t2_spot
 
-        # ── 3. Profit-lock trailing stop ─────────────────────────────────── #
-        # Track peak P&L; once we've been up, stop retreating below the floor.
-        peak = pos.get("_peak_pnl_pct", pnl_pct)
-        if pnl_pct > peak:
-            pos["_peak_pnl_pct"] = pnl_pct
-            peak = pnl_pct
+            # T2 first (stricter) so we don't double-trigger on same bar
+            if t1_done and not t2_done and at_t2:
+                pos["_t2_done"] = True
+                return True, 0.25, f"T2_3R: underlying {option_type}={spot:.0f} target={t2_spot:.0f} ({pnl_pct:+.0%} prem)"
 
-        if peak >= 0.20:
-            floor = 0.10   # peaked +20% → never close below +10%
-        elif peak >= 0.12:
-            floor = 0.05   # peaked +12% → lock at least +5%
-        elif peak >= 0.08:
-            floor = 0.00   # peaked +8% → at least breakeven
-        else:
-            floor = None
+            if not t1_done and at_t1:
+                pos["_t1_done"] = True
+                return True, 0.5, f"T1_2R: underlying {option_type}={spot:.0f} target={t1_spot:.0f} ({pnl_pct:+.0%} prem)"
 
-        if floor is not None and pnl_pct < floor:
-            return True, f"PROFIT_LOCK (peak {peak:.0%} → {pnl_pct:.0%}, floor {floor:.0%})"
+        # ── 5. Max hold: 30 trading days ─────────────────────────────────── #
+        if age_days >= 42:   # 30 trading days ≈ 42 calendar days
+            return True, 1.0, f"MAX_HOLD (42 calendar days)"
 
-        # ── 4. Afternoon booking: any profit ≥5% after 1:30 PM ─────────── #
-        # In last 2 hours of trading, take whatever we have. Greeks decay fast.
-        if pnl_pct >= 0.05 and now_t >= _dtt3(13, 30):
-            return True, f"AFTERNOON_PROFIT ({pnl_pct:.0%} after 1:30PM)"
+        # ── 6. Near expiry: ≤7 days ──────────────────────────────────────── #
+        if days_left <= 7:
+            return True, 1.0, f"NEAR_EXPIRY ({days_left}d left — theta risk)"
 
-        # ── 5. Dead-money: flat after 3 hours ────────────────────────────── #
-        # If the thesis hasn't played out in 3h, it's not going to today.
-        # Replaces the old multi-day theta drain rule.
-        if age_hours >= 3.0 and abs(pnl_pct) < 0.05:
-            return True, f"DEAD_MONEY (held {age_hours:.1f}h, flat {pnl_pct:.0%})"
+        # ── 7. Theta drain: flat/losing after 10+ days ───────────────────── #
+        if age_days >= 10 and pnl_pct < -0.20:
+            return True, 1.0, f"THETA_DRAIN ({age_days}d, {pnl_pct:.0%})"
 
-        # ── 6. Pre-close tightening: only hold winners after 2:30 PM ─────── #
-        # After 2:30 PM if we're flat or losing, close and protect capital.
-        if now_t >= _dtt3(14, 30) and pnl_pct <= -0.05:
-            return True, f"PRECLOSE_STOP ({pnl_pct:.0%} after 2:30PM)"
-
-        return False, ""
+        return False, 0.0, ""
 
     def check_expiry_and_stops(self) -> list:
         """
-        Autonomous F&O exit management — no hardcoded targets.
-        Uses _dynamic_exit_decision() which reasons about profit-lock trailing,
-        intraday booking, near-expiry, theta drain, and market direction.
+        Swing framework exit management.
+        Uses _swing_exit_decision() — R-multiple targets on underlying,
+        underlying stop-loss, max hold (30 trading days), near-expiry close.
+
+        Supports partial exits: T1 closes 50%, T2 closes 25%, rest holds.
+        No intraday EOD force-close (swing positions carry overnight).
         """
         closed = []
-        from datetime import time as _dtt2  # noqa: PLC0415
 
         for pid, pos in list(self.state["positions"].items()):
             exp       = date.fromisoformat(pos["expiry"])
@@ -1242,42 +1337,39 @@ class FNOPortfolio:
                     closed.append(t)
                 continue
 
-            # ── 2. INTRADAY FORCE-CLOSE at 3:15–3:30 PM ─────────────────── #
-            # All F&O is intraday-only. Force-close window: 15:15–15:30 ONLY.
-            # Do NOT close on manual cycles run after market close (e.g. 19:00).
+            # ── 2. Only check LONG options during market hours ────────────── #
             now_t = _now_ist().time()
-            if _dtt2(15, 15) <= now_t <= _dtt2(15, 30):
-                logger.info(f"[FNO] EOD-CLOSE {pid} — intraday force-close at 3:15 PM")
-                t = self.close_option(pid, reason="EOD_INTRADAY_CLOSE") \
-                    if pos["instrument_type"] == "OPTION" \
-                    else self.close_future(pid, reason="EOD_INTRADAY_CLOSE")
-                if t:
-                    closed.append(t)
-                continue
-
-            # ── 3. Only check during 9:30–15:15 ─────────────────────────── #
-            if not (_dtt2(9, 30) <= now_t <= _dtt2(15, 15)):
+            if not (dt_time(9, 15) <= now_t <= dt_time(15, 20)):
                 continue
 
             if pos["instrument_type"] != "OPTION" or pos["position"] != "LONG":
                 continue
 
-            # ── 4. Minimum hold: 45 min (avoids open auction noise) ──────── #
-            # Reduced from 1.5h — intraday options can move decisively in 45 min.
-            age_hours = 0.0
+            # ── 3. Compute age in calendar days ──────────────────────────── #
+            age_days = 0
             entry_dt_str = pos.get("entry_date", "")
             if entry_dt_str:
                 try:
                     entry_dt = datetime.fromisoformat(entry_dt_str)
                     if entry_dt.tzinfo is None:
                         entry_dt = entry_dt.replace(tzinfo=_IST)
-                    age_hours = (_now_ist() - entry_dt).total_seconds() / 3600
-                    if age_hours < 0.75:  # 45 minutes
+                    age_days = (_now_ist() - entry_dt).days
+                except Exception:
+                    pass
+
+            # ── 4. Skip if held less than 15 minutes (avoids open noise) ─── #
+            if age_days == 0:
+                try:
+                    entry_dt = datetime.fromisoformat(entry_dt_str)
+                    if entry_dt.tzinfo is None:
+                        entry_dt = entry_dt.replace(tzinfo=_IST)
+                    age_mins = (_now_ist() - entry_dt).total_seconds() / 60
+                    if age_mins < 15:
                         continue
                 except Exception:
                     pass
 
-            # ── 4. Get current premium ────────────────────────────────────── #
+            # ── 5. Get current premium and spot ──────────────────────────── #
             curr_prem = self._get_curr_prem(pos)
             if not curr_prem or curr_prem <= 0:
                 continue
@@ -1286,18 +1378,23 @@ class FNOPortfolio:
             if entry_prem <= 0:
                 continue
 
-            cost    = entry_prem * pos["qty"] * get_lot_size(pos["underlying"])
-            pnl     = (curr_prem - entry_prem) * pos["qty"] * get_lot_size(pos["underlying"])
-            pnl_pct = pnl / cost if cost != 0 else 0
+            spot = self._get_spot(pos["underlying"])
 
-            # ── 5. Autonomous exit decision ───────────────────────────────── #
-            should_exit, exit_reason = self._dynamic_exit_decision(
-                pos, curr_prem, pnl_pct, days_left, age_hours
+            # ── 6. Swing exit decision (R-multiple logic) ─────────────────── #
+            should_exit, close_pct, exit_reason = self._swing_exit_decision(
+                pos, curr_prem, spot, days_left, age_days
             )
 
             if should_exit:
-                logger.info(f"[FNO] EXIT {pid} prem={curr_prem:.2f} pnl={pnl_pct:.0%} — {exit_reason}")
-                t = self.close_option(pid, reason=exit_reason)
+                pnl_pct = (curr_prem - entry_prem) / entry_prem if entry_prem else 0
+                logger.info(
+                    f"[FNO] EXIT {pid} spot={spot:.0f} prem={curr_prem:.2f} "
+                    f"pnl={pnl_pct:.0%} close={close_pct:.0%} — {exit_reason}"
+                )
+                if close_pct < 1.0 and pos["qty"] > 1:
+                    t = self.partial_close_option(pid, close_pct, reason=exit_reason)
+                else:
+                    t = self.close_option(pid, reason=exit_reason)
                 if t:
                     t["reason"] = exit_reason
                     closed.append(t)
