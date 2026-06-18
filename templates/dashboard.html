@@ -6050,7 +6050,21 @@ function _setKiteToggle(desk, isLive) {
 
 async function setKiteMode(desk, mode) {
   const isLive = mode === 'live';
-  if (isLive && !confirm(`Enable LIVE trading for ${desk.toUpperCase()} on Zerodha?\n\nReal orders will be placed. Only proceed if you are fully ready.`)) return;
+  if (isLive) {
+    const go = confirm(
+      `⚠️ SWITCHING TO LIVE — ${desk.toUpperCase()} DESK\n\n` +
+      `This will:\n` +
+      `  1. Archive your paper trade history\n` +
+      `  2. Reset the portfolio to starting capital\n` +
+      `  3. Start placing REAL orders on Zerodha\n\n` +
+      `Proceed?`
+    );
+    if (!go) return;
+    // Archive paper history and reset portfolio
+    const rr = await fetch('/api/reset_for_live', {method: 'POST', headers: {'Content-Type':'application/json'}});
+    const rd = await rr.json();
+    if (!rd.ok) { alert('Reset failed: ' + (rd.error || 'unknown')); return; }
+  }
   const key = desk === 'equity' || desk === 'eq' ? 'equity_paper_mode' : 'fno_paper_mode';
   const body = {};
   body[key] = !isLive;
@@ -7711,7 +7725,9 @@ async function loadAgentAccounts() {
       <div style="display:grid;grid-template-columns:1.6fr 1fr;gap:12px;margin-top:16px">
         <div style="border:1px solid var(--border);padding:14px;background:var(--panel)">
           <div style="font-size:10px;color:var(--cyan);letter-spacing:1px;margin-bottom:10px">MONTHLY P&L</div>
-          <canvas id="accMonthlyChart" height="120"></canvas>
+          <div style="position:relative;height:180px">
+            <canvas id="accMonthlyChart"></canvas>
+          </div>
         </div>
         <div style="border:1px solid var(--border);padding:14px;background:var(--panel)">
           <div style="font-size:10px;color:var(--cyan);letter-spacing:1px;margin-bottom:10px">FEE DRAG BREAKDOWN (LIFETIME)</div>

@@ -778,6 +778,62 @@ def api_full_reset():
     })
 
 
+@app.route("/api/reset_for_live", methods=["POST"])
+def api_reset_for_live():
+    """
+    Archive paper trade history then wipe the slate clean for live trading.
+    Called automatically when the dashboard EQ toggle switches to LIVE.
+    Steps:
+      1. Archive data/trade_log.json  → data/trade_log_paper_YYYYMMDD.json
+      2. Archive data/fno_trades.json → data/fno_trades_paper_YYYYMMDD.json
+      3. Full system reset (equity + F&O portfolios, signals, live_orders)
+    """
+    import json as _json
+    from pathlib import Path as _Path
+    from datetime import date as _date
+
+    stamp   = _date.today().strftime("%Y%m%d")
+    data_dir = _Path("data")
+    archived = []
+
+    for src_name, dst_name in [
+        ("trade_log.json",  f"trade_log_paper_{stamp}.json"),
+        ("fno_trades.json", f"fno_trades_paper_{stamp}.json"),
+    ]:
+        src = data_dir / src_name
+        dst = data_dir / dst_name
+        if src.exists() and src.stat().st_size > 2:
+            dst.write_text(src.read_text())
+            archived.append(dst_name)
+
+    # Full reset — reuse existing endpoint logic
+    body    = request.get_json(force=True, silent=True) or {}
+    capital = int(body.get("capital", int(os.getenv("NSE_CAPITAL", 1_300_000))))
+    get_agent().portfolio.reset(capital=capital)
+    DataFetcher.clear_cache()
+    try:
+        from fno_engine import get_fno_agent
+        get_fno_agent().portfolio.reset()
+    except Exception:
+        pass
+    for fname in ["data/trade_log.json", "data/fno_trades.json",
+                  "data/signals.json", "data/live_orders.json"]:
+        p = _Path(fname)
+        if p.exists():
+            p.write_text("[]" if fname.endswith(".json") and "signals" not in fname else "{}" if "signals" in fname else "[]")
+
+    logging.getLogger(__name__).info(
+        f"🔴 LIVE MODE ACTIVATED — paper history archived ({', '.join(archived) or 'none'}), "
+        f"portfolio reset to ₹{capital:,.0f}"
+    )
+    return jsonify({
+        "ok":      True,
+        "archived": archived,
+        "message":  f"Paper history archived. Live trading starts fresh at ₹{capital:,.0f}.",
+        "capital":  capital,
+    })
+
+
 # ── Live trading controls ─────────────────────────────────────────────────────
 
 @app.route("/api/trader/status")
