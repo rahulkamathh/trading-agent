@@ -435,6 +435,7 @@
     <div class="nav-item" data-view="ag-tax" onclick="showView('ag-tax')"><span class="fkey" style="font-size:8px">TX</span>Tax</div>
     <div class="nav-item" data-view="ag-fii" onclick="showView('ag-fii')"><span class="fkey" style="font-size:8px">FI</span>FII/DII</div>
     <div class="nav-item" data-view="ag-execution" onclick="showView('ag-execution')"><span class="fkey" style="font-size:8px">EX</span>Execution</div>
+    <div class="nav-item" data-view="ag-broker" onclick="showView('ag-broker')"><span class="fkey" style="font-size:8px">BR</span>Broker</div>
   </div>
 </nav>
 
@@ -1413,6 +1414,19 @@
     </div>
   </div>
 
+  <!-- Broker Agent (Zerodha Kite Connect) -->
+  <div id="page-ag-broker" class="page-section hidden">
+    <div class="page-header">
+      <span class="page-title">Zerodha Kite Broker</span>
+      <span id="agBrokerTs" style="font-size:10px;color:var(--muted)"></span>
+      <button onclick="runKiteAuth()" class="btn btn-primary" style="margin-left:auto;font-size:10px;padding:4px 14px;letter-spacing:1px">RUN AUTH</button>
+    </div>
+    <div id="agBrokerError" class="hidden" style="background:#1a0a0a;border:1px solid #ff3b3055;padding:12px 16px;margin-bottom:12px;color:var(--red);font-size:11px"></div>
+    <div id="agBrokerBody">
+      <div style="color:var(--muted);padding:40px;text-align:center;font-size:11px">Loading broker data…</div>
+    </div>
+  </div>
+
   <div id="page-screener" class="page-section hidden">
     <!-- Search bar -->
     <div style="display:flex;gap:8px;margin-bottom:14px;align-items:center">
@@ -1951,7 +1965,7 @@ function closeSidebar() {
 // ══════════════════════════════════════════════
 let _currentView = 'overview';
 
-const _ALL_PAGES = ['master','overview','portfolio','fno-overview','fno-signals','fno-trades','fno-charts','fno-strategy','positions','signals','trades','controls','report','telegram','screener','agentlog','calendar','fno','leaderboard','ag-risk','ag-regime','ag-news','ag-tax','ag-fii','ag-execution'];
+const _ALL_PAGES = ['master','overview','portfolio','fno-overview','fno-signals','fno-trades','fno-charts','fno-strategy','positions','signals','trades','controls','report','telegram','screener','agentlog','calendar','fno','leaderboard','ag-risk','ag-regime','ag-news','ag-tax','ag-fii','ag-execution','ag-broker'];
 const _lazyLoaded = new Set();
 
 function showView(view) {
@@ -2032,6 +2046,8 @@ function showView(view) {
         loadAgentFii();
       } else if (view === 'ag-execution') {
         loadAgentExecution();
+      } else if (view === 'ag-broker') {
+        loadAgentBroker();
       }
     }
   }
@@ -7162,6 +7178,193 @@ async function loadAgentExecution() {
     `;
   } catch(e) {
     body.innerHTML = _agentErrorCard(e.message);
+  }
+}
+
+// ── Broker Agent (Zerodha Kite Connect) ──────────────────────────────────────
+
+async function loadAgentBroker() {
+  const body  = document.getElementById('agBrokerBody');
+  const errEl = document.getElementById('agBrokerError');
+  const tsEl  = document.getElementById('agBrokerTs');
+  if (!body) return;
+  body.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center;font-size:11px">Fetching broker data…</div>';
+  try {
+    const r = await fetch('/api/kite/dashboard');
+    const d = await r.json();
+    if (d.error) {
+      errEl.textContent = d.error; errEl.classList.remove('hidden');
+      body.innerHTML = ''; return;
+    }
+    errEl.classList.add('hidden');
+    tsEl.textContent = _agentTs();
+
+    const st      = d.status ?? {};
+    const margins = d.margins ?? {};
+    const pos     = d.positions ?? {};
+    const orders  = d.orders ?? [];
+    const paper   = d.paper_orders ?? [];
+
+    // Connection status badge
+    const connected   = st.connected ?? false;
+    const paperMode   = st.paper_mode ?? true;
+    const tokenValid  = st.token_valid ?? false;
+    const apiSet      = st.api_key_set ?? false;
+
+    const connColor = connected ? 'var(--green)' : (apiSet ? 'var(--yellow)' : 'var(--muted)');
+    const connLabel = connected ? '⬤ CONNECTED' : (apiSet ? '⬤ CONFIGURED – NOT CONNECTED' : '⬤ NOT CONFIGURED');
+    const modeColor = paperMode ? 'var(--amber)' : 'var(--red)';
+    const modeLabel = paperMode ? 'PAPER MODE' : '🔴 LIVE TRADING';
+
+    // Token info
+    const tokenMasked = st.token_masked ?? null;
+    const tokenExp    = st.token_expires_at ? new Date(st.token_expires_at).toLocaleString('en-IN',{timeZone:'Asia/Kolkata'}) : null;
+    const tokenGen    = st.token_generated_at ? new Date(st.token_generated_at).toLocaleString('en-IN',{timeZone:'Asia/Kolkata'}) : null;
+
+    // Net positions (Zerodha live)
+    const netPos = (pos.net ?? []).filter(p => p.quantity != 0);
+
+    body.innerHTML = `
+      <!-- Status row -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-bottom:14px">
+        <div class="card">
+          <div class="card-title">Connection</div>
+          <div style="color:${connColor};font-size:12px;font-weight:700;margin-top:4px">${connLabel}</div>
+          <div style="color:var(--muted);font-size:10px;margin-top:4px">Status: ${st.status ?? '—'}</div>
+        </div>
+        <div class="card">
+          <div class="card-title">Mode</div>
+          <div style="color:${modeColor};font-size:14px;font-weight:700;margin-top:4px">${modeLabel}</div>
+          <div style="color:var(--muted);font-size:10px;margin-top:4px">Set KITE_PAPER_MODE env var to switch</div>
+        </div>
+        <div class="card">
+          <div class="card-title">API Key</div>
+          <div style="font-size:11px;color:${apiSet ? 'var(--text)' : 'var(--red)'};margin-top:4px">${apiSet ? '✓ Configured' : '✗ Not set'}</div>
+          <div style="color:var(--muted);font-size:10px;margin-top:4px">Set KITE_API_KEY on Railway</div>
+        </div>
+        <div class="card">
+          <div class="card-title">Token</div>
+          <div style="font-size:11px;color:${tokenValid ? 'var(--green)' : 'var(--red)'};margin-top:4px">${tokenValid ? '✓ Valid' : '✗ Expired / None'}</div>
+          ${tokenMasked ? `<div style="color:var(--muted);font-size:9px;font-family:var(--mono)">${tokenMasked}</div>` : ''}
+          ${tokenExp ? `<div style="color:var(--muted);font-size:9px">Expires: ${tokenExp} IST</div>` : ''}
+        </div>
+      </div>
+
+      <!-- Margins row (only if connected) -->
+      ${connected && margins.available_cash != null ? `
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px">
+        <div class="card">
+          <div class="card-title">Available Cash</div>
+          <div style="font-size:18px;font-weight:700;color:var(--green);margin-top:4px">₹${Number(margins.available_cash).toLocaleString('en-IN',{minimumFractionDigits:2})}</div>
+        </div>
+        <div class="card">
+          <div class="card-title">Used Margin</div>
+          <div style="font-size:18px;font-weight:700;color:var(--amber);margin-top:4px">₹${Number(margins.used_margin ?? 0).toLocaleString('en-IN',{minimumFractionDigits:2})}</div>
+        </div>
+        <div class="card">
+          <div class="card-title">Net</div>
+          <div style="font-size:18px;font-weight:700;color:var(--text);margin-top:4px">₹${Number(margins.net ?? 0).toLocaleString('en-IN',{minimumFractionDigits:2})}</div>
+        </div>
+      </div>` : ''}
+
+      <!-- Live positions (if connected) -->
+      ${connected && netPos.length ? `
+      <div class="card full-row" style="margin-bottom:14px">
+        <div class="card-title">Zerodha Live Positions (${netPos.length})</div>
+        <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:11px">
+          <thead><tr style="color:var(--muted);font-size:9px;letter-spacing:.5px">
+            <th style="text-align:left;padding:3px 6px">SYMBOL</th>
+            <th style="text-align:right;padding:3px 6px">QTY</th>
+            <th style="text-align:right;padding:3px 6px">AVG PRICE</th>
+            <th style="text-align:right;padding:3px 6px">LTP</th>
+            <th style="text-align:right;padding:3px 6px">P&amp;L</th>
+          </tr></thead>
+          <tbody>
+          ${netPos.map(p => {
+            const pnl = p.pnl ?? p.unrealised ?? 0;
+            const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+            return `<tr style="border-top:1px solid var(--border)">
+              <td style="padding:4px 6px;color:var(--amber)">${p.tradingsymbol ?? p.symbol}</td>
+              <td style="padding:4px 6px;text-align:right">${p.quantity}</td>
+              <td style="padding:4px 6px;text-align:right">₹${Number(p.average_price ?? 0).toFixed(2)}</td>
+              <td style="padding:4px 6px;text-align:right">₹${Number(p.last_price ?? 0).toFixed(2)}</td>
+              <td style="padding:4px 6px;text-align:right;color:${pnlColor}">${pnl >= 0 ? '+' : ''}₹${Number(pnl).toFixed(0)}</td>
+            </tr>`;
+          }).join('')}
+          </tbody>
+        </table>
+      </div>` : ''}
+
+      <!-- Paper orders log -->
+      <div class="card full-row">
+        <div class="card-title">Paper Orders Log (last 20)</div>
+        ${paper.length ? `
+        <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:11px">
+          <thead><tr style="color:var(--muted);font-size:9px;letter-spacing:.5px">
+            <th style="text-align:left;padding:3px 6px">TIME</th>
+            <th style="text-align:left;padding:3px 6px">SYMBOL</th>
+            <th style="text-align:center;padding:3px 6px">ACTION</th>
+            <th style="text-align:right;padding:3px 6px">QTY</th>
+            <th style="text-align:right;padding:3px 6px">PRICE</th>
+            <th style="text-align:center;padding:3px 6px">TYPE</th>
+            <th style="text-align:center;padding:3px 6px">STATUS</th>
+          </tr></thead>
+          <tbody>
+          ${paper.map(o => {
+            const ac = (o.action ?? '').toUpperCase();
+            const acColor = ac === 'BUY' ? 'var(--green)' : 'var(--red)';
+            const ts = o.timestamp ? new Date(o.timestamp).toLocaleString('en-IN',{timeZone:'Asia/Kolkata',hour12:false}).slice(0,17) : '—';
+            return `<tr style="border-top:1px solid var(--border)">
+              <td style="padding:3px 6px;color:var(--muted);font-size:9px;font-family:var(--mono)">${ts}</td>
+              <td style="padding:3px 6px;color:var(--amber)">${o.symbol ?? o.ticker}</td>
+              <td style="padding:3px 6px;text-align:center;color:${acColor};font-weight:700">${ac}</td>
+              <td style="padding:3px 6px;text-align:right">${o.qty ?? 0}</td>
+              <td style="padding:3px 6px;text-align:right">${o.order_type === 'MARKET' ? 'MARKET' : '₹'+(o.price??0).toFixed(2)}</td>
+              <td style="padding:3px 6px;text-align:center;font-size:9px;color:var(--muted)">${o.product ?? 'CNC'}</td>
+              <td style="padding:3px 6px;text-align:center;font-size:9px;color:var(--green)">${o.status ?? '—'}</td>
+            </tr>`;
+          }).join('')}
+          </tbody>
+        </table>` : '<div style="color:var(--muted);font-size:11px;padding:16px;text-align:center">No paper orders yet. Orders will appear here when the engine executes signals.</div>'}
+      </div>
+
+      <!-- Setup guide (when not configured) -->
+      ${!apiSet ? `
+      <div class="card full-row" style="margin-top:14px;border-left:3px solid var(--amber)">
+        <div class="card-title" style="color:var(--amber)">Setup Instructions</div>
+        <div style="font-size:11px;line-height:1.8;margin-top:8px;color:var(--muted)">
+          1. Subscribe at <span style="color:var(--cyan)">developers.kite.trade</span> (₹2,000/month)<br>
+          2. Create an app → note your API Key + API Secret<br>
+          3. Enable TOTP 2FA in Zerodha app → save the raw TOTP secret<br>
+          4. Add these Railway env vars:<br>
+          &nbsp;&nbsp;<span style="color:var(--text);font-family:var(--mono)">KITE_API_KEY, KITE_API_SECRET, KITE_USER_ID, KITE_PASSWORD, KITE_TOTP_SECRET</span><br>
+          5. Click <b>RUN AUTH</b> above to authenticate and generate today's token<br>
+          6. Auth runs automatically at 8:30am IST daily via background scheduler
+        </div>
+      </div>` : ''}
+    `;
+  } catch(e) {
+    body.innerHTML = _agentErrorCard(e.message);
+  }
+}
+
+async function runKiteAuth() {
+  const errEl = document.getElementById('agBrokerError');
+  errEl.classList.add('hidden');
+  try {
+    const r = await fetch('/api/kite/run_auth', {method:'POST'});
+    const d = await r.json();
+    if (d.success) {
+      // Reload the page data
+      _lazyLoaded.delete('ag-broker');
+      loadAgentBroker();
+    } else {
+      errEl.textContent = d.message ?? d.error ?? 'Auth failed';
+      errEl.classList.remove('hidden');
+    }
+  } catch(e) {
+    errEl.textContent = 'Auth request failed: ' + e.message;
+    errEl.classList.remove('hidden');
   }
 }
 

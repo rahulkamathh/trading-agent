@@ -2294,6 +2294,86 @@ def _background_loop() -> None:
             time.sleep(min(300, secs))
 
 
+# ── Kite Connect broker integration ──────────────────────────────────────────
+try:
+    from kite_broker import get_broker as _get_broker
+    from kite_auth import run_auth as _kite_run_auth, token_info as _kite_token_info, start_daily_auth_scheduler as _kite_start_scheduler
+    _KITE_AVAILABLE = True
+except ImportError:
+    _get_broker = None
+    _KITE_AVAILABLE = False
+
+
+@app.route("/api/kite/status")
+def api_kite_status():
+    """Kite connection status and token info."""
+    if not _KITE_AVAILABLE or not _get_broker:
+        return jsonify({"connected": False, "status": "NOT_CONFIGURED", "paper_mode": True})
+    try:
+        return jsonify(_get_broker().connection_status())
+    except Exception as e:
+        return jsonify({"connected": False, "error": str(e)}), 500
+
+
+@app.route("/api/kite/dashboard")
+def api_kite_dashboard():
+    """Full broker dashboard data."""
+    if not _KITE_AVAILABLE or not _get_broker:
+        return jsonify({"status": {"connected": False, "status": "NOT_CONFIGURED"}, "paper_orders": []})
+    try:
+        return jsonify(_get_broker().get_dashboard_data())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/kite/run_auth", methods=["POST"])
+def api_kite_run_auth():
+    """Trigger Kite auth manually."""
+    if not _KITE_AVAILABLE:
+        return jsonify({"ok": False, "error": "Kite not configured"}), 503
+    try:
+        import threading
+        from kite_broker import reset_kite_session
+        def _do_auth():
+            reset_kite_session()
+            _kite_run_auth()
+        threading.Thread(target=_do_auth, daemon=True).start()
+        return jsonify({"ok": True, "message": "Auth started in background — check /api/kite/status in 30s"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/kite/set_token", methods=["POST"])
+def api_kite_set_token():
+    """Manually set an access token (fallback when automated auth fails)."""
+    if not _KITE_AVAILABLE:
+        return jsonify({"ok": False, "error": "Kite not configured"}), 503
+    body = request.get_json(silent=True) or {}
+    access_token = body.get("access_token", "").strip()
+    if not access_token:
+        return jsonify({"ok": False, "error": "access_token required"}), 400
+    try:
+        from kite_auth import save_token
+        from kite_broker import reset_kite_session
+        save_token(access_token)
+        reset_kite_session()
+        return jsonify({"ok": True, "message": "Token saved successfully"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/kite/paper_orders")
+def api_kite_paper_orders():
+    """Get recent paper orders log."""
+    if not _KITE_AVAILABLE or not _get_broker:
+        return jsonify([])
+    try:
+        limit = int(request.args.get("limit", 50))
+        return jsonify(_get_broker().get_paper_orders(limit))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # ── Entry point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -2624,6 +2704,16 @@ if __name__ == "__main__":
 
     threading.Thread(target=_commodity_loop, daemon=True, name="commodity-loop").start()
     print("  🥇  Commodity desk started (15-min loop, MCX paper trading)")
+
+    # ── Kite Connect daily auth scheduler ────────────────────────────────────
+    if _KITE_AVAILABLE:
+        try:
+            _kite_start_scheduler()
+            print("  📡  Kite Connect auth scheduler started (daily 8:30 IST)")
+        except Exception as _ke:
+            print(f"  ⚠️   Kite scheduler not started: {_ke}")
+    else:
+        print("  💡  Kite Connect not configured — set KITE_API_KEY to enable")
 
     print("\n" + "=" * 60)
     print("  🇮🇳  Indian Institutional Trading Agent  —  Paper Mode")
