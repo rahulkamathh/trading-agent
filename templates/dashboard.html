@@ -937,6 +937,14 @@
         <button class="btn btn-amber" onclick="migrateFnoCapital()" style="font-size:12px">Fix Capital Split (₹11L eq + ₹2L FnO)</button>
         <span id="migrateFnoMsg" style="font-size:11px;margin-left:10px;color:var(--muted)"></span>
       </div>
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
+          Restores ₹15,691 to equity cash — historical F&O losses that came from the old shared cash pool.
+          Only run once (idempotent).
+        </div>
+        <button class="btn btn-ghost" onclick="restoreFnoGap()" style="font-size:12px">Restore ₹15,691 Equity Cash Gap</button>
+        <span id="restoreGapMsg" style="font-size:11px;margin-left:10px;color:var(--muted)"></span>
+      </div>
     </div>
 
     <!-- ── Capital Allocation ────────────────────────────────────────── -->
@@ -3000,6 +3008,23 @@ async function migrateFnoCapital() {
     msg.style.color = d.skipped ? 'var(--muted)' : 'var(--green)';
     msg.textContent = '✓ ' + d.message;
     toast(d.message, 'success');
+  } else {
+    msg.style.color = 'var(--red)';
+    msg.textContent = '⚠ ' + d.error;
+  }
+}
+
+async function restoreFnoGap() {
+  const msg = document.getElementById('restoreGapMsg');
+  msg.style.color = 'var(--muted)';
+  msg.textContent = 'Running…';
+  const r = await fetch('/api/restore_fno_cash_gap', {method:'POST'});
+  const d = await r.json();
+  if (d.ok) {
+    msg.style.color = d.skipped ? 'var(--muted)' : 'var(--green)';
+    msg.textContent = '✓ ' + d.message;
+    toast(d.message, 'success');
+    loadDashboard();  // refresh KPIs
   } else {
     msg.style.color = 'var(--red)';
     msg.textContent = '⚠ ' + d.error;

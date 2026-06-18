@@ -790,6 +790,26 @@ def api_migrate_fno_capital():
     })
 
 
+@app.route("/api/restore_fno_cash_gap", methods=["POST"])
+def api_restore_fno_cash_gap():
+    """One-time correction: add back ₹15,691 to equity cash that was lost to F&O
+    when both pools shared a single cash account (before pool separation).
+    Safe to call multiple times — checks a flag to prevent double-applying."""
+    port = get_agent().portfolio
+    if port.state.get("_fno_gap_restored"):
+        return jsonify({"ok": True, "skipped": True,
+                        "message": "Already applied — correction was previously run"})
+    GAP = 15_691.0
+    port.state["cash"] += GAP
+    port.state["_fno_gap_restored"] = True
+    port.state["day_start_value"] = round(port.get_total_value(), 2)
+    port._save()
+    logging.getLogger(__name__).info(f"✅ Equity cash gap restored: +₹{GAP:,.0f} added back")
+    return jsonify({"ok": True, "restored": GAP,
+                    "equity_cash": round(port.state["cash"], 2),
+                    "message": f"₹{GAP:,.0f} restored to equity cash (historical F&O gap)"})
+
+
 @app.route("/api/set_interval", methods=["POST"])
 def api_set_interval():
     """Set the auto-run interval in seconds (minimum 60)."""
