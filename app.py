@@ -25,6 +25,41 @@ from flask import Flask, jsonify, request, send_from_directory, session, redirec
 from engine import INITIAL_CAPITAL, INDEX_TICKERS, DataFetcher, get_agent
 from angelone_feed import get_feed
 
+# ── Hedge fund agents ────────────────────────────────────────────────────────
+try:
+    from risk_agent import get_risk_agent
+except ImportError: get_risk_agent = None
+try:
+    from regime_agent import get_regime_agent
+except ImportError: get_regime_agent = None
+try:
+    from fii_agent import get_fii_agent
+except ImportError: get_fii_agent = None
+try:
+    from fundamental_agent import get_fundamental_agent
+except ImportError: get_fundamental_agent = None
+try:
+    from backtest_agent import get_backtest_agent
+except ImportError: get_backtest_agent = None
+try:
+    from tax_agent import get_tax_agent
+except ImportError: get_tax_agent = None
+try:
+    from report_agent import get_report_agent
+except ImportError: get_report_agent = None
+try:
+    from slippage_agent import get_slippage_agent
+except ImportError: get_slippage_agent = None
+try:
+    from news_agent import get_news_agent
+except ImportError: get_news_agent = None
+try:
+    from insider_agent import get_insider_agent
+except ImportError: get_insider_agent = None
+try:
+    from execution_agent import get_execution_agent
+except ImportError: get_execution_agent = None
+
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
 # ── Auth config ───────────────────────────────────────────────────────────────
@@ -1099,6 +1134,147 @@ def api_chart(ticker: str):
     if df.empty:
         return jsonify({"ok": False, "error": f"No data for {ticker}"}), 500
     return jsonify(_build_ohlcv_response(df, period, ticker))
+
+# ── Hedge fund agent endpoints ───────────────────────────────────────────────
+
+@app.route('/api/agents/risk')
+def api_agents_risk():
+    if not get_risk_agent: return jsonify({"error": "risk_agent not loaded"}), 503
+    try:
+        agent = get_agent()
+        portfolio = agent.portfolio
+        positions = []
+        for ticker, pos in portfolio.state.get('positions', {}).items():
+            ltp = DataFetcher.get_current_price(ticker) or pos['avg_price']
+            pnl_pct = (ltp - pos['avg_price']) / pos['avg_price'] * 100
+            positions.append({'ticker': ticker, 'qty': pos['qty'], 'avg_price': pos['avg_price'], 'ltp': ltp, 'pnl_pct': pnl_pct})
+        cash = portfolio.available_cash()
+        total = portfolio.get_total_value()
+        return jsonify(get_risk_agent().run(positions, cash, total))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/agents/regime')
+def api_agents_regime():
+    if not get_regime_agent: return jsonify({"error": "regime_agent not loaded"}), 503
+    try:
+        return jsonify(get_regime_agent().get_dashboard_data())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/agents/fii')
+def api_agents_fii():
+    if not get_fii_agent: return jsonify({"error": "fii_agent not loaded"}), 503
+    try:
+        return jsonify(get_fii_agent().get_dashboard_data())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/agents/fundamentals')
+def api_agents_fundamentals():
+    if not get_fundamental_agent: return jsonify({"error": "fundamental_agent not loaded"}), 503
+    try:
+        return jsonify(get_fundamental_agent().get_dashboard_data())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/agents/fundamentals/run', methods=['POST'])
+def api_agents_fundamentals_run():
+    if not get_fundamental_agent: return jsonify({"error": "fundamental_agent not loaded"}), 503
+    try:
+        result = get_fundamental_agent().run_screen()
+        return jsonify({"status": "ok", "screened": len(result)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/agents/backtest')
+def api_agents_backtest():
+    if not get_backtest_agent: return jsonify({"error": "backtest_agent not loaded"}), 503
+    try:
+        return jsonify(get_backtest_agent().get_dashboard_data())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/agents/backtest/run', methods=['POST'])
+def api_agents_backtest_run():
+    if not get_backtest_agent: return jsonify({"error": "backtest_agent not loaded"}), 503
+    try:
+        result = get_backtest_agent().run_portfolio_backtest()
+        return jsonify({"status": "ok", "tickers_run": len(result.get("results", []))})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/agents/tax')
+def api_agents_tax():
+    if not get_tax_agent: return jsonify({"error": "tax_agent not loaded"}), 503
+    try:
+        return jsonify(get_tax_agent().get_dashboard_data())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/agents/report')
+def api_agents_report():
+    if not get_report_agent: return jsonify({"error": "report_agent not loaded"}), 503
+    try:
+        return jsonify(get_report_agent().get_dashboard_data())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/agents/slippage')
+def api_agents_slippage():
+    if not get_slippage_agent: return jsonify({"error": "slippage_agent not loaded"}), 503
+    try:
+        agent = get_agent()
+        trades = agent.portfolio.get_trade_log()
+        return jsonify(get_slippage_agent().get_dashboard_data())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/agents/news')
+def api_agents_news():
+    if not get_news_agent: return jsonify({"error": "news_agent not loaded"}), 503
+    try:
+        return jsonify(get_news_agent().get_dashboard_data())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/agents/insider')
+def api_agents_insider():
+    if not get_insider_agent: return jsonify({"error": "insider_agent not loaded"}), 503
+    try:
+        agent = get_agent()
+        positions = list(agent.portfolio.state.get('positions', {}).keys())
+        return jsonify(get_insider_agent().get_dashboard_data())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/agents/execution')
+def api_agents_execution():
+    if not get_execution_agent: return jsonify({"error": "execution_agent not loaded"}), 503
+    try:
+        agent = get_agent()
+        total = agent.portfolio.get_total_value()
+        return jsonify(get_execution_agent().get_dashboard_data())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/agents/all')
+def api_agents_all():
+    """Single endpoint returning status summary of all hedge fund agents."""
+    results = {}
+    agents = {
+        'risk':   lambda: get_risk_agent().get_risk_summary() if get_risk_agent else {"error": "not loaded"},
+        'regime': lambda: get_regime_agent().get_dashboard_data() if get_regime_agent else {"error": "not loaded"},
+        'fii':    lambda: {'signal': get_fii_agent().get_flow_signal()} if get_fii_agent else {"error": "not loaded"},
+        'news':   lambda: get_news_agent().get_market_sentiment() if get_news_agent else {"error": "not loaded"},
+    }
+    for name, fn in agents.items():
+        try:
+            results[name] = fn()
+        except Exception as e:
+            results[name] = {'error': str(e)}
+    return jsonify(results)
+
 
 # ── Background loop ──────────────────────────────────────────────────────────
 

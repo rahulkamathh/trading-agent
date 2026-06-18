@@ -421,6 +421,20 @@
     <div class="nav-item" data-view="controls" onclick="showView('controls')"><span class="fkey">F10</span>Controls</div>
     <div class="nav-item" data-view="report" onclick="showView('report')"><span class="fkey">F11</span>Daily Report</div>
     <div class="nav-item" data-view="calendar" onclick="showView('calendar')"><span class="fkey">F12</span>P&amp;L Calendar</div>
+    <div class="nav-item" data-view="intelligence" onclick="showView('intelligence')"><span class="fkey" style="font-size:8px">INT</span>Intelligence</div>
+    <div class="nav-item" data-view="riskdash" onclick="showView('riskdash')"><span class="fkey" style="font-size:8px">RSK</span>Risk Dashboard</div>
+    <div class="nav-item" data-view="analytics" onclick="showView('analytics')"><span class="fkey" style="font-size:8px">ANA</span>Analytics</div>
+  </div>
+
+  <!-- Agents group — shown on equity & fno desks alongside tools -->
+  <div id="navGrpAgents" style="display:none">
+    <div class="nav-group-label">AGENTS</div>
+    <div class="nav-item" data-view="ag-risk" onclick="showView('ag-risk')"><span class="fkey" style="font-size:8px">RK</span>Risk</div>
+    <div class="nav-item" data-view="ag-regime" onclick="showView('ag-regime')"><span class="fkey" style="font-size:8px">RG</span>Regime</div>
+    <div class="nav-item" data-view="ag-news" onclick="showView('ag-news')"><span class="fkey" style="font-size:8px">NW</span>News</div>
+    <div class="nav-item" data-view="ag-tax" onclick="showView('ag-tax')"><span class="fkey" style="font-size:8px">TX</span>Tax</div>
+    <div class="nav-item" data-view="ag-fii" onclick="showView('ag-fii')"><span class="fkey" style="font-size:8px">FI</span>FII/DII</div>
+    <div class="nav-item" data-view="ag-execution" onclick="showView('ag-execution')"><span class="fkey" style="font-size:8px">EX</span>Execution</div>
   </div>
 </nav>
 
@@ -1324,6 +1338,81 @@
   <!-- ══ Group Feed page ══ -->
   <div id="page-groupfeed" class="page-section hidden"></div>
   <div id="page-news" class="page-section hidden"></div>
+
+  <!-- ══ AGENT PAGES ══ -->
+
+  <!-- Risk Agent -->
+  <div id="page-ag-risk" class="page-section hidden">
+    <div class="page-header">
+      <span class="page-title">Risk Agent</span>
+      <span id="agRiskTs" style="font-size:10px;color:var(--muted)"></span>
+    </div>
+    <div id="agRiskError" class="hidden" style="background:#1a0a0a;border:1px solid #ff3b3055;padding:12px 16px;margin-bottom:12px;color:var(--red);font-size:11px"></div>
+    <div id="agRiskBody">
+      <div style="color:var(--muted);padding:40px;text-align:center;font-size:11px">Loading risk data…</div>
+    </div>
+  </div>
+
+  <!-- Regime Agent -->
+  <div id="page-ag-regime" class="page-section hidden">
+    <div class="page-header">
+      <span class="page-title">Market Regime</span>
+      <span id="agRegimeTs" style="font-size:10px;color:var(--muted)"></span>
+    </div>
+    <div id="agRegimeError" class="hidden" style="background:#1a0a0a;border:1px solid #ff3b3055;padding:12px 16px;margin-bottom:12px;color:var(--red);font-size:11px"></div>
+    <div id="agRegimeBody">
+      <div style="color:var(--muted);padding:40px;text-align:center;font-size:11px">Loading regime data…</div>
+    </div>
+  </div>
+
+  <!-- News Agent -->
+  <div id="page-ag-news" class="page-section hidden">
+    <div class="page-header">
+      <span class="page-title">News Sentiment</span>
+      <span id="agNewsTs" style="font-size:10px;color:var(--muted)"></span>
+    </div>
+    <div id="agNewsError" class="hidden" style="background:#1a0a0a;border:1px solid #ff3b3055;padding:12px 16px;margin-bottom:12px;color:var(--red);font-size:11px"></div>
+    <div id="agNewsBody">
+      <div style="color:var(--muted);padding:40px;text-align:center;font-size:11px">Loading news data…</div>
+    </div>
+  </div>
+
+  <!-- Tax Agent -->
+  <div id="page-ag-tax" class="page-section hidden">
+    <div class="page-header">
+      <span class="page-title">Tax Optimiser</span>
+      <span id="agTaxTs" style="font-size:10px;color:var(--muted)"></span>
+    </div>
+    <div id="agTaxError" class="hidden" style="background:#1a0a0a;border:1px solid #ff3b3055;padding:12px 16px;margin-bottom:12px;color:var(--red);font-size:11px"></div>
+    <div id="agTaxBody">
+      <div style="color:var(--muted);padding:40px;text-align:center;font-size:11px">Loading tax data…</div>
+    </div>
+  </div>
+
+  <!-- FII/DII Agent -->
+  <div id="page-ag-fii" class="page-section hidden">
+    <div class="page-header">
+      <span class="page-title">FII / DII Flows</span>
+      <span id="agFiiTs" style="font-size:10px;color:var(--muted)"></span>
+    </div>
+    <div id="agFiiError" class="hidden" style="background:#1a0a0a;border:1px solid #ff3b3055;padding:12px 16px;margin-bottom:12px;color:var(--red);font-size:11px"></div>
+    <div id="agFiiBody">
+      <div style="color:var(--muted);padding:40px;text-align:center;font-size:11px">Loading FII/DII data…</div>
+    </div>
+  </div>
+
+  <!-- Execution Agent -->
+  <div id="page-ag-execution" class="page-section hidden">
+    <div class="page-header">
+      <span class="page-title">Execution Intelligence</span>
+      <span id="agExecTs" style="font-size:10px;color:var(--muted)"></span>
+    </div>
+    <div id="agExecError" class="hidden" style="background:#1a0a0a;border:1px solid #ff3b3055;padding:12px 16px;margin-bottom:12px;color:var(--red);font-size:11px"></div>
+    <div id="agExecBody">
+      <div style="color:var(--muted);padding:40px;text-align:center;font-size:11px">Loading execution data…</div>
+    </div>
+  </div>
+
   <div id="page-screener" class="page-section hidden">
     <!-- Search bar -->
     <div style="display:flex;gap:8px;margin-bottom:14px;align-items:center">
@@ -1862,7 +1951,7 @@ function closeSidebar() {
 // ══════════════════════════════════════════════
 let _currentView = 'overview';
 
-const _ALL_PAGES = ['master','overview','portfolio','fno-overview','fno-signals','fno-trades','fno-charts','fno-strategy','positions','signals','trades','controls','report','telegram','screener','agentlog','calendar','fno','leaderboard'];
+const _ALL_PAGES = ['master','overview','portfolio','fno-overview','fno-signals','fno-trades','fno-charts','fno-strategy','positions','signals','trades','controls','report','telegram','screener','agentlog','calendar','fno','leaderboard','ag-risk','ag-regime','ag-news','ag-tax','ag-fii','ag-execution'];
 const _lazyLoaded = new Set();
 
 function showView(view) {
@@ -1931,6 +2020,18 @@ function showView(view) {
       } else if (view === 'fno-strategy') {
         loadFNOStrategy();
       // events/commodity removed
+      } else if (view === 'ag-risk') {
+        loadAgentRisk();
+      } else if (view === 'ag-regime') {
+        loadAgentRegime();
+      } else if (view === 'ag-news') {
+        loadAgentNews();
+      } else if (view === 'ag-tax') {
+        loadAgentTax();
+      } else if (view === 'ag-fii') {
+        loadAgentFii();
+      } else if (view === 'ag-execution') {
+        loadAgentExecution();
       }
     }
   }
@@ -5712,9 +5813,10 @@ function switchDesk(desk) {
     if (el) el.classList.toggle('active', d === desk);
   });
   // Show/hide sidebar groups
-  document.getElementById('navGrpEq').style.display    = (desk === 'eq')  ? '' : 'none';
-  document.getElementById('navGrpFno').style.display   = (desk === 'fno') ? '' : 'none';
-  document.getElementById('navGrpTools').style.display = (desk !== 'master') ? '' : 'none';
+  document.getElementById('navGrpEq').style.display     = (desk === 'eq')  ? '' : 'none';
+  document.getElementById('navGrpFno').style.display    = (desk === 'fno') ? '' : 'none';
+  document.getElementById('navGrpTools').style.display  = (desk !== 'master') ? '' : 'none';
+  document.getElementById('navGrpAgents').style.display = (desk !== 'master') ? '' : 'none';
   // Highlight master nav item when on master
   var nm = document.getElementById('navMaster');
   if (nm) nm.classList.toggle('active', desk === 'master');
@@ -6603,6 +6705,458 @@ function _updateTickerTape(data) {
         }
       });
     }
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// AGENT PAGES — Risk, Regime, News, Tax, FII/DII, Execution
+// ══════════════════════════════════════════════════════════════════════
+
+function _agentErrorCard(msg) {
+  return `<div style="background:#1a0a0a;border:1px solid #ff3b3055;padding:16px;color:var(--red);font-size:11px">
+    Agent returned an error: ${msg}
+  </div>`;
+}
+
+function _agentTs(label) {
+  return `Last updated: ${new Date().toLocaleTimeString('en-IN')}`;
+}
+
+function _rupee(v) {
+  if (v == null) return '—';
+  const n = Number(v);
+  return '₹' + Math.abs(n).toLocaleString('en-IN', {maximumFractionDigits:0});
+}
+function _sign(v, suffix='') {
+  if (v == null) return '—';
+  const n = Number(v);
+  const s = n >= 0 ? '+' : '';
+  return s + n.toFixed(2) + suffix;
+}
+function _pnlClass(v) { return Number(v) >= 0 ? 'pos' : 'neg'; }
+
+// ── RISK ─────────────────────────────────────────────────────────────────────
+async function loadAgentRisk() {
+  const body = document.getElementById('agRiskBody');
+  const errEl = document.getElementById('agRiskError');
+  const tsEl  = document.getElementById('agRiskTs');
+  if (!body) return;
+  body.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center;font-size:11px">Fetching risk metrics…</div>';
+  try {
+    const r = await fetch('/api/agents/risk');
+    const d = await r.json();
+    if (d.error) {
+      errEl.textContent = d.error; errEl.classList.remove('hidden');
+      body.innerHTML = ''; return;
+    }
+    errEl.classList.add('hidden');
+    tsEl.textContent = _agentTs();
+
+    const var95    = d.var_95 ?? d.var95 ?? d.VaR_95 ?? null;
+    const beta     = d.beta   ?? d.portfolio_beta ?? null;
+    const sharpe   = d.sharpe ?? d.sharpe_ratio   ?? null;
+    const maxdd    = d.max_drawdown ?? d.maxDrawdown ?? null;
+    const conc     = d.concentration ?? d.top_concentration ?? null;
+    const corr     = d.top_correlations ?? d.correlations ?? [];
+
+    body.innerHTML = `
+      <div class="grid-4" style="margin-bottom:14px">
+        <div class="card"><div class="card-title">VaR 95%</div>
+          <div class="card-value ${var95 != null && Number(var95) < 0 ? 'neg' : ''}">${var95 != null ? _rupee(var95) : '—'}</div>
+          <div class="card-sub">1-day value at risk</div></div>
+        <div class="card"><div class="card-title">Portfolio Beta</div>
+          <div class="card-value">${beta != null ? Number(beta).toFixed(2) : '—'}</div>
+          <div class="card-sub">vs Nifty 50</div></div>
+        <div class="card"><div class="card-title">Sharpe Ratio</div>
+          <div class="card-value ${sharpe != null && Number(sharpe) >= 1 ? 'pos' : 'neu'}">${sharpe != null ? Number(sharpe).toFixed(2) : '—'}</div>
+          <div class="card-sub">risk-adjusted return</div></div>
+        <div class="card"><div class="card-title">Max Drawdown</div>
+          <div class="card-value neg">${maxdd != null ? Number(maxdd).toFixed(2) + '%' : '—'}</div>
+          <div class="card-sub">peak to trough</div></div>
+      </div>
+      ${conc != null ? `
+      <div class="card full-row" style="margin-bottom:14px">
+        <div class="card-title">Concentration Risk — Top Position</div>
+        <div style="display:flex;align-items:center;gap:12px;margin-top:6px">
+          <div style="flex:1;background:#111;height:10px">
+            <div style="height:100%;background:${Number(conc) > 15 ? 'var(--red)' : 'var(--amber)'};width:${Math.min(100,Number(conc))}%"></div>
+          </div>
+          <div style="font-size:13px;font-weight:600;color:${Number(conc) > 15 ? 'var(--red)' : 'var(--amber)'}">${Number(conc).toFixed(1)}%</div>
+        </div>
+        <div class="card-sub" style="margin-top:4px">Max allowed: 8% per position (15% threshold flagged)</div>
+      </div>` : ''}
+      ${corr && corr.length ? `
+      <div class="card full-row">
+        <div class="card-title">Top Correlated Pairs</div>
+        <div class="table-wrap" style="margin-top:8px"><table>
+          <thead><tr><th>Ticker A</th><th>Ticker B</th><th>Correlation</th><th>Risk</th></tr></thead>
+          <tbody>${corr.slice(0,10).map(c => {
+            const cval = c.correlation ?? c.corr ?? c[2] ?? 0;
+            const t1   = c.ticker_a  ?? c.a ?? c[0] ?? '—';
+            const t2   = c.ticker_b  ?? c.b ?? c[1] ?? '—';
+            const risk  = Math.abs(Number(cval)) > 0.8 ? '<span class="pill pill-sell">HIGH</span>'
+                        : Math.abs(Number(cval)) > 0.5 ? '<span class="pill pill-hold">MED</span>'
+                        : '<span class="pill pill-buy">LOW</span>';
+            return `<tr><td>${t1}</td><td>${t2}</td><td>${Number(cval).toFixed(3)}</td><td>${risk}</td></tr>`;
+          }).join('')}</tbody>
+        </table></div>
+      </div>` : ''}
+    `;
+  } catch(e) {
+    body.innerHTML = _agentErrorCard(e.message);
+  }
+}
+
+// ── REGIME ───────────────────────────────────────────────────────────────────
+async function loadAgentRegime() {
+  const body = document.getElementById('agRegimeBody');
+  const errEl = document.getElementById('agRegimeError');
+  const tsEl  = document.getElementById('agRegimeTs');
+  if (!body) return;
+  body.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center;font-size:11px">Fetching regime data…</div>';
+  try {
+    const r = await fetch('/api/agents/regime');
+    const d = await r.json();
+    if (d.error) {
+      errEl.textContent = d.error; errEl.classList.remove('hidden');
+      body.innerHTML = ''; return;
+    }
+    errEl.classList.add('hidden');
+    tsEl.textContent = _agentTs();
+
+    const regime  = d.regime ?? d.current_regime ?? '—';
+    const score   = d.regime_score ?? d.score ?? null;
+    const nifty   = d.nifty ?? d.nifty_price ?? null;
+    const ema200  = d.ema_200 ?? d.ema200 ?? null;
+    const ema50   = d.ema_50  ?? d.ema50  ?? null;
+    const adx     = d.adx    ?? null;
+    const vix     = d.vix    ?? d.india_vix ?? null;
+    const weights = d.strategy_weights ?? d.weights ?? {};
+    const signals = d.signals_allowed  ?? d.allowed  ?? null;
+
+    const regimeColor = /BULL/i.test(regime) ? 'var(--green)'
+                      : /BEAR|CRISIS/i.test(regime) ? 'var(--red)'
+                      : 'var(--yellow)';
+
+    body.innerHTML = `
+      <div style="text-align:center;padding:24px 0 16px">
+        <div style="font-size:9px;color:var(--muted);letter-spacing:1.5px;margin-bottom:8px">CURRENT REGIME</div>
+        <div style="font-size:28px;font-weight:700;color:${regimeColor};letter-spacing:2px;border:2px solid ${regimeColor};display:inline-block;padding:8px 24px">${regime}</div>
+        ${score != null ? `
+        <div style="margin-top:16px;max-width:360px;margin-left:auto;margin-right:auto">
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-bottom:4px">
+            <span>Regime Score</span><span style="color:${regimeColor}">${Number(score).toFixed(0)} / 100</span>
+          </div>
+          <div class="progress" style="height:8px"><div class="progress-fill" style="width:${Math.min(100,Number(score))}%;background:${regimeColor}"></div></div>
+        </div>` : ''}
+      </div>
+      <div class="grid-4" style="margin-bottom:14px">
+        <div class="card"><div class="card-title">Nifty 50</div><div class="card-value">${nifty != null ? Number(nifty).toLocaleString('en-IN',{maximumFractionDigits:0}) : '—'}</div></div>
+        <div class="card"><div class="card-title">EMA 200</div><div class="card-value">${ema200 != null ? Number(ema200).toFixed(0) : '—'}</div></div>
+        <div class="card"><div class="card-title">EMA 50</div><div class="card-value">${ema50 != null ? Number(ema50).toFixed(0) : '—'}</div></div>
+        <div class="card"><div class="card-title">ADX</div><div class="card-value ${adx != null && Number(adx) > 25 ? 'pos' : 'neu'}">${adx != null ? Number(adx).toFixed(1) : '—'}</div></div>
+        ${vix != null ? `<div class="card"><div class="card-title">India VIX</div><div class="card-value ${Number(vix) > 20 ? 'neg' : 'neu'}">${Number(vix).toFixed(2)}</div></div>` : ''}
+        ${signals != null ? `<div class="card" style="grid-column:span 2"><div class="card-title">Signals Allowed</div><div style="margin-top:6px">${Array.isArray(signals) ? signals.map(s => `<span class="pill pill-buy" style="margin:2px">${s}</span>`).join(' ') : `<span class="card-value">${signals}</span>`}</div></div>` : ''}
+      </div>
+      ${Object.keys(weights).length ? `
+      <div class="card full-row">
+        <div class="card-title">Strategy Weight Recommendations</div>
+        <div style="margin-top:10px">${Object.entries(weights).map(([k,v]) => `
+          <div style="margin-bottom:8px">
+            <div style="display:flex;justify-content:space-between;font-size:10px;margin-bottom:3px">
+              <span style="color:var(--text)">${k}</span><span style="color:var(--amber)">${(Number(v)*100).toFixed(0)}%</span>
+            </div>
+            <div class="progress"><div class="progress-fill" style="width:${Math.min(100,Number(v)*100)}%;background:var(--amber)"></div></div>
+          </div>`).join('')}
+        </div>
+      </div>` : ''}
+    `;
+  } catch(e) {
+    body.innerHTML = _agentErrorCard(e.message);
+  }
+}
+
+// ── NEWS ─────────────────────────────────────────────────────────────────────
+async function loadAgentNews() {
+  const body = document.getElementById('agNewsBody');
+  const errEl = document.getElementById('agNewsError');
+  const tsEl  = document.getElementById('agNewsTs');
+  if (!body) return;
+  body.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center;font-size:11px">Fetching news data…</div>';
+  try {
+    const r = await fetch('/api/agents/news');
+    const d = await r.json();
+    if (d.error) {
+      errEl.textContent = d.error; errEl.classList.remove('hidden');
+      body.innerHTML = ''; return;
+    }
+    errEl.classList.add('hidden');
+    tsEl.textContent = _agentTs();
+
+    const sentiment = d.market_sentiment ?? d.overall_sentiment ?? d.sentiment ?? '—';
+    const score     = d.sentiment_score  ?? d.score ?? null;
+    const headlines = d.headlines        ?? d.news  ?? [];
+    const bullish   = d.bullish_count    ?? headlines.filter(h => /bull/i.test(h.sentiment||'')).length;
+    const bearish   = d.bearish_count    ?? headlines.filter(h => /bear/i.test(h.sentiment||'')).length;
+    const neutral   = d.neutral_count    ?? headlines.filter(h => !/bull|bear/i.test(h.sentiment||'')).length;
+
+    const sentColor = /bull/i.test(sentiment) ? 'var(--green)'
+                    : /bear/i.test(sentiment) ? 'var(--red)'
+                    : 'var(--yellow)';
+
+    body.innerHTML = `
+      <div style="display:flex;gap:16px;align-items:flex-start;margin-bottom:14px;flex-wrap:wrap">
+        <div class="card" style="flex:0 0 220px;text-align:center">
+          <div class="card-title">Market Sentiment</div>
+          <div style="font-size:22px;font-weight:700;color:${sentColor};margin:8px 0;border:2px solid ${sentColor};padding:6px 16px;display:inline-block">${sentiment}</div>
+          ${score != null ? `
+          <div style="margin-top:10px">
+            <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-bottom:3px">
+              <span>Score</span><span style="color:${sentColor}">${Number(score).toFixed(0)}</span>
+            </div>
+            <div class="progress"><div class="progress-fill" style="width:${Math.min(100,Number(score))}%;background:${sentColor}"></div></div>
+          </div>` : ''}
+        </div>
+        <div style="display:flex;gap:10px;flex:1;flex-wrap:wrap">
+          <div class="card" style="flex:1;min-width:100px;text-align:center">
+            <div class="card-title" style="color:var(--green)">BULLISH</div>
+            <div class="card-value pos">${bullish}</div>
+          </div>
+          <div class="card" style="flex:1;min-width:100px;text-align:center">
+            <div class="card-title" style="color:var(--red)">BEARISH</div>
+            <div class="card-value neg">${bearish}</div>
+          </div>
+          <div class="card" style="flex:1;min-width:100px;text-align:center">
+            <div class="card-title">NEUTRAL</div>
+            <div class="card-value neu">${neutral}</div>
+          </div>
+        </div>
+      </div>
+      ${headlines.length ? `
+      <div class="card full-row">
+        <div class="card-title">Recent Headlines</div>
+        <div style="margin-top:8px">${headlines.slice(0,20).map(h => {
+          const s = (h.sentiment ?? h.label ?? '').toLowerCase();
+          const c = /bull/i.test(s) ? 'var(--green)' : /bear/i.test(s) ? 'var(--red)' : 'var(--muted)';
+          const title = h.title ?? h.headline ?? h.text ?? h;
+          const src   = h.source ?? h.provider ?? '';
+          return `<div style="padding:7px 0;border-bottom:1px solid #1a1a1a;display:flex;gap:10px;align-items:flex-start">
+            <span style="width:7px;height:7px;background:${c};flex-shrink:0;margin-top:4px;display:inline-block"></span>
+            <div style="flex:1;font-size:11px;color:var(--text);line-height:1.4">${title}${src ? `<span style="color:var(--muted);font-size:10px;margin-left:6px">${src}</span>` : ''}</div>
+          </div>`;
+        }).join('')}</div>
+      </div>` : '<div style="color:var(--muted);text-align:center;padding:20px;font-size:11px">No headlines available</div>'}
+    `;
+  } catch(e) {
+    body.innerHTML = _agentErrorCard(e.message);
+  }
+}
+
+// ── TAX ──────────────────────────────────────────────────────────────────────
+async function loadAgentTax() {
+  const body = document.getElementById('agTaxBody');
+  const errEl = document.getElementById('agTaxError');
+  const tsEl  = document.getElementById('agTaxTs');
+  if (!body) return;
+  body.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center;font-size:11px">Fetching tax data…</div>';
+  try {
+    const r = await fetch('/api/agents/tax');
+    const d = await r.json();
+    if (d.error) {
+      errEl.textContent = d.error; errEl.classList.remove('hidden');
+      body.innerHTML = ''; return;
+    }
+    errEl.classList.add('hidden');
+    tsEl.textContent = _agentTs();
+
+    const stcg_pnl  = d.stcg_pnl   ?? d.stcg?.pnl   ?? null;
+    const stcg_tax  = d.stcg_tax   ?? d.stcg?.tax   ?? null;
+    const ltcg_pnl  = d.ltcg_pnl   ?? d.ltcg?.pnl   ?? null;
+    const ltcg_tax  = d.ltcg_tax   ?? d.ltcg?.tax   ?? null;
+    const intra_pnl = d.intraday_pnl ?? d.intraday?.pnl ?? null;
+    const intra_tax = d.intraday_tax ?? d.intraday?.tax ?? null;
+    const total_tax = d.total_tax   ?? d.tax_liability ?? null;
+    const net_pnl   = d.net_pnl_after_tax ?? d.net_pnl ?? null;
+    const tips      = d.optimisation_tips ?? d.tips ?? d.recommendations ?? [];
+
+    body.innerHTML = `
+      <div class="grid-3" style="margin-bottom:14px">
+        <div class="card">
+          <div class="card-title">STCG</div>
+          <div class="card-value ${stcg_pnl != null ? _pnlClass(stcg_pnl) : ''}">${stcg_pnl != null ? _rupee(stcg_pnl) : '—'}</div>
+          <div class="card-sub">Tax: ${stcg_tax != null ? _rupee(stcg_tax) : '—'} <span style="color:var(--muted)">(15%)</span></div>
+        </div>
+        <div class="card">
+          <div class="card-title">LTCG</div>
+          <div class="card-value ${ltcg_pnl != null ? _pnlClass(ltcg_pnl) : ''}">${ltcg_pnl != null ? _rupee(ltcg_pnl) : '—'}</div>
+          <div class="card-sub">Tax: ${ltcg_tax != null ? _rupee(ltcg_tax) : '—'} <span style="color:var(--muted)">(10% above ₹1L)</span></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Intraday / Speculative</div>
+          <div class="card-value ${intra_pnl != null ? _pnlClass(intra_pnl) : ''}">${intra_pnl != null ? _rupee(intra_pnl) : '—'}</div>
+          <div class="card-sub">Tax: ${intra_tax != null ? _rupee(intra_tax) : '—'} <span style="color:var(--muted)">(slab rate)</span></div>
+        </div>
+      </div>
+      <div class="grid-2" style="margin-bottom:14px">
+        <div class="card" style="border-left:3px solid var(--red)">
+          <div class="card-title" style="color:var(--red)">Total Tax Liability</div>
+          <div class="card-value neg" style="font-size:26px">${total_tax != null ? _rupee(total_tax) : '—'}</div>
+          <div class="card-sub">Estimated for current FY</div>
+        </div>
+        <div class="card" style="border-left:3px solid var(--green)">
+          <div class="card-title">Net P&amp;L After Tax</div>
+          <div class="card-value ${net_pnl != null ? _pnlClass(net_pnl) : ''}" style="font-size:26px">${net_pnl != null ? _rupee(net_pnl) : '—'}</div>
+          <div class="card-sub">After all applicable taxes</div>
+        </div>
+      </div>
+      ${tips && tips.length ? `
+      <div class="card full-row">
+        <div class="card-title">Optimisation Tips</div>
+        <div style="margin-top:8px">${tips.map(t => {
+          const txt = typeof t === 'string' ? t : (t.tip ?? t.message ?? JSON.stringify(t));
+          return `<div style="padding:7px 10px;margin-bottom:6px;background:#050505;border-left:2px solid var(--green);font-size:11px;color:var(--text);line-height:1.4">${txt}</div>`;
+        }).join('')}</div>
+      </div>` : ''}
+    `;
+  } catch(e) {
+    body.innerHTML = _agentErrorCard(e.message);
+  }
+}
+
+// ── FII / DII ────────────────────────────────────────────────────────────────
+async function loadAgentFii() {
+  const body = document.getElementById('agFiiBody');
+  const errEl = document.getElementById('agFiiError');
+  const tsEl  = document.getElementById('agFiiTs');
+  if (!body) return;
+  body.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center;font-size:11px">Fetching FII/DII data…</div>';
+  try {
+    const r = await fetch('/api/agents/fii');
+    const d = await r.json();
+    if (d.error) {
+      errEl.textContent = d.error; errEl.classList.remove('hidden');
+      body.innerHTML = ''; return;
+    }
+    errEl.classList.add('hidden');
+    tsEl.textContent = _agentTs();
+
+    const signal    = d.flow_signal ?? d.signal ?? d.overall_signal ?? '—';
+    const fii5d     = d.fii_5d_avg  ?? d.fii_avg_5d ?? d.fii?.avg_5d ?? null;
+    const dii5d     = d.dii_5d_avg  ?? d.dii_avg_5d ?? d.dii?.avg_5d ?? null;
+    const history   = d.history     ?? d.daily_flows ?? d.flows ?? [];
+
+    const sigColor = /bull/i.test(signal) ? 'var(--green)'
+                   : /bear/i.test(signal) ? 'var(--red)'
+                   : 'var(--yellow)';
+
+    const histHtml = history.length ? (() => {
+      const maxAbs = Math.max(...history.map(h => Math.abs(Number(h.fii ?? h.net ?? h.value ?? 0))), 1);
+      return history.slice(-30).map(h => {
+        const v   = Number(h.fii ?? h.net ?? h.value ?? 0);
+        const pct = Math.min(100, Math.abs(v) / maxAbs * 100);
+        const c   = v >= 0 ? 'var(--green)' : 'var(--red)';
+        const dt  = h.date ?? h.day ?? '';
+        return `<div title="${dt}: ₹${v.toFixed(0)} Cr" style="flex:1;min-width:6px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:80px">
+          <div style="width:100%;background:${c};height:${pct}%"></div>
+        </div>`;
+      }).join('');
+    })() : '';
+
+    body.innerHTML = `
+      <div class="grid-3" style="margin-bottom:14px">
+        <div class="card" style="text-align:center">
+          <div class="card-title">Flow Signal</div>
+          <div style="font-size:18px;font-weight:700;color:${sigColor};border:2px solid ${sigColor};display:inline-block;padding:4px 14px;margin-top:4px">${signal}</div>
+        </div>
+        <div class="card">
+          <div class="card-title">FII 5-Day Avg Net Flow</div>
+          <div class="card-value ${fii5d != null ? _pnlClass(fii5d) : ''}">${fii5d != null ? '₹' + Number(fii5d).toLocaleString('en-IN',{maximumFractionDigits:0}) + ' Cr' : '—'}</div>
+          <div class="card-sub">Foreign Institutional Investors</div>
+        </div>
+        <div class="card">
+          <div class="card-title">DII 5-Day Avg Net Flow</div>
+          <div class="card-value ${dii5d != null ? _pnlClass(dii5d) : ''}">${dii5d != null ? '₹' + Number(dii5d).toLocaleString('en-IN',{maximumFractionDigits:0}) + ' Cr' : '—'}</div>
+          <div class="card-sub">Domestic Institutional Investors</div>
+        </div>
+      </div>
+      ${histHtml ? `
+      <div class="card full-row">
+        <div class="card-title">FII Net Flow — Last 30 Days (Cr)</div>
+        <div style="display:flex;gap:2px;align-items:flex-end;height:80px;margin-top:10px;padding:0 4px">${histHtml}</div>
+        <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--muted);margin-top:4px">
+          <span>${history.length > 0 ? (history[0].date ?? '') : ''}</span>
+          <span style="color:var(--green)">▌ Inflow</span>
+          <span style="color:var(--red)">▌ Outflow</span>
+          <span>${history.length > 0 ? (history[history.length-1].date ?? '') : ''}</span>
+        </div>
+      </div>` : '<div class="card full-row" style="text-align:center;color:var(--muted);font-size:11px;padding:20px">No historical flow data available</div>'}
+    `;
+  } catch(e) {
+    body.innerHTML = _agentErrorCard(e.message);
+  }
+}
+
+// ── EXECUTION ────────────────────────────────────────────────────────────────
+async function loadAgentExecution() {
+  const body = document.getElementById('agExecBody');
+  const errEl = document.getElementById('agExecError');
+  const tsEl  = document.getElementById('agExecTs');
+  if (!body) return;
+  body.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center;font-size:11px">Fetching execution data…</div>';
+  try {
+    const r = await fetch('/api/agents/execution');
+    const d = await r.json();
+    if (d.error) {
+      errEl.textContent = d.error; errEl.classList.remove('hidden');
+      body.innerHTML = ''; return;
+    }
+    errEl.classList.add('hidden');
+    tsEl.textContent = _agentTs();
+
+    const analyses = d.analyses ?? d.recommendations ?? d.pre_trade ?? [];
+    const best     = d.best_opportunity ?? d.top_pick ?? null;
+
+    const badgeColor = rec => {
+      const s = (rec ?? '').toUpperCase();
+      if (s === 'GO')   return 'var(--green)';
+      if (s === 'NO')   return 'var(--red)';
+      return 'var(--yellow)';
+    };
+
+    body.innerHTML = `
+      ${best ? `
+      <div class="card full-row" style="border-left:3px solid var(--green);margin-bottom:14px">
+        <div class="card-title" style="color:var(--green)">Best Opportunity</div>
+        <div style="font-size:16px;font-weight:700;color:var(--text);margin-top:4px">${best.ticker ?? best}</div>
+        ${best.reason ? `<div class="card-sub">${best.reason}</div>` : ''}
+      </div>` : ''}
+      ${analyses.length ? `
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px">
+        ${analyses.slice(0,10).map(a => {
+          const ticker = a.ticker ?? a.symbol ?? '?';
+          const rec    = a.recommendation ?? a.action ?? a.signal ?? '—';
+          const shares = a.recommended_shares ?? a.shares ?? a.qty ?? null;
+          const limit  = a.limit_price  ?? a.entry_price ?? null;
+          const stop   = a.stop_price   ?? a.stop_loss   ?? null;
+          const windows= a.best_windows ?? a.entry_windows ?? a.timing ?? null;
+          const bc     = badgeColor(rec);
+          return `<div class="card" style="border-top:2px solid ${bc}">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+              <div style="font-size:13px;font-weight:700;color:var(--text)">${ticker}</div>
+              <div style="font-size:11px;font-weight:700;color:${bc};border:1px solid ${bc};padding:1px 8px">${rec}</div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-size:10px">
+              <div><div style="color:var(--muted);font-size:9px">SHARES</div><div style="color:var(--text)">${shares ?? '—'}</div></div>
+              <div><div style="color:var(--muted);font-size:9px">LIMIT</div><div style="color:var(--cyan)">${limit != null ? '₹'+Number(limit).toFixed(2) : '—'}</div></div>
+              <div><div style="color:var(--muted);font-size:9px">STOP</div><div style="color:var(--red)">${stop != null ? '₹'+Number(stop).toFixed(2) : '—'}</div></div>
+            </div>
+            ${windows ? `<div style="margin-top:8px;font-size:9px;color:var(--muted)">Best windows: <span style="color:var(--text)">${Array.isArray(windows) ? windows.join(', ') : windows}</span></div>` : ''}
+          </div>`;
+        }).join('')}
+      </div>` : '<div class="card full-row" style="text-align:center;color:var(--muted);font-size:11px;padding:20px">No execution recommendations available</div>'}
+    `;
+  } catch(e) {
+    body.innerHTML = _agentErrorCard(e.message);
   }
 }
 
