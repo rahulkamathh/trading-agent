@@ -1819,7 +1819,7 @@ class DirectionalOptionsStrategy:
                 break
 
             # ── Step 2: Signal strength gate ─────────────────────────────── #
-            if sig.get("strength", 0) < 85:
+            if sig.get("strength", 0) < 75:
                 continue
             ticker = sig["ticker"]
             action = sig.get("signal", "")
@@ -1861,8 +1861,8 @@ class DirectionalOptionsStrategy:
                     logger.info(f"[DirSwing] SKIP {ticker} {opt_type} — filter: {detail}")
                     continue
 
-                if conviction < 70:
-                    logger.info(f"[DirSwing] SKIP {ticker} {opt_type} — conviction {conviction} < 70 | {detail}")
+                if conviction < 55:
+                    logger.info(f"[DirSwing] SKIP {ticker} {opt_type} — conviction {conviction} < 55 | {detail}")
                     continue
 
                 logger.info(f"[DirSwing] {ticker} {opt_type.upper()} passes | {detail}")
@@ -2538,8 +2538,8 @@ class LongStraddleStrategy:
                 # Price both legs via Black-Scholes
                 t_exp = max(1, (expiry - now.date()).days) / 365
                 sigma = max(hv10, hv30) / 100
-                call_prem = bs_price(spot, strike, t_exp, 0.065, sigma, "call")
-                put_prem  = bs_price(spot, strike, t_exp, 0.065, sigma, "put")
+                call_prem = BlackScholes.price(spot, strike, t_exp, RISK_FREE_RATE, sigma, "call")
+                put_prem  = BlackScholes.price(spot, strike, t_exp, RISK_FREE_RATE, sigma, "put")
 
                 if call_prem < 10 or put_prem < 10:
                     continue
@@ -2549,18 +2549,15 @@ class LongStraddleStrategy:
                     continue
 
                 # Open call leg
-                call_tag = f"{base}_{strike}C_{expiry}"
-                put_tag  = f"{base}_{strike}P_{expiry}"
-
                 call_pos = portfolio.open_option(
                     underlying=underlying, strike=strike, expiry=expiry,
-                    option_type="call", premium=call_prem, lot_size=lot_size,
-                    strategy=f"STRADDLE_CALL", reason=f"Long Straddle | {' | '.join(reasons)}"
+                    option_type="call", position="LONG", qty_lots=1,
+                    strategy="STRADDLE_CALL", reason=f"Long Straddle | {' | '.join(reasons)}"
                 )
                 put_pos = portfolio.open_option(
                     underlying=underlying, strike=strike, expiry=expiry,
-                    option_type="put", premium=put_prem, lot_size=lot_size,
-                    strategy=f"STRADDLE_PUT", reason=f"Long Straddle | {' | '.join(reasons)}"
+                    option_type="put", position="LONG", qty_lots=1,
+                    strategy="STRADDLE_PUT", reason=f"Long Straddle | {' | '.join(reasons)}"
                 )
 
                 if call_pos or put_pos:
@@ -2663,8 +2660,8 @@ class LongStrangleStrategy:
                 sigma    = max(hv20, hv60) / 100
                 t_exp    = max(1, (expiry - now.date()).days) / 365
 
-                call_prem = bs_price(spot, call_strike, t_exp, 0.065, sigma, "call")
-                put_prem  = bs_price(spot, put_strike,  t_exp, 0.065, sigma, "put")
+                call_prem = BlackScholes.price(spot, call_strike, t_exp, RISK_FREE_RATE, sigma, "call")
+                put_prem  = BlackScholes.price(spot, put_strike,  t_exp, RISK_FREE_RATE, sigma, "put")
 
                 if call_prem < 5 or put_prem < 5:
                     continue
@@ -2675,13 +2672,13 @@ class LongStrangleStrategy:
 
                 call_pos = portfolio.open_option(
                     underlying=underlying, strike=call_strike, expiry=expiry,
-                    option_type="call", premium=call_prem, lot_size=lot_size,
+                    option_type="call", position="LONG", qty_lots=1,
                     strategy="STRANGLE_CALL",
                     reason=f"Long Strangle | OTM +{call_strike-spot:.0f} | HV20={hv20:.1f}%"
                 )
                 put_pos = portfolio.open_option(
                     underlying=underlying, strike=put_strike, expiry=expiry,
-                    option_type="put", premium=put_prem, lot_size=lot_size,
+                    option_type="put", position="LONG", qty_lots=1,
                     strategy="STRANGLE_PUT",
                     reason=f"Long Strangle | OTM -{spot-put_strike:.0f} | HV20={hv20:.1f}%"
                 )
