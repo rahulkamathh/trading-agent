@@ -5774,9 +5774,13 @@ async function closeFNOPosition(pid) {
 }
 
 async function resetFNO() {
-  if (!confirm('Reset F&O portfolio to ₹2,00,000? All positions will be cleared.')) return;
-  await fetch('/api/fno/reset', {method:'POST'});
-  toast('F&O portfolio reset'); loadFNO();
+  if (!confirm('Reset F&O portfolio?\n\nThis will:\n• Clear all open F&O positions\n• Clear the entire F&O trade history\n• Clear F&O signals\n\nEquity portfolio is unaffected.\n\nAre you sure?')) return;
+  const r = await fetch('/api/fno/reset', {method:'POST'});
+  const d = await r.json();
+  if (!d.ok) { toast('Reset failed: ' + (d.error || 'unknown'), 'error'); return; }
+  toast('F&O portfolio and trade history reset');
+  loadFNO();
+  loadFNOTrades();
 }
 
 async function runPricer() {

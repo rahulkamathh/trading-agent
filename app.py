@@ -24,6 +24,7 @@ from flask import Flask, jsonify, request, send_from_directory, session, redirec
 
 from engine import INITIAL_CAPITAL, INDEX_TICKERS, DataFetcher, get_agent
 from angelone_feed import get_feed
+from failure_recovery import get_recovery_manager
 
 # ── Hedge fund agents ────────────────────────────────────────────────────────
 try:
@@ -724,6 +725,28 @@ def api_reset():
     return jsonify({"ok": True, "message": f"Portfolio reset to ₹{capital:,.0f}", "capital": capital})
 
 
+@app.route("/api/fno/reset", methods=["POST"])
+def api_fno_reset():
+    """Reset F&O portfolio and clear full trade history. Equity is untouched."""
+    import json as _json
+    from pathlib import Path as _Path
+    try:
+        from fno_engine import get_fno_agent  # pylint: disable=import-outside-toplevel
+        fno = get_fno_agent()
+        fno.portfolio.reset()
+        fno_log = _Path("data/fno_trades.json")
+        if fno_log.exists():
+            fno_log.write_text("[]")
+        # Also clear hourly signals file if present
+        fno_sig = _Path("data/fno_hourly_signals.json")
+        if fno_sig.exists():
+            fno_sig.write_text("{}")
+        logging.getLogger(__name__).info("F&O reset — positions and trade log cleared")
+        return jsonify({"ok": True, "message": "F&O portfolio and trade history reset."})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/full_reset", methods=["POST"])
 def api_full_reset():
     """
@@ -1147,6 +1170,64 @@ def api_kill_switch_reset():
     """Reset (deactivate) the kill switch (auth required)."""
     _kill_switch_reset()
     return jsonify({"ok": True, "active": False})
+
+
+# ── Module 16: Failure Recovery & Resume Framework ───────────────────────────
+
+@app.route("/api/recovery/status")
+def api_recovery_status():
+    """Full recovery state snapshot — failure level, mode, reconcile status."""
+    return jsonify({"ok": True, **get_recovery_manager().status()})
+
+
+@app.route("/api/recovery/resume", methods=["POST"])
+def api_recovery_resume():
+    """Manual resume after RISK failure. Requires user confirmation."""
+    body   = request.get_json(force=True, silent=True) or {}
+    user   = body.get("user", "dashboard")
+    ok, msg = get_recovery_manager().resume(user=user, method="dashboard")
+    return jsonify({"ok": ok, "message": msg})
+
+
+@app.route("/api/recovery/resume_live", methods=["POST"])
+def api_recovery_resume_live():
+    """Re-enable LIVE mode after CRITICAL failure. Requires prior reconcile."""
+    body   = request.get_json(force=True, silent=True) or {}
+    user   = body.get("user", "dashboard")
+    ok, msg = get_recovery_manager().resume_live(user=user, method="dashboard")
+    return jsonify({"ok": ok, "message": msg})
+
+
+@app.route("/api/recovery/reconcile", methods=["POST"])
+def api_recovery_reconcile():
+    """Run reconciliation — sync broker → internal state. Broker is truth."""
+    report = get_recovery_manager().reconcile()
+    return jsonify({"ok": True, "report": report})
+
+
+@app.route("/api/recovery/audit")
+def api_recovery_audit():
+    """Return the recovery audit log (last 100 events)."""
+    n = min(int(request.args.get("n", 100)), 500)
+    return jsonify({"ok": True, "entries": get_recovery_manager().audit_log(n)})
+
+
+@app.route("/api/recovery/report_soft", methods=["POST"])
+def api_recovery_report_soft():
+    """Manually report a soft failure (for testing)."""
+    body   = request.get_json(force=True, silent=True) or {}
+    reason = body.get("reason", "Manual soft failure from dashboard")
+    get_recovery_manager().report_soft(reason)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/recovery/report_risk", methods=["POST"])
+def api_recovery_report_risk():
+    """Manually trigger a RISK freeze (e.g. from a custom limit breach)."""
+    body   = request.get_json(force=True, silent=True) or {}
+    reason = body.get("reason", "Manual risk freeze from dashboard")
+    get_recovery_manager().report_risk(reason)
+    return jsonify({"ok": True})
 
 
 # ── Security audit log endpoint ──────────────────────────────────────────────
@@ -2248,6 +2329,26 @@ def _run_cycle_safe() -> None:
     """Run one agent cycle (equity + F&O), guarded against concurrent calls."""
     if _state.running:
         return
+
+    # ── Module 16: check soft-failure auto-recovery before each cycle ──────
+    try:
+        rm = get_recovery_manager()
+        rm.check_soft_recovery()
+        if not rm.new_entries_allowed():
+            level = rm.status()["failure_level"]
+            _bg_logger.warning(
+                f"[Scheduler] Cycle skipped — failure active ({level}). "
+                f"Stops/targets still managed."
+            )
+            # Still manage existing positions even during RISK/CRITICAL
+            try:
+                get_agent().portfolio.check_stops()
+            except Exception:
+                pass
+            return
+    except Exception as _rce:
+        _bg_logger.warning(f"[Recovery] Check error: {_rce}")
+
     _state.running = True
     try:
         agent   = get_agent()
@@ -2292,6 +2393,11 @@ def _run_cycle_safe() -> None:
         import traceback as _tb
         import logging as _logging
         _logging.getLogger("engine").error(f"❌ Agent cycle crashed: {exc}\n{_tb.format_exc()}")
+        # Report soft failure so Module 16 retries
+        try:
+            get_recovery_manager().report_soft(f"Agent cycle crashed: {exc}")
+        except Exception:
+            pass
     finally:
         _state.running = False
 
