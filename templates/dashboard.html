@@ -483,9 +483,6 @@
     <div class="nav-item" data-view="controls" onclick="showView('controls')"><span class="fkey">F10</span>Controls</div>
     <div class="nav-item" data-view="report" onclick="showView('report')"><span class="fkey">F11</span>Daily Report</div>
     <div class="nav-item" id="navCalItem" data-view="calendar" onclick="showView(_currentDesk==='fno'?'fno-calendar':'calendar')"><span class="fkey">F12</span>P&amp;L Calendar</div>
-    <div class="nav-item" data-view="ag-news" onclick="showView('ag-news')"><span class="fkey" style="font-size:8px">INT</span>Intelligence</div>
-    <div class="nav-item" data-view="ag-risk" onclick="showView('ag-risk')"><span class="fkey" style="font-size:8px">RSK</span>Risk Dashboard</div>
-    <div class="nav-item" data-view="screener" onclick="showView('screener')"><span class="fkey" style="font-size:8px">ANA</span>Analytics</div>
   </div>
 
   <!-- Agents group — shown on equity & fno desks alongside tools -->
@@ -575,7 +572,8 @@
       </div>
     </div>
   </div>
-  <div id="page-portfolio" class="page-section hidden">
+  <!-- page-portfolio removed: orphaned page with no nav entry -->
+  <div id="page-portfolio" class="page-section hidden" style="display:none!important">
     <style>
       .port-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
       .port-aum { font-size:24px; font-weight:700; letter-spacing:0; color:#fff; font-family:'IBM Plex Mono',monospace; }
@@ -974,8 +972,6 @@
     </div>
   </div>
 
-  <!-- ══ Self-Learning page ══ -->
-  <div id="page-learning" class="page-section hidden"></div>
   <div id="page-controls" class="page-section hidden">
     <div class="page-header"><span class="page-title" id="ctrlPageTitle">⚙️ Controls</span></div>
 
@@ -1492,10 +1488,6 @@
     </div>
   </div>
 
-  <!-- ══ Group Feed page ══ -->
-  <div id="page-groupfeed" class="page-section hidden"></div>
-  <div id="page-news" class="page-section hidden"></div>
-
   <!-- ══ AGENT PAGES ══ -->
 
   <!-- Risk Agent -->
@@ -1666,7 +1658,6 @@
     </div>
   </div>
 
-  <div id="page-penny" class="page-section hidden"></div>
   <div id="page-calendar" class="page-section hidden">
     <div class="page-header">
       <span class="page-title">📅 P&amp;L Calendar</span>
@@ -1724,9 +1715,6 @@
     </div>
   </div>
 
-  <!-- ╔╗ Events page ╚╝ -->
-  <div id="page-events" class="page-section hidden"></div>
-  <div id="page-commodity" class="page-section hidden"></div>
   <div id="page-fno-signals" class="page-section hidden">
     <div class="page-header">
       <span class="page-title">📡 F&amp;O SIGNALS</span>
@@ -2163,7 +2151,7 @@ function closeSidebar() {
 // ══════════════════════════════════════════════
 let _currentView = 'overview';
 
-const _ALL_PAGES = ['master','overview','portfolio','fno-overview','fno-signals','fno-trades','fno-charts','fno-strategy','positions','signals','trades','controls','report','telegram','screener','agentlog','calendar','fno-calendar','fno','leaderboard','ag-risk','ag-regime','ag-news','ag-tax','ag-fii','ag-execution','ag-broker','ag-accounts'];
+const _ALL_PAGES = ['master','overview','fno-overview','fno-signals','fno-trades','fno-charts','fno-strategy','positions','signals','trades','controls','report','telegram','screener','agentlog','calendar','fno-calendar','fno','leaderboard','ag-risk','ag-regime','ag-news','ag-tax','ag-fii','ag-execution','ag-broker','ag-accounts'];
 const _lazyLoaded = new Set();
 
 function showView(view) {
