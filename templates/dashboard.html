@@ -6899,7 +6899,7 @@ async function loadFNOTrades() {
       const pnl    = t.pnl != null ? t.pnl : null;
       const pnlClr = pnl == null ? '' : (pnl >= 0 ? 'var(--green)' : 'var(--red)');
       return `<tr style="border-bottom:1px solid var(--border)">
-        <td style="padding:7px 10px;color:var(--muted)">${(t.time||t.timestamp||'').slice(11,19)||'—'}</td>
+        <td style="padding:7px 10px;color:var(--muted)">${_fmtTime(t.time||t.timestamp||'')||'—'}</td>
         <td style="padding:7px 10px;text-align:center;color:${clrAct};font-weight:600">${act}</td>
         <td style="padding:7px 10px;color:var(--amber)">${(t.underlying||t.instrument||t.ticker||'').replace('.NS','')}</td>
         <td style="padding:7px 10px;text-align:center;color:var(--muted)">${t.strike||''} ${t.option_type||t.type||''}</td>
@@ -6977,7 +6977,7 @@ async function loadFNOOverview() {
       const recent = trd.slice(-10).reverse();
       trdEl.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:11px">' +
         recent.map(t => `<tr style="border-bottom:1px solid var(--border)">
-          <td style="padding:6px 10px;color:var(--muted)">${(t.time||'').slice(11,19)}</td>
+          <td style="padding:6px 10px;color:var(--muted)">${_fmtTime(t.time||t.timestamp||'')||'—'}</td>
           <td style="padding:6px 10px;color:${t.action==='BUY'?'var(--green)':'var(--red)'};font-weight:600">${t.action}</td>
           <td style="padding:6px 10px">${t.instrument||t.ticker||''}</td>
           <td style="padding:6px 10px;color:var(--muted)">${t.strike||''} ${t.type||''}</td>
@@ -7824,11 +7824,12 @@ async function loadAgentBroker() {
     errEl.classList.add('hidden');
     tsEl.textContent = _agentTs();
 
-    const st      = d.status ?? {};
-    const margins = d.margins ?? {};
-    const pos     = d.positions ?? {};
-    const orders  = d.orders ?? [];
-    const paper   = d.paper_orders ?? [];
+    const st       = d.status ?? {};
+    const margins  = d.margins ?? {};
+    const pos      = d.positions ?? {};
+    const orders   = d.orders ?? [];
+    const paper    = d.paper_orders ?? [];
+    const holdings = d.holdings ?? [];
 
     // Connection status badge
     const connected   = st.connected ?? false;
@@ -7919,6 +7920,53 @@ async function loadAgentBroker() {
           </tbody>
         </table>
       </div>` : ''}
+
+      <!-- Full Zerodha Holdings -->
+      ${connected && holdings.length ? `
+      <div class="card full-row" style="margin-bottom:14px">
+        <div class="card-title" style="margin-bottom:8px">
+          Full Zerodha Portfolio — All Holdings (${holdings.length})
+          <span style="font-size:9px;color:var(--muted);font-weight:400;margin-left:8px">CNC demat positions from your Zerodha account</span>
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead><tr style="color:var(--muted);font-size:9px;letter-spacing:.5px;border-bottom:1px solid var(--border)">
+            <th style="text-align:left;padding:4px 8px">SYMBOL</th>
+            <th style="text-align:right;padding:4px 8px">QTY</th>
+            <th style="text-align:right;padding:4px 8px">AVG COST</th>
+            <th style="text-align:right;padding:4px 8px">LTP</th>
+            <th style="text-align:right;padding:4px 8px">CURRENT VALUE</th>
+            <th style="text-align:right;padding:4px 8px">P&amp;L</th>
+            <th style="text-align:right;padding:4px 8px">P&amp;L %</th>
+          </tr></thead>
+          <tbody>
+          ${holdings.map(h => {
+            const qty     = h.quantity ?? 0;
+            const avg     = h.average_price ?? 0;
+            const ltp     = h.last_price ?? 0;
+            const val     = qty * ltp;
+            const cost    = qty * avg;
+            const pnl     = val - cost;
+            const pnlPct  = cost > 0 ? (pnl / cost * 100) : 0;
+            const pnlClr  = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+            const fmt     = v => '₹' + Number(v).toLocaleString('en-IN', {maximumFractionDigits:2});
+            return `<tr style="border-top:1px solid var(--border)">
+              <td style="padding:5px 8px;color:var(--amber);font-weight:600">${h.tradingsymbol ?? h.symbol}</td>
+              <td style="padding:5px 8px;text-align:right">${qty.toLocaleString()}</td>
+              <td style="padding:5px 8px;text-align:right;color:var(--muted)">${fmt(avg)}</td>
+              <td style="padding:5px 8px;text-align:right">${fmt(ltp)}</td>
+              <td style="padding:5px 8px;text-align:right">${fmt(val)}</td>
+              <td style="padding:5px 8px;text-align:right;color:${pnlClr};font-weight:700">${pnl >= 0 ? '+' : ''}${fmt(pnl)}</td>
+              <td style="padding:5px 8px;text-align:right;color:${pnlClr}">${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</td>
+            </tr>`;
+          }).join('')}
+          </tbody>
+        </table>
+        <div style="margin-top:8px;padding:8px;background:#050505;display:flex;gap:24px;font-size:11px">
+          <span style="color:var(--muted)">Total invested: <strong style="color:var(--text)">₹${holdings.reduce((s,h)=>s+(h.quantity??0)*(h.average_price??0),0).toLocaleString('en-IN',{maximumFractionDigits:0})}</strong></span>
+          <span style="color:var(--muted)">Current value: <strong style="color:var(--text)">₹${holdings.reduce((s,h)=>s+(h.quantity??0)*(h.last_price??0),0).toLocaleString('en-IN',{maximumFractionDigits:0})}</strong></span>
+          ${(() => { const tv=holdings.reduce((s,h)=>s+(h.quantity??0)*(h.last_price??0),0); const tc=holdings.reduce((s,h)=>s+(h.quantity??0)*(h.average_price??0),0); const tp=tv-tc; return `<span style="color:${tp>=0?'var(--green)':'var(--red)'};font-weight:700">Total P&L: ${tp>=0?'+':''}₹${Math.abs(tp).toLocaleString('en-IN',{maximumFractionDigits:0})}</span>`; })()}
+        </div>
+      </div>` : connected ? '<div style="color:var(--muted);font-size:11px;padding:8px 0 14px">No holdings found in Zerodha account.</div>' : ''}
 
       <!-- Paper orders log -->
       <div class="card full-row">

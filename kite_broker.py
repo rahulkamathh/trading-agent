@@ -524,11 +524,13 @@ class KiteBroker:
         positions = {"net": [], "day": []}
         orders = []
 
+        holdings = []
         if status["connected"]:
             try:
                 margins = self.get_margins()
                 positions = self.get_positions()
                 orders = self.get_orders()
+                holdings = self.get_holdings()
             except Exception as e:
                 logger.warning(f"[KiteBroker] Dashboard data fetch error: {e}")
 
@@ -537,6 +539,7 @@ class KiteBroker:
             "margins": margins,
             "positions": positions,
             "orders": orders,
+            "holdings": holdings,
             "paper_orders": paper_orders,
             "last_updated": datetime.now(IST).isoformat(),
         }

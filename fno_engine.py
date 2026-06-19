@@ -1658,21 +1658,141 @@ def _swing_trend_and_levels(ticker: str, spot: float) -> tuple[bool, int, float,
         return True, 70, 0, 0, 0, f"Filter error: {e}"
 
 
+def _swing_bearish_levels(ticker: str, spot: float) -> tuple[bool, int, float, float, float, str]:
+    """
+    Bearish trend filter + conviction scoring for Long Puts.
+    Mirror of _swing_trend_and_levels but gates on downtrend conditions:
+      - Price < 200 EMA  (confirmed downtrend)
+      - ADX >= 20        (trending, not sideways)
+      - Within 30% of 52-week low  (near lows, bearish momentum)
+      - Relative volume >= 1.0     (selling volume present)
+
+    Returns (passes_filter, conviction_score, atr14, stop_level, initial_R, detail_string).
+    stop_level is 1 ATR ABOVE spot (exit put if underlying bounces above this).
+    """
+    try:
+        df = yf.download(ticker, period="1y", interval="1d", auto_adjust=True, progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        if len(df) < 50:
+            return False, 0, 0, 0, 0, "Insufficient data"
+
+        close  = df["Close"].squeeze()
+        high   = df["High"].squeeze()
+        low    = df["Low"].squeeze()
+        volume = df["Volume"].squeeze()
+
+        ema200 = float(close.ewm(span=200, adjust=False).mean().iloc[-1])
+        ema50  = float(close.ewm(span=50,  adjust=False).mean().iloc[-1])
+
+        # 52-week low
+        low_52w       = float(low.rolling(min(252, len(low))).min().iloc[-1])
+        pct_from_52wl = (spot - low_52w) / low_52w if low_52w > 0 else 1.0
+
+        # ATR-14
+        tr = pd.concat([
+            high - low,
+            (high - close.shift()).abs(),
+            (low  - close.shift()).abs(),
+        ], axis=1).max(axis=1)
+        atr14 = float(tr.rolling(14).mean().iloc[-1])
+
+        # ADX (simplified 14-period)
+        plus_dm  = (high - high.shift()).clip(lower=0)
+        minus_dm = (low.shift() - low).clip(lower=0)
+        mask     = plus_dm < minus_dm
+        plus_dm[mask]   = 0
+        minus_dm[~mask] = 0
+        atr_smooth = tr.ewm(span=14, adjust=False).mean()
+        plus_di    = 100 * plus_dm.ewm(span=14, adjust=False).mean()  / atr_smooth.replace(0, np.nan)
+        minus_di   = 100 * minus_dm.ewm(span=14, adjust=False).mean() / atr_smooth.replace(0, np.nan)
+        dx         = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+        adx        = float(dx.ewm(span=14, adjust=False).mean().iloc[-1])
+
+        # Relative volume (10d vs 20d average)
+        vol10   = float(volume.iloc[-10:].mean())
+        vol20   = float(volume.iloc[-20:].mean())
+        rel_vol = vol10 / vol20 if vol20 > 0 else 1.0
+
+        # ── Hard filter gates (bearish) ──────────────────────────────────────
+        if spot > ema200:
+            return False, 0, atr14, 0, 0, f"Price {spot:.0f} > 200EMA {ema200:.0f} — not bearish"
+        if adx < 20:
+            return False, 0, atr14, 0, 0, f"ADX {adx:.1f} < 20 — no trend"
+        if pct_from_52wl > 0.30:
+            return False, 0, atr14, 0, 0, f"Price {pct_from_52wl:.0%} above 52w low — not in bear momentum"
+        if rel_vol < 1.0:
+            return False, 0, atr14, 0, 0, f"RelVol {rel_vol:.2f}x < 1.0 — weak selling volume"
+
+        # ── Conviction score (0-100) ──────────────────────────────────────────
+        score   = 0
+        reasons = []
+
+        # EMA structure (40 pts)
+        if spot < ema200:
+            score += 15; reasons.append(f"Below 200EMA({ema200:.0f})")
+        if spot < ema50:
+            score += 10; reasons.append(f"Below 50EMA({ema50:.0f})")
+        if ema50 < ema200:
+            score += 15; reasons.append("Death cross (50<200)")
+
+        # Trend strength (30 pts)
+        if adx >= 30:
+            score += 20; reasons.append(f"ADX={adx:.0f} strong")
+        elif adx >= 25:
+            score += 15; reasons.append(f"ADX={adx:.0f}")
+        elif adx >= 20:
+            score += 5
+        # -DI dominance confirms downtrend
+        last_minus_di = float(minus_di.iloc[-1]) if not minus_di.isna().all() else 0
+        last_plus_di  = float(plus_di.iloc[-1])  if not plus_di.isna().all()  else 0
+        if last_minus_di > last_plus_di:
+            score += 10; reasons.append(f"-DI({last_minus_di:.0f}) > +DI({last_plus_di:.0f})")
+
+        # Volume confirmation (20 pts)
+        if rel_vol >= 2.0:
+            score += 20; reasons.append(f"RelVol={rel_vol:.1f}x")
+        elif rel_vol >= 1.5:
+            score += 15; reasons.append(f"RelVol={rel_vol:.1f}x")
+        elif rel_vol >= 1.0:
+            score += 8
+
+        # Near 52w low (10 pts) — confirms bearish momentum
+        if pct_from_52wl < 0.10:
+            score += 10; reasons.append(f"Near 52wL (+{pct_from_52wl:.0%})")
+
+        score = min(score, 100)
+
+        # Stop level: 1 ATR ABOVE spot (exit put if underlying bounces above this)
+        stop_level = round(spot + atr14, 2)
+        initial_R  = atr14
+
+        detail = f"Score={score} | ADX={adx:.0f} | RelVol={rel_vol:.1f}x | {' | '.join(reasons)}"
+        return True, score, atr14, stop_level, initial_R, detail
+
+    except Exception as e:
+        logger.warning(f"[BearishFilter] Filter failed for {ticker}: {e}")
+        return True, 70, 0, 0, 0, f"Filter error: {e}"
+
+
 class DirectionalOptionsStrategy:
     """
-    Long-Only Options Swing Framework v1.0 (mentor-defined).
+    Directional Options Swing Framework — Long Calls and Long Puts.
+
+    BUY signal  → Long Call (ITM1, bullish trend filter, regime must be OK)
+    SELL signal → Long Put  (ITM1, bearish trend filter, allowed in any regime)
 
     Entry gates (all must pass):
-      1. Market regime: Nifty > 200 EMA, 50 EMA > 200 EMA, VIX < 25
-      2. Trend filter: price > 200 EMA, ADX >= 20, within 20% of 52w high, rel vol >= 1.0
-      3. Conviction score >= 70 (Fundamentals 40% + Trend 30% + Volume 20% + Regime 10%)
-      4. Equity signal strength >= 85
+      1. Signal strength >= 85 (only high-conviction equity signals trigger options)
+      2. Trend filter (bullish for calls / bearish for puts): ADX >= 20, EMA alignment,
+         near 52w high (calls) or 52w low (puts), rel vol >= 1.0
+      3. Conviction score >= 70 (EMA structure 40% + Trend 30% + Volume 20% + Proximity 10%)
+      4. Market regime gate for calls only (Nifty > 200 EMA, VIX < 25)
 
-    Strike: ITM1 (delta ~0.65) for calls — better delta capture than ATM
-    Expiry: 20-45 DTE monthly (never weeklies)
-    Stop: 1 ATR below underlying entry price (on underlying, not on premium)
-    Targets: T1 = entry+2R (close 50%), T2 = entry+3R (close 25%), trail rest
-    Max 5 positions total.
+    Strike: ITM1 (delta ~0.65) — deeper delta, less theta decay than ATM
+    Expiry: 20-45 DTE monthly (never weeklies — too much theta risk)
+    Stop: 1 ATR from underlying entry (above for puts, below for calls)
+    Targets: T1 = 2R, T2 = 3R
     """
     name       = "Directional Options Swing"
     short_name = "DIR_SWING"
@@ -1693,9 +1813,6 @@ class DirectionalOptionsStrategy:
 
         # ── Step 1: Market regime gate (shared for all signals this cycle) ── #
         regime_ok, regime_reason = self._get_regime()
-        if not regime_ok:
-            logger.info(f"[DirSwing] BLOCKED — regime fail: {regime_reason}")
-            return executed
 
         for sig in signals:
             if portfolio.at_max_positions():
@@ -1709,11 +1826,14 @@ class DirectionalOptionsStrategy:
             if action not in ("BUY", "SELL"):
                 continue
 
-            # Long-only swing: only BUY signals → CALL options
-            # (SELL signals → put hedges are handled by HedgeStrategy)
-            if action != "BUY":
+            # BUY → Long Call   |   SELL → Long Put
+            opt_type = "call" if action == "BUY" else "put"
+
+            # Regime gate: block long calls in bad regime, but allow long puts
+            # (puts can be directional bearish even when market regime is weak)
+            if action == "BUY" and not regime_ok:
+                logger.info(f"[DirSwing] BLOCKED long call on {ticker} — regime fail: {regime_reason}")
                 continue
-            opt_type = "call"
 
             if portfolio.has_open_position(ticker, opt_type):
                 continue
@@ -1726,21 +1846,29 @@ class DirectionalOptionsStrategy:
                     continue
 
                 # ── Step 3: Trend filter + conviction score ───────────────── #
-                passes, conviction, atr14, stop_level, initial_R, detail = \
-                    _swing_trend_and_levels(ticker, spot)
+                # Calls: bullish filter (price > 200EMA, near 52w high, ADX > 20)
+                # Puts:  bearish filter (price < 200EMA, near 52w low, ADX > 20)
+                if action == "BUY":
+                    passes, conviction, atr14, stop_level, initial_R, detail = \
+                        _swing_trend_and_levels(ticker, spot)
+                    r_direction = +1   # target = spot + 2R, + 3R
+                else:
+                    passes, conviction, atr14, stop_level, initial_R, detail = \
+                        _swing_bearish_levels(ticker, spot)
+                    r_direction = -1   # target = spot - 2R, - 3R
 
                 if not passes:
-                    logger.info(f"[DirSwing] SKIP {ticker} — trend filter: {detail}")
+                    logger.info(f"[DirSwing] SKIP {ticker} {opt_type} — filter: {detail}")
                     continue
 
                 if conviction < 70:
-                    logger.info(f"[DirSwing] SKIP {ticker} — conviction {conviction} < 70 | {detail}")
+                    logger.info(f"[DirSwing] SKIP {ticker} {opt_type} — conviction {conviction} < 70 | {detail}")
                     continue
 
-                logger.info(f"[DirSwing] {ticker} passes | {detail}")
+                logger.info(f"[DirSwing] {ticker} {opt_type.upper()} passes | {detail}")
 
-                # ── Step 4: Strike selection — ITM1 (delta ~0.65) ─────────── #
-                # ITM1 gives 0.60-0.70 delta: better trend capture than ATM (0.50)
+                # ── Step 4: Strike selection ──────────────────────────────── #
+                # ITM1 (delta ~0.65) for calls and puts — better delta capture vs ATM
                 expiry = get_expiry_20_45dte()
                 strike = select_strike(spot, opt_type, moneyness="ITM1")
                 T      = days_to_expiry(expiry)
@@ -1760,10 +1888,12 @@ class DirectionalOptionsStrategy:
 
                 # ── Step 5: Open with swing metadata ─────────────────────── #
                 greeks = BlackScholes.greeks(spot, strike, T, RISK_FREE_RATE, iv, opt_type)
+                t1 = spot + r_direction * 2 * initial_R
+                t2 = spot + r_direction * 3 * initial_R
                 reason_str = (
-                    f"Swing {action} | strength={sig['strength']:.0f} | "
+                    f"Long {opt_type.title()} | {action} strength={sig['strength']:.0f} | "
                     f"conv={conviction} | delta={greeks['delta']:.2f} | "
-                    f"stop={stop_level:.0f} (1ATR={atr14:.0f}) | 2R={spot+2*initial_R:.0f}"
+                    f"stop={stop_level:.0f} (1ATR={atr14:.0f}) | T1={t1:.0f} T2={t2:.0f}"
                 )
                 result = portfolio.open_option(
                     underlying        = ticker,
@@ -1779,10 +1909,10 @@ class DirectionalOptionsStrategy:
                     initial_R         = initial_R,
                 )
                 if result:
+                    suffix = f"T1={t1:.0f} T2={t2:.0f}"
                     logger.info(
-                        f"[DirSwing] OPENED {ticker} {strike}C {expiry} @ ₹{prem:.2f} "
-                        f"stop_underlying={stop_level:.0f} 2R={spot+2*initial_R:.0f} "
-                        f"3R={spot+3*initial_R:.0f}"
+                        f"[DirSwing] OPENED {ticker} {strike}{opt_type[0].upper()} {expiry} "
+                        f"@ ₹{prem:.2f}  stop_underlying={stop_level:.0f}  {suffix}"
                     )
                     executed.append(result)
 
@@ -2584,7 +2714,7 @@ class FNOAgent:
         self.directional   = DirectionalOptionsStrategy()
         self.straddle      = LongStraddleStrategy()
         self.strangle      = LongStrangleStrategy()
-        self.spreads       = SpreadStrategy()      # disabled (sells options)
+        self.spreads       = SpreadStrategy()      # Bull Call Spread + Bear Put Spread (defined risk)
         self.iron_condor   = IronCondorStrategy()  # disabled (sells options)
         self.hedge         = HedgeStrategy()
 
@@ -2613,13 +2743,11 @@ class FNOAgent:
         logger.info("[FNO] === F&O Cycle Start ===")
         gap_closes = self.portfolio.morning_gap_check()   # runs only 9:15–9:30
         stops    = self.portfolio.check_expiry_and_stops()
-        # SpreadStrategy and IronCondorStrategy DISABLED:
-        # Both write (sell) options which require margin accounts and create
-        # theoretically unlimited loss exposure — not appropriate for paper
-        # trading without real broker margin controls.
-        # Only LONG options (buying calls/puts) are permitted.
-        condors   = []   # self.iron_condor.run(self.portfolio)  — sells options, disabled
-        spreads   = []   # self.spreads.run(equity_signals, self.portfolio) — sells options, disabled
+        # IronCondorStrategy DISABLED: sells naked options (unlimited loss exposure).
+        # SpreadStrategy RE-ENABLED: Bull Call Spread and Bear Put Spread are
+        # DEFINED-RISK strategies — max loss = net debit paid, not unlimited.
+        condors   = []   # self.iron_condor.run(self.portfolio) — naked short options, disabled
+        spreads   = self.spreads.run(equity_signals, self.portfolio)   # defined-risk ✓
         directs   = self.directional.run(equity_signals, self.portfolio)
         straddles = self.straddle.run(self.portfolio)
         strangles = self.strangle.run(equity_signals, self.portfolio)
