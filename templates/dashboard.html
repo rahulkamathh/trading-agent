@@ -482,7 +482,7 @@
     <div class="nav-item" data-view="agentlog" onclick="showView('agentlog')"><span class="fkey">F9</span>Agent Log</div>
     <div class="nav-item" data-view="controls" onclick="showView('controls')"><span class="fkey">F10</span>Controls</div>
     <div class="nav-item" data-view="report" onclick="showView('report')"><span class="fkey">F11</span>Daily Report</div>
-    <div class="nav-item" data-view="calendar" onclick="showView('calendar')"><span class="fkey">F12</span>P&amp;L Calendar</div>
+    <div class="nav-item" id="navCalItem" data-view="calendar" onclick="showView(_currentDesk==='fno'?'fno-calendar':'calendar')"><span class="fkey">F12</span>P&amp;L Calendar</div>
     <div class="nav-item" data-view="ag-news" onclick="showView('ag-news')"><span class="fkey" style="font-size:8px">INT</span>Intelligence</div>
     <div class="nav-item" data-view="ag-risk" onclick="showView('ag-risk')"><span class="fkey" style="font-size:8px">RSK</span>Risk Dashboard</div>
     <div class="nav-item" data-view="screener" onclick="showView('screener')"><span class="fkey" style="font-size:8px">ANA</span>Analytics</div>
@@ -1695,6 +1695,35 @@
     </div>
   </div>
 
+  <!-- ╔╗ F&O P&L Calendar (completely separate from equity) ╚╝ -->
+  <div id="page-fno-calendar" class="page-section hidden">
+    <div class="page-header">
+      <span class="page-title">📅 F&amp;O P&L CALENDAR</span>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <div style="display:flex;background:#0a0a0a;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+          <button id="fnoCalTabPnl" onclick="fnoCalTab('pnl')" style="padding:5px 16px;font-size:12px;font-weight:600;border:none;cursor:pointer;background:var(--accent);color:#fff;transition:all .13s">PNL</button>
+          <button id="fnoCalTabEvents" onclick="fnoCalTab('events')" style="padding:5px 16px;font-size:12px;font-weight:600;border:none;cursor:pointer;background:transparent;color:var(--muted);transition:all .13s">Events</button>
+        </div>
+        <button onclick="fnoCalNav(-1)" style="padding:5px 10px;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-size:13px;">←</button>
+        <span id="fnoCalMonthLabel" style="font-size:13px;font-weight:600;min-width:110px;text-align:center;"></span>
+        <button onclick="fnoCalNav(1)" style="padding:5px 10px;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-size:13px;">→</button>
+      </div>
+    </div>
+    <div id="fnoCalSummary" style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;"></div>
+    <div class="card" style="padding:16px;">
+      <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-bottom:6px;">
+        <div style="text-align:center;font-size:11px;color:var(--muted);font-weight:600;padding:4px 0;">MON</div>
+        <div style="text-align:center;font-size:11px;color:var(--muted);font-weight:600;padding:4px 0;">TUE</div>
+        <div style="text-align:center;font-size:11px;color:var(--muted);font-weight:600;padding:4px 0;">WED</div>
+        <div style="text-align:center;font-size:11px;color:var(--muted);font-weight:600;padding:4px 0;">THU</div>
+        <div style="text-align:center;font-size:11px;color:var(--muted);font-weight:600;padding:4px 0;">FRI</div>
+        <div style="text-align:center;font-size:11px;color:var(--muted);font-weight:600;padding:4px 0;">SAT</div>
+        <div style="text-align:center;font-size:11px;color:var(--muted);font-weight:600;padding:4px 0;">SUN</div>
+      </div>
+      <div id="fnoCalGrid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;"></div>
+    </div>
+  </div>
+
   <!-- ╔╗ Events page ╚╝ -->
   <div id="page-events" class="page-section hidden"></div>
   <div id="page-commodity" class="page-section hidden"></div>
@@ -2134,7 +2163,7 @@ function closeSidebar() {
 // ══════════════════════════════════════════════
 let _currentView = 'overview';
 
-const _ALL_PAGES = ['master','overview','portfolio','fno-overview','fno-signals','fno-trades','fno-charts','fno-strategy','positions','signals','trades','controls','report','telegram','screener','agentlog','calendar','fno','leaderboard','ag-risk','ag-regime','ag-news','ag-tax','ag-fii','ag-execution','ag-broker','ag-accounts'];
+const _ALL_PAGES = ['master','overview','portfolio','fno-overview','fno-signals','fno-trades','fno-charts','fno-strategy','positions','signals','trades','controls','report','telegram','screener','agentlog','calendar','fno-calendar','fno','leaderboard','ag-risk','ag-regime','ag-news','ag-tax','ag-fii','ag-execution','ag-broker','ag-accounts'];
 const _lazyLoaded = new Set();
 
 function showView(view) {
@@ -2156,6 +2185,10 @@ function showView(view) {
       const el = document.getElementById('page-' + p);
       if (el) el.classList.toggle('hidden', p !== view);
     });
+    // Calendars always reload fresh data — outside lazy guard
+    if (view === 'calendar') { loadPnlCalendar(); }
+    else if (view === 'fno-calendar') { loadFnoCalendar(); }
+
     // Lazy-load pages on first visit
     if (!_lazyLoaded.has(view)) {
       _lazyLoaded.add(view);
@@ -2186,11 +2219,6 @@ function showView(view) {
         loadTraderStatus();
         loadCapitalConfig();
         loadSecurityPanel();
-      } else if (view === 'calendar') {
-        const calDesk = _currentDesk;  // capture NOW before any async
-        const calTitle = document.querySelector('#page-calendar .page-title');
-        if (calTitle) calTitle.textContent = calDesk === 'fno' ? '📅 F&O P&L CALENDAR' : '📅 P&L CALENDAR';
-        loadPnlCalendar(calDesk);
       } else if (view === 'fno') {
         loadFNO();
       } else if (view === 'fno-signals') {
@@ -5334,10 +5362,10 @@ function toggleLearnLog() {
 let _calYear   = new Date().getFullYear();
 let _calMonth  = new Date().getMonth() + 1;   // 1-based
 let _calMode   = 'pnl';
-let _calDataEq  = {};   // equity-only calendar data
-let _calDataFno = {};   // F&O-only calendar data
-// Legacy alias — always reads from current desk
-function _calData() { return _currentDesk === 'fno' ? _calDataFno : _calDataEq; }
+// ═══════════════════════════════════════════════════════════════
+// EQUITY P&L CALENDAR  (hardwired to /api/pnl_calendar — equity ONLY)
+// ═══════════════════════════════════════════════════════════════
+let _calDataEq = {};   // equity-only
 
 function calTab(mode) {
   _calMode = mode;
@@ -5355,48 +5383,42 @@ function calNav(dir) {
   renderCalendar();
 }
 
-async function loadPnlCalendar(desk) {
-  const d = desk || _currentDesk;
+async function loadPnlCalendar() {
+  // EQUITY ONLY — never reads fno data
   try {
-    const r = await fetch(d === 'fno' ? '/api/fno/pnl_calendar' : '/api/pnl_calendar');
+    const r = await fetch('/api/pnl_calendar');
     const j = await r.json();
-    if (d === 'fno') _calDataFno = j.days || {};
-    else             _calDataEq  = j.days || {};
+    _calDataEq = j.days || {};
     renderCalendar();
   } catch(e) {
-    console.error('calendar fetch error', e);
+    console.error('equity calendar fetch error', e);
   }
 }
 
-function renderCalendar() {
+function _buildCalGrid(gridId, dataObj, year, month, mode) {
   const MONTHS = ['January','February','March','April','May','June',
                   'July','August','September','October','November','December'];
-  document.getElementById('calMonthLabel').textContent = MONTHS[_calMonth-1] + ' ' + _calYear;
+  const monthLabelId = gridId === 'calGrid' ? 'calMonthLabel' : 'fnoCalMonthLabel';
+  document.getElementById(monthLabelId).textContent = MONTHS[month-1] + ' ' + year;
 
-  const grid = document.getElementById('calGrid');
+  const grid = document.getElementById(gridId);
   grid.innerHTML = '';
 
-  // First day of month (0=Sun..6=Sat), convert to Mon-based offset
-  const firstDate = new Date(_calYear, _calMonth - 1, 1);
-  let offset = firstDate.getDay();   // 0=Sun
-  offset = (offset === 0) ? 6 : offset - 1;   // Mon=0 … Sun=6
-
-  const daysInMonth = new Date(_calYear, _calMonth, 0).getDate();
+  const firstDate = new Date(year, month - 1, 1);
+  let offset = firstDate.getDay();
+  offset = (offset === 0) ? 6 : offset - 1;
+  const daysInMonth = new Date(year, month, 0).getDate();
   const today = new Date().toISOString().slice(0, 10);
 
-  // Empty cells before month start
-  for (let i = 0; i < offset; i++) {
-    grid.insertAdjacentHTML('beforeend', '<div></div>');
-  }
+  for (let i = 0; i < offset; i++) grid.insertAdjacentHTML('beforeend', '<div></div>');
 
-  // Day cells
   for (let d = 1; d <= daysInMonth; d++) {
-    const dateStr = `${_calYear}-${String(_calMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    const dayData = _calData()[dateStr];
+    const dateStr = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const dayData = dataObj[dateStr];
     const isToday = dateStr === today;
+    let cellHtml;
 
-    if (_calMode === 'pnl') {
-      let cellHtml;
+    if (mode === 'pnl') {
       if (dayData && dayData.trades > 0) {
         const isGreen = dayData.pnl >= 0;
         const bg      = isGreen ? '#001200' : '#120000';
@@ -5413,53 +5435,45 @@ function renderCalendar() {
           <span style="font-size:13px;color:var(--muted)">${d}</span>
         </div>`;
       }
-      grid.insertAdjacentHTML('beforeend', cellHtml);
     } else {
-      // Events mode — show market events if any
       const events = getCalendarEvents(dateStr);
       const hasEvent = events.length > 0;
-      let cellHtml = `<div style="background:var(--card);border:1px solid ${hasEvent?'var(--yellow)':'var(--border)'};border-radius:8px;padding:8px 6px;min-height:80px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:3px;${isToday?'border-color:var(--blue);':''}">
+      cellHtml = `<div style="background:var(--card);border:1px solid ${hasEvent?'var(--yellow)':'var(--border)'};border-radius:8px;padding:8px 6px;min-height:80px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:3px;${isToday?'border-color:var(--blue);':''}">
         <div style="font-size:13px;font-weight:${hasEvent?700:400};color:${hasEvent?'var(--text)':'var(--muted)'}">${d}</div>`;
-      events.forEach(ev => {
-        cellHtml += `<div style="font-size:9px;color:var(--yellow);text-align:center;line-height:1.2">${ev}</div>`;
-      });
+      events.forEach(ev => { cellHtml += `<div style="font-size:9px;color:var(--yellow);text-align:center;line-height:1.2">${ev}</div>`; });
       cellHtml += '</div>';
-      grid.insertAdjacentHTML('beforeend', cellHtml);
     }
+    grid.insertAdjacentHTML('beforeend', cellHtml);
   }
-
-  // Summary strip
-  renderCalSummary();
 }
 
-function renderCalSummary() {
-  const summary = document.getElementById('calSummary');
-  const prefix  = `${_calYear}-${String(_calMonth).padStart(2,'0')}-`;
-  const monthDays = Object.entries(_calData()).filter(([k]) => k.startsWith(prefix));
+function _buildCalSummary(summaryId, dataObj, year, month) {
+  const summary = document.getElementById(summaryId);
+  const prefix  = `${year}-${String(month).padStart(2,'0')}-`;
+  const monthDays = Object.entries(dataObj).filter(([k]) => k.startsWith(prefix));
 
   if (monthDays.length === 0) {
     summary.innerHTML = '<span style="font-size:12px;color:var(--muted)">No trades this month yet.</span>';
     return;
   }
 
-  const totalPnl  = monthDays.reduce((s,[,v]) => s + v.pnl, 0);
-  const greenDays = monthDays.filter(([,v]) => v.pnl > 0).length;
-  const redDays   = monthDays.filter(([,v]) => v.pnl < 0).length;
-  const tradeDays = monthDays.length;
+  const totalPnl    = monthDays.reduce((s,[,v]) => s + v.pnl, 0);
+  const greenDays   = monthDays.filter(([,v]) => v.pnl > 0).length;
+  const redDays     = monthDays.filter(([,v]) => v.pnl < 0).length;
+  const tradeDays   = monthDays.length;
   const totalTrades = monthDays.reduce((s,[,v]) => s + v.trades, 0);
   const totalWins   = monthDays.reduce((s,[,v]) => s + v.wins,   0);
   const winRate     = totalTrades ? Math.round(totalWins/totalTrades*100) : 0;
-
-  const pnlColor  = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
-  const pnlSign   = totalPnl >= 0 ? '+' : '';
+  const pnlColor    = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
+  const pnlSign     = totalPnl >= 0 ? '+' : '';
 
   const chips = [
-    { label: 'Month P&L',   val: pnlSign + '₹' + Math.abs(totalPnl).toLocaleString('en-IN',{maximumFractionDigits:0}), color: pnlColor },
-    { label: 'Green Days',  val: greenDays, color: 'var(--green)' },
-    { label: 'Red Days',    val: redDays,   color: 'var(--red)' },
-    { label: 'Trade Days',  val: tradeDays, color: 'var(--text)' },
-    { label: 'Win Rate',    val: winRate + '%', color: winRate >= 50 ? 'var(--green)' : 'var(--red)' },
-    { label: 'Total Trades',val: totalTrades, color: 'var(--text)' },
+    { label: 'Month P&L',    val: pnlSign + '₹' + Math.abs(totalPnl).toLocaleString('en-IN',{maximumFractionDigits:0}), color: pnlColor },
+    { label: 'Green Days',   val: greenDays,      color: 'var(--green)' },
+    { label: 'Red Days',     val: redDays,        color: 'var(--red)' },
+    { label: 'Trade Days',   val: tradeDays,      color: 'var(--text)' },
+    { label: 'Win Rate',     val: winRate + '%',  color: winRate >= 50 ? 'var(--green)' : 'var(--red)' },
+    { label: 'Total Trades', val: totalTrades,    color: 'var(--text)' },
   ];
 
   summary.innerHTML = chips.map(c => `
@@ -5468,6 +5482,54 @@ function renderCalSummary() {
       <div style="font-size:16px;font-weight:700;color:${c.color};margin-top:2px">${c.val}</div>
     </div>
   `).join('');
+}
+
+function renderCalendar() {
+  _buildCalGrid('calGrid', _calDataEq, _calYear, _calMonth, _calMode);
+  _buildCalSummary('calSummary', _calDataEq, _calYear, _calMonth);
+}
+
+function renderCalSummary() {
+  _buildCalSummary('calSummary', _calDataEq, _calYear, _calMonth);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// F&O P&L CALENDAR  (hardwired to /api/fno/pnl_calendar — F&O ONLY)
+// ═══════════════════════════════════════════════════════════════
+let _calDataFno = {};   // F&O-only — NEVER mixed with equity
+let _fnoCalMode = 'pnl';
+
+function fnoCalTab(mode) {
+  _fnoCalMode = mode;
+  document.getElementById('fnoCalTabPnl').style.background    = mode === 'pnl'    ? 'var(--accent)' : 'transparent';
+  document.getElementById('fnoCalTabPnl').style.color         = mode === 'pnl'    ? '#fff'          : 'var(--muted)';
+  document.getElementById('fnoCalTabEvents').style.background = mode === 'events' ? 'var(--accent)' : 'transparent';
+  document.getElementById('fnoCalTabEvents').style.color      = mode === 'events' ? '#fff'          : 'var(--muted)';
+  renderFnoCalendar();
+}
+
+function fnoCalNav(dir) {
+  _calMonth += dir;
+  if (_calMonth > 12) { _calMonth = 1;  _calYear++; }
+  if (_calMonth < 1)  { _calMonth = 12; _calYear--; }
+  renderFnoCalendar();
+}
+
+async function loadFnoCalendar() {
+  // F&O ONLY — never reads equity data
+  try {
+    const r = await fetch('/api/fno/pnl_calendar');
+    const j = await r.json();
+    _calDataFno = j.days || {};
+    renderFnoCalendar();
+  } catch(e) {
+    console.error('fno calendar fetch error', e);
+  }
+}
+
+function renderFnoCalendar() {
+  _buildCalGrid('fnoCalGrid', _calDataFno, _calYear, _calMonth, _fnoCalMode);
+  _buildCalSummary('fnoCalSummary', _calDataFno, _calYear, _calMonth);
 }
 
 function getCalendarEvents(dateStr) {
@@ -6334,7 +6396,7 @@ document.addEventListener('keydown', function(e) {
     'F9':  'agentlog',
     'F10': 'controls',
     'F11': 'report',
-    'F12': 'calendar',
+    'F12': _currentDesk === 'fno' ? 'fno-calendar' : 'calendar',
   };
   if (e.key in map) {
     e.preventDefault();
