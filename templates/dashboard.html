@@ -5269,10 +5269,13 @@ function toggleLearnLog() {
 // ══════════════════════════════════════════════
 // P&L Calendar
 // ══════════════════════════════════════════════
-let _calYear  = new Date().getFullYear();
-let _calMonth = new Date().getMonth() + 1;   // 1-based
-let _calMode  = 'pnl';
-let _calData  = {};   // { "2026-05-27": { pnl, trades, wins, win_rate } }
+let _calYear   = new Date().getFullYear();
+let _calMonth  = new Date().getMonth() + 1;   // 1-based
+let _calMode   = 'pnl';
+let _calDataEq  = {};   // equity-only calendar data
+let _calDataFno = {};   // F&O-only calendar data
+// Legacy alias — always reads from current desk
+function _calData() { return _currentDesk === 'fno' ? _calDataFno : _calDataEq; }
 
 function calTab(mode) {
   _calMode = mode;
@@ -5295,7 +5298,8 @@ async function loadPnlCalendar(desk) {
   try {
     const r = await fetch(d === 'fno' ? '/api/fno/pnl_calendar' : '/api/pnl_calendar');
     const j = await r.json();
-    _calData = j.days || {};
+    if (d === 'fno') _calDataFno = j.days || {};
+    else             _calDataEq  = j.days || {};
     renderCalendar();
   } catch(e) {
     console.error('calendar fetch error', e);
@@ -5326,7 +5330,7 @@ function renderCalendar() {
   // Day cells
   for (let d = 1; d <= daysInMonth; d++) {
     const dateStr = `${_calYear}-${String(_calMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    const dayData = _calData[dateStr];
+    const dayData = _calData()[dateStr];
     const isToday = dateStr === today;
 
     if (_calMode === 'pnl') {
@@ -5369,7 +5373,7 @@ function renderCalendar() {
 function renderCalSummary() {
   const summary = document.getElementById('calSummary');
   const prefix  = `${_calYear}-${String(_calMonth).padStart(2,'0')}-`;
-  const monthDays = Object.entries(_calData).filter(([k]) => k.startsWith(prefix));
+  const monthDays = Object.entries(_calData()).filter(([k]) => k.startsWith(prefix));
 
   if (monthDays.length === 0) {
     summary.innerHTML = '<span style="font-size:12px;color:var(--muted)">No trades this month yet.</span>';
