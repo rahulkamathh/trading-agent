@@ -1742,12 +1742,6 @@ def api_fno_hourly_signals():
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 
-@app.route("/api/fno/reset", methods=["POST"])
-def api_fno_reset():
-    from fno_engine import get_fno_agent  # pylint: disable=import-outside-toplevel
-    get_fno_agent().portfolio.reset()
-    return jsonify({"ok": True, "message": "F&O portfolio reset to ₹2,00,000"})
-
 @app.route("/api/fno/option_price")
 def api_fno_option_price():
     """Compute theoretical option price for any input."""
