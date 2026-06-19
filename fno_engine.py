@@ -724,7 +724,12 @@ class FNOPortfolio:
                     strategy: str, reason: str = "",
                     underlying_entry: float = 0.0,
                     stop_level: float = 0.0,
-                    initial_R: float = 0.0) -> dict | None:
+                    initial_R: float = 0.0,
+                    covered: bool = False) -> dict | None:
+        """
+        covered=True: SHORT leg is part of a spread — no margin blocked
+        (the LONG leg already caps the loss, so 20% notional margin is not needed).
+        """
         """
         Open an option position.
         position: LONG (buy) | SHORT (sell/write)
@@ -786,10 +791,17 @@ class FNOPortfolio:
         if position == "LONG":
             self._deduct_cash(cost)
         else:
-            margin = spot * lot * qty_lots * 0.20
-            self._deduct_cash(margin)
-            pos["margin_blocked"] = round(margin, 2)
-            self._return_cash(cost)  # premium received upfront for SHORT
+            if covered:
+                # Covered short (part of a spread) — long leg caps the loss.
+                # Only credit the premium received; no separate margin block needed.
+                pos["margin_blocked"] = 0.0
+                self._return_cash(cost)
+            else:
+                # Naked short — block 20% notional as margin + credit premium
+                margin = spot * lot * qty_lots * 0.20
+                self._deduct_cash(margin)
+                pos["margin_blocked"] = round(margin, 2)
+                self._return_cash(cost)  # premium received upfront for SHORT
 
         self._save()
         trade = {
@@ -1963,7 +1975,7 @@ class SpreadStrategy:
                         continue
 
                     r1 = portfolio.open_option(ticker, k_long,  expiry, "call", "LONG",  1, self.short_name, "BullCallSpread-BuyLeg")
-                    r2 = portfolio.open_option(ticker, k_short, expiry, "call", "SHORT", 1, self.short_name, "BullCallSpread-SellLeg")
+                    r2 = portfolio.open_option(ticker, k_short, expiry, "call", "SHORT", 1, self.short_name, "BullCallSpread-SellLeg", covered=True)
                     if r1 and r2:
                         executed.extend([r1, r2])
 
@@ -1981,7 +1993,7 @@ class SpreadStrategy:
                         continue
 
                     r1 = portfolio.open_option(ticker, k_long,  expiry, "put", "LONG",  1, self.short_name, "BearPutSpread-BuyLeg")
-                    r2 = portfolio.open_option(ticker, k_short, expiry, "put", "SHORT", 1, self.short_name, "BearPutSpread-SellLeg")
+                    r2 = portfolio.open_option(ticker, k_short, expiry, "put", "SHORT", 1, self.short_name, "BearPutSpread-SellLeg", covered=True)
                     if r1 and r2:
                         executed.extend([r1, r2])
 
@@ -2744,7 +2756,7 @@ class FNOAgent:
         # SpreadStrategy RE-ENABLED: Bull Call Spread and Bear Put Spread are
         # DEFINED-RISK strategies — max loss = net debit paid, not unlimited.
         condors   = []   # self.iron_condor.run(self.portfolio) — naked short options, disabled
-        spreads   = self.spreads.run(equity_signals, self.portfolio)   # defined-risk ✓
+        spreads   = []   # SpreadStrategy disabled — involves short legs; no shorting until bot is 7+ months old
         directs   = self.directional.run(equity_signals, self.portfolio)
         straddles = self.straddle.run(self.portfolio)
         strangles = self.strangle.run(equity_signals, self.portfolio)
