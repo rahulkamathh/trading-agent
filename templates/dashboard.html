@@ -282,6 +282,67 @@
   #toast { position: fixed; bottom: 18px; right: 18px; background: #111; border: 1px solid var(--amber); padding: 9px 16px; font-size: 11px; z-index: 1000; opacity: 0; transform: translateY(6px); transition: all 0.25s; pointer-events: none; color: var(--amber); }
   #toast.show { opacity: 1; transform: translateY(0); }
 
+  /* ══════════════════════════════════════════
+     LIGHT MODE — warm stone/linen palette
+     Eye-soothing, not white
+  ══════════════════════════════════════════ */
+  [data-theme="light"] {
+    --bg:        #eeeae3;
+    --panel:     #e6e2db;
+    --panel2:    #dedad3;
+    --border:    #c9c5bc;
+    --border-b:  #b4b0a7;
+    --text:      #1a1714;
+    --muted:     #6b6258;
+    --green:     #1a6b2a;
+    --red:       #b81c1c;
+    --yellow:    #8a5e00;
+    --cyan:      #1a5f8a;
+    --blue:      #1a5f8a;
+    --purple:    #5a3e88;
+    --orange:    #b55a00;
+    --accent:    #b55a00;
+    --amber:     #b55a00;
+    --amber-dim: #7a3e00;
+  }
+  [data-theme="light"] html,
+  [data-theme="light"] body,
+  body[data-theme="light"] { background: var(--bg); color: var(--text); }
+  [data-theme="light"] .nav-item:hover { background: #d8d4cd; }
+  [data-theme="light"] .nav-item.active { background: #f2e0c4; }
+  [data-theme="light"] .kpi-val { color: var(--text); }
+  [data-theme="light"] .card { border-top: 2px solid var(--border); }
+  [data-theme="light"] .card-value { color: var(--text); }
+  [data-theme="light"] th { background: var(--panel); color: var(--amber); }
+  [data-theme="light"] td { border-bottom: 1px solid var(--border); }
+  [data-theme="light"] tr:nth-child(even) td { background: var(--panel2); }
+  [data-theme="light"] tr:hover td { background: #f2e0c4 !important; }
+  [data-theme="light"] .pill-hold { border-color: var(--border); }
+  [data-theme="light"] .chart-card { border-top: 2px solid var(--border); }
+  [data-theme="light"] .cc-ticker,
+  [data-theme="light"] .cc-ltp { color: var(--text); }
+  [data-theme="light"] .progress { background: var(--border); }
+  [data-theme="light"] input,
+  [data-theme="light"] select,
+  [data-theme="light"] textarea { background: var(--bg); }
+  [data-theme="light"] .trade-form input { background: var(--bg); }
+  [data-theme="light"] #loader { background: rgba(238,234,227,.95); }
+  [data-theme="light"] #loader .spinner { border-color: var(--border); border-top-color: var(--amber); }
+  [data-theme="light"] #toast { background: var(--panel); border-color: var(--amber); color: var(--amber); }
+  [data-theme="light"] .fno-note { background: var(--panel2); }
+  [data-theme="light"] .status-idle { background: var(--border-b); }
+  [data-theme="light"] ::selection { background: var(--amber); color: #fff; }
+  /* Theme toggle button */
+  #themeToggle {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--muted); cursor: pointer; padding: 3px 9px;
+    font-size: 13px; line-height: 1; transition: all .15s;
+    display: flex; align-items: center; gap: 5px;
+    font-family: var(--mono); font-size: 10px; letter-spacing: .5px;
+    flex-shrink: 0;
+  }
+  #themeToggle:hover { border-color: var(--amber); color: var(--amber); }
+
   /* ── LIVE FLASH ── */
   @keyframes flashUp   { 0%,100%{background:transparent} 30%{background:#00c80520} }
   @keyframes flashDown { 0%,100%{background:transparent} 30%{background:#ff3b3020} }
@@ -367,7 +428,8 @@
     <button class="btn btn-ghost" onclick="refreshAll()">↻</button>
     <span id="marketStatusChip" class="mkt-chip mkt-closed">CLOSED</span>
     <div class="clockbox"><span class="live-dot"></span><b id="clockDisplay">--:--:--</b>&nbsp;IST</div>
-    <a href="/logout" style="font-size:10px;color:#555;text-decoration:none;letter-spacing:.5px;padding:2px 6px;border:1px solid #222;margin-left:4px" title="Log out">⏻</a>
+    <button id="themeToggle" onclick="toggleTheme()" title="Toggle light/dark mode">🌙</button>
+    <a href="/logout" style="font-size:10px;color:var(--muted);text-decoration:none;letter-spacing:.5px;padding:2px 6px;border:1px solid var(--border);margin-left:4px" title="Log out">⏻</a>
   </div>
 </div>
 
@@ -5425,7 +5487,35 @@ function getCalendarEvents(dateStr) {
 }
 
 
+// ══════════════════════════════════════════════
+// Theme toggle (light / dark)
+// ══════════════════════════════════════════════
+function _applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  document.body.setAttribute('data-theme', theme);
+  const btn = document.getElementById('themeToggle');
+  if (btn) btn.textContent = theme === 'light' ? '🌑' : '🌙';
+}
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme') || 'dark';
+  const next    = current === 'light' ? 'dark' : 'light';
+  _applyTheme(next);
+  try { localStorage.setItem('rk_theme', next); } catch(e) {}
+}
+// Apply saved preference on load
+(function() {
+  try {
+    const saved = localStorage.getItem('rk_theme');
+    if (saved) _applyTheme(saved);
+  } catch(e) {}
+})();
+
 window.addEventListener('DOMContentLoaded', () => {
+  // Re-apply after DOM ready (in case attributes were cleared)
+  try {
+    const saved = localStorage.getItem('rk_theme');
+    if (saved) _applyTheme(saved);
+  } catch(e) {}
   // Start on master desk
   // Show master page immediately without waiting for API
   const _pm = document.getElementById('page-master');
